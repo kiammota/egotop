@@ -6,16 +6,16 @@
 [general]
 name = "egotop"
 # Placeholders supported: {user}, {host}, {distro}, {wm}
-greeting = "Olá, {user}!"
+greeting = "Hello, {user}!"
 # Optional display name override (leave commented to use system username)
 # user_override = "Kiam"
-message = "Bem-vindo de volta ao seu ambiente Linux."
+message = "Welcome back to your Linux environment."
 # System metrics refresh interval in milliseconds
 refresh_rate_ms = 1000
 # Background animation frame rate (1 - 120)
 animation_fps = 30
 time_format = "%H:%M:%S"
-date_format = "%d/%m/%Y"
+date_format = "%m/%d/%Y"
 # If true, hides fields whose values cannot be detected; otherwise shows "N/A"
 hide_unavailable = false
 # Default view mode: "dashboard" | "compact" | "minimal"
@@ -42,6 +42,32 @@ border = "#1F7A4C"
 danger = "#FF5555"
 # Border style: "rounded" | "plain" | "double" | "thick"
 border_type = "rounded"
+
+# Optional per-character border customization:
+# [theme.borders]
+# top_left = "╭"
+# top_right = "╮"
+# bottom_left = "╰"
+# bottom_right = "╯"
+# horizontal = "─"
+# vertical = "│"
+# left_separator = "├"
+# right_separator = "┤"
+# top_separator = "┬"
+# bottom_separator = "┴"
+# intersection = "┼"
+
+[startup]
+# Startup mode: "normal" | "cursor"
+mode = "normal"
+animation = "cursor-expand"
+trigger = "mouse"
+
+[startup.cursor]
+character = "▌"
+blink = true
+blink_interval = 500
+color = "#39FF88"
 
 [typography]
 # Available ASCII fonts:
@@ -128,7 +154,7 @@ min_width_for_split = 88
 [[widgets]]
 id = "greeting"
 enabled = true
-title = "Bem-vindo"
+title = "Welcome"
 position = "top-center"
 page = 1
 z_index = 20
@@ -140,7 +166,7 @@ show_border = true
 [[widgets]]
 id = "system"
 enabled = true
-title = "Sistema"
+title = "System"
 position = "center-left"
 page = 1
 width = "50%"
@@ -161,7 +187,7 @@ graph_style = "bar"
 [[widgets]]
 id = "activity"
 enabled = true
-title = "Atividade"
+title = "Activity"
 position = "bottom-left"
 page = 1
 width = "60%"
@@ -171,7 +197,7 @@ graph_style = "sparkline"
 [[widgets]]
 id = "session"
 enabled = true
-title = "Sessão & Uptime"
+title = "Session & Uptime"
 position = "bottom-right"
 page = 1
 width = "40%"
@@ -180,7 +206,7 @@ z_index = 10
 [[widgets]]
 id = "message"
 enabled = false
-title = "Mensagem"
+title = "Message"
 position = "bottom-center"
 page = 1
 z_index = 15

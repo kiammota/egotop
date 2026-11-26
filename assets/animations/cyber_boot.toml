@@ -2,7 +2,7 @@ schema_version = 1
 name = "cyber_boot"
 display_name = "Cyber Boot (Community)"
 author = "egotop"
-description = "Flash inicial CRT seguido de embaralhamento Matrix e revelação suave."
+description = "Initial CRT flash followed by Matrix scramble and smooth reveal."
 
 [[steps]]
 effect = "crt_line"

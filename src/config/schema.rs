@@ -1,3 +1,4 @@
+use crate::ui::borders::BorderCharsConfig;
 use serde::{Deserialize, Deserializer, Serialize};
 use std::path::PathBuf;
 use thiserror::Error;
@@ -20,6 +21,7 @@ pub enum ConfigError {
 #[serde(default)]
 pub struct Config {
     pub general: GeneralConfig,
+    pub startup: StartupConfig,
     pub theme: ThemeConfig,
     pub typography: TypographyConfig,
     pub header: HeaderConfig,
@@ -32,6 +34,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             general: GeneralConfig::default(),
+            startup: StartupConfig::default(),
             theme: ThemeConfig::default(),
             typography: TypographyConfig::default(),
             header: HeaderConfig::default(),
@@ -42,12 +45,69 @@ impl Default for Config {
     }
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum StartupMode {
+    #[default]
+    Normal,
+    Cursor,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum StartupTrigger {
+    #[default]
+    Mouse,
+    Key,
+    Any,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct StartupCursorConfig {
+    pub character: String,
+    pub blink: bool,
+    pub blink_interval: u64,
+    pub color: String,
+}
+
+impl Default for StartupCursorConfig {
+    fn default() -> Self {
+        Self {
+            character: "▌".to_string(),
+            blink: true,
+            blink_interval: 500,
+            color: "#39FF88".to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct StartupConfig {
+    pub mode: StartupMode,
+    pub animation: String,
+    pub trigger: StartupTrigger,
+    pub cursor: StartupCursorConfig,
+}
+
+impl Default for StartupConfig {
+    fn default() -> Self {
+        Self {
+            mode: StartupMode::Normal,
+            animation: "cursor-expand".to_string(),
+            trigger: StartupTrigger::Mouse,
+            cursor: StartupCursorConfig::default(),
+        }
+    }
+}
+
 pub fn default_widgets() -> Vec<WidgetConfig> {
     vec![
         WidgetConfig {
             id: WidgetId::Greeting,
             enabled: true,
-            title: Some("Bem-vindo".to_string()),
+            title: Some("Welcome".to_string()),
             position: Anchor::TopCenter,
             page: Some(1),
             z_index: 20,
@@ -60,7 +120,7 @@ pub fn default_widgets() -> Vec<WidgetConfig> {
         WidgetConfig {
             id: WidgetId::System,
             enabled: true,
-            title: Some("Sistema".to_string()),
+            title: Some("System".to_string()),
             position: Anchor::CenterLeft,
             page: Some(1),
             width: Some(SizeSpec::Percent(50)),
@@ -83,7 +143,7 @@ pub fn default_widgets() -> Vec<WidgetConfig> {
         WidgetConfig {
             id: WidgetId::Activity,
             enabled: true,
-            title: Some("Atividade".to_string()),
+            title: Some("Activity".to_string()),
             position: Anchor::BottomLeft,
             page: Some(1),
             width: Some(SizeSpec::Percent(60)),
@@ -94,7 +154,7 @@ pub fn default_widgets() -> Vec<WidgetConfig> {
         WidgetConfig {
             id: WidgetId::Session,
             enabled: true,
-            title: Some("Sessão & Uptime".to_string()),
+            title: Some("Session & Uptime".to_string()),
             position: Anchor::BottomRight,
             page: Some(1),
             width: Some(SizeSpec::Percent(40)),
@@ -104,7 +164,7 @@ pub fn default_widgets() -> Vec<WidgetConfig> {
         WidgetConfig {
             id: WidgetId::Message,
             enabled: false,
-            title: Some("Mensagem".to_string()),
+            title: Some("Message".to_string()),
             position: Anchor::BottomCenter,
             page: Some(1),
             z_index: 15,
@@ -139,13 +199,13 @@ impl Default for GeneralConfig {
     fn default() -> Self {
         Self {
             name: "egotop".to_string(),
-            greeting: "Olá, {user}!".to_string(),
+            greeting: "Hello, {user}!".to_string(),
             user_override: None,
-            message: "Bem-vindo de volta ao seu ambiente Linux.".to_string(),
+            message: "Welcome back to your Linux environment.".to_string(),
             refresh_rate_ms: 1000,
             animation_fps: 30,
             time_format: "%H:%M:%S".to_string(),
-            date_format: "%d/%m/%Y".to_string(),
+            date_format: "%m/%d/%Y".to_string(),
             hide_unavailable: false,
             view_mode: ViewMode::Dashboard,
             default_page: 1,
@@ -176,7 +236,7 @@ impl ViewMode {
     pub fn label(self) -> &'static str {
         match self {
             Self::Dashboard => "Dashboard",
-            Self::Compact => "Compacto",
+            Self::Compact => "Compact",
             Self::Minimal => "Minimal",
         }
     }
@@ -196,6 +256,7 @@ pub struct ThemeConfig {
     pub border: String,
     pub danger: String,
     pub border_type: BorderStyle,
+    pub borders: BorderCharsConfig,
 }
 
 impl Default for ThemeConfig {
@@ -212,6 +273,7 @@ impl Default for ThemeConfig {
             border: "#1F7A4C".to_string(),
             danger: "#FF5555".to_string(),
             border_type: BorderStyle::Rounded,
+            borders: BorderCharsConfig::default(),
         }
     }
 }
@@ -240,7 +302,7 @@ impl BorderStyle {
     pub fn label(self) -> &'static str {
         match self {
             Self::Rounded => "rounded",
-            Self::Plain => "solid",
+            Self::Plain => "plain",
             Self::Double => "double",
             Self::Thick => "thick",
         }
@@ -551,14 +613,14 @@ pub enum WidgetId {
 impl WidgetId {
     pub fn default_title(self) -> &'static str {
         match self {
-            Self::Greeting => "Bem-vindo",
+            Self::Greeting => "Welcome",
             Self::Logo => "Logo",
-            Self::System => "Sistema",
+            Self::System => "System",
             Self::Hardware => "Hardware",
-            Self::Activity => "Atividade",
-            Self::Session => "Sessão",
+            Self::Activity => "Activity",
+            Self::Session => "Session",
             Self::Uptime => "Uptime",
-            Self::Message => "Mensagem",
+            Self::Message => "Message",
         }
     }
 }
@@ -751,6 +813,7 @@ impl Config {
             ("theme.muted", &self.theme.muted),
             ("theme.border", &self.theme.border),
             ("theme.danger", &self.theme.danger),
+            ("startup.cursor.color", &self.startup.cursor.color),
         ] {
             if !is_valid_color_spec(color) {
                 return Err(ConfigError::Validation {
@@ -758,6 +821,15 @@ impl Config {
                     message: format!("invalid color '{color}' (use #RRGGBB, named color, or 'reset')"),
                 });
             }
+        }
+        if let Err((field, message)) = self.theme.borders.validate() {
+            return Err(ConfigError::Validation { field, message });
+        }
+        if self.startup.cursor.blink_interval < 50 {
+            return Err(ConfigError::Validation {
+                field: "startup.cursor.blink_interval".to_string(),
+                message: "must be at least 50 ms".to_string(),
+            });
         }
         Ok(())
     }

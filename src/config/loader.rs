@@ -127,3 +127,20 @@ pub fn save_window_config(win: &WindowConfig) -> Result<(), ConfigError> {
     })?;
     fs::write(&path, serialized).map_err(|source| ConfigError::Io { path, source })
 }
+
+pub fn load_layout_names() -> Vec<String> {
+    let mut names = Vec::new();
+    let dir = paths::layouts_path();
+    if let Ok(entries) = fs::read_dir(&dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) == Some("toml")
+                && let Some(stem) = path.file_stem().and_then(|s| s.to_str())
+            {
+                names.push(stem.to_string());
+            }
+        }
+    }
+    names.sort();
+    names
+}

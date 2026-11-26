@@ -15,6 +15,7 @@ pub enum NativeTransition {
     Fade,
     Slide,
     MatrixBoot,
+    CursorExpand,
     None,
 }
 
@@ -26,6 +27,7 @@ impl NativeTransition {
             "fade" => Some(Self::Fade),
             "slide" => Some(Self::Slide),
             "matrix_boot" | "matrixboot" | "boot" => Some(Self::MatrixBoot),
+            "cursor_expand" | "cursorexpand" | "expand" => Some(Self::CursorExpand),
             "none" | "off" => Some(Self::None),
             _ => None,
         }
@@ -38,6 +40,7 @@ impl NativeTransition {
             Self::Fade => "fade",
             Self::Slide => "slide",
             Self::MatrixBoot => "matrix_boot",
+            Self::CursorExpand => "cursor-expand",
             Self::None => "none",
         }
     }
@@ -49,18 +52,20 @@ impl NativeTransition {
             Self::Fade => "Fade",
             Self::Slide => "Slide",
             Self::MatrixBoot => "Matrix Boot",
+            Self::CursorExpand => "Cursor Expand",
             Self::None => "None",
         }
     }
 
     pub fn description(self) -> &'static str {
         match self {
-            Self::CrtPowerOn => "Linha horizontal de TV antiga expandindo para o quadro completo.",
-            Self::Curtains => "Cortinas simétricas abrindo para revelar a interface.",
-            Self::Fade => "Aparecimento gradual suave até as cores finais.",
-            Self::Slide => "Entrada lateral progressiva da janela principal.",
-            Self::MatrixBoot => "Sequência de inicialização com caracteres resolvendo o conteúdo.",
-            Self::None => "Exibição instantânea sem transição inicial.",
+            Self::CrtPowerOn => "Classic CRT beam expanding vertically into the full screen.",
+            Self::Curtains => "Symmetric curtains opening to reveal the interface.",
+            Self::Fade => "Smooth gradual fade-in to final theme colors.",
+            Self::Slide => "Smooth lateral slide-in for the main window.",
+            Self::MatrixBoot => "Retro terminal boot sequence resolving scrambled glyphs.",
+            Self::CursorExpand => "Radial expansion starting from the startup cursor position.",
+            Self::None => "Instant display without startup transition.",
         }
     }
 
@@ -71,6 +76,7 @@ impl NativeTransition {
             Self::Fade,
             Self::Slide,
             Self::MatrixBoot,
+            Self::CursorExpand,
             Self::None,
         ]
     }
@@ -118,7 +124,7 @@ impl AnimationCatalog {
                 .unwrap_or_else(|| spec.name.clone());
             let description = spec.description.clone().unwrap_or_else(|| {
                 format!(
-                    "Animação comunitária ({} passos, {:.1}s)",
+                    "Community animation ({} steps, {:.1}s)",
                     spec.steps.len(),
                     spec.total_duration_secs()
                 )
@@ -158,6 +164,7 @@ pub struct TransitionPlayer {
     pub elapsed_secs: f32,
     pub duration_secs: f32,
     pub finished: bool,
+    pub origin: Option<(u16, u16)>,
 }
 
 impl TransitionPlayer {
@@ -175,11 +182,23 @@ impl TransitionPlayer {
             elapsed_secs: 0.0,
             duration_secs,
             finished,
+            origin: None,
         }
     }
 
     pub fn restart(&mut self, id: &str, catalog: &AnimationCatalog, default_duration_ms: u64) {
         *self = Self::new(id, catalog, default_duration_ms);
+    }
+
+    pub fn restart_from_origin(
+        &mut self,
+        id: &str,
+        catalog: &AnimationCatalog,
+        default_duration_ms: u64,
+        origin: (u16, u16),
+    ) {
+        *self = Self::new(id, catalog, default_duration_ms);
+        self.origin = Some(origin);
     }
 
     pub fn update(&mut self, dt_secs: f32) {
@@ -217,7 +236,12 @@ impl TransitionPlayer {
                     NativeTransition::Curtains => apply_curtains(buf, window_area, t, StepDirection::Center, theme, None),
                     NativeTransition::Fade => apply_fade(buf, window_area, EasingKind::EaseOut.apply(t), theme),
                     NativeTransition::Slide => apply_slide(buf, window_area, EasingKind::EaseOut.apply(t), StepDirection::Left, theme),
-                    NativeTransition::MatrixBoot => apply_matrix_scramble(buf, window_area, t, "01ｱｶｻﾀﾅﾊ#$", theme),
+                    NativeTransition::MatrixBoot => {
+                        apply_matrix_scramble(buf, window_area, t, "01ｱｶｻﾀﾅﾊ#$", theme)
+                    }
+                    NativeTransition::CursorExpand => {
+                        apply_cursor_expand(buf, window_area, self.origin, t, theme)
+                    }
                 }
             }
             AnimationSource::Community(spec) => {
@@ -454,6 +478,40 @@ fn apply_matrix_scramble(
                 } else {
                     cell.set_char(' ');
                 }
+            }
+        }
+    }
+}
+
+fn apply_cursor_expand(
+    buf: &mut Buffer,
+    area: Rect,
+    origin: Option<(u16, u16)>,
+    t: f32,
+    theme: &Theme,
+) {
+    let eased = EasingKind::EaseOut.apply(t);
+    let (ox, oy) = origin.unwrap_or((area.x + area.width / 2, area.y + area.height / 2));
+
+    let max_dx = ox.abs_diff(area.x).max(ox.abs_diff(area.right().saturating_sub(1))) as f32;
+    let max_dy = oy.abs_diff(area.y).max(oy.abs_diff(area.bottom().saturating_sub(1))) as f32;
+    // Scale y by 2.0 to keep terminal cell aspect ratio circular
+    let max_radius = (max_dx * max_dx + (max_dy * 2.0) * (max_dy * 2.0)).sqrt().max(1.0);
+    let cur_radius = max_radius * eased;
+
+    for y in area.top()..area.bottom() {
+        for x in area.left()..area.right() {
+            let dx = x as f32 - ox as f32;
+            let dy = (y as f32 - oy as f32) * 2.0;
+            let dist = (dx * dx + dy * dy).sqrt();
+            if dist > cur_radius {
+                if let Some(cell) = buf.cell_mut((x, y)) {
+                    cell.set_char(' ').set_bg(theme.background);
+                }
+            } else if dist > (cur_radius - 2.2).max(0.0)
+                && let Some(cell) = buf.cell_mut((x, y))
+            {
+                cell.set_fg(theme.primary);
             }
         }
     }

@@ -2,7 +2,7 @@ schema_version = 1
 name = "neon_curtains"
 display_name = "Neon Curtains (Community)"
 author = "egotop"
-description = "Cortinas simétricas revelando a janela principal com brilho lateral."
+description = "Symmetric curtains opening to reveal the main window with a side glow."
 
 [[steps]]
 effect = "curtains"

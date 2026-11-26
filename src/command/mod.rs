@@ -1,84 +1,243 @@
-use crate::config::{Anchor, BorderStyle, EffectKind, LayoutMode, ViewMode};
-use crate::window::WindowBackgroundMode;
+pub mod completion;
+pub mod parser;
+pub mod registry;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum WindowCommand {
-    OpenInspector,
-    Center,
-    SetAnchor(Anchor),
-    SetDraggable(Option<bool>),
-    SetResizable(Option<bool>),
-    ToggleBorder(Option<bool>),
-    SetBorderStyle(BorderStyle),
-    SetBackground(WindowBackgroundMode),
-    SetPadding(u16),
-    SetVisible(Option<bool>),
-    Reset,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ParsedCommand {
-    Colorscheme(Option<String>),
-    Reload,
-    Animation(Option<String>),
-    Effect(Option<EffectKind>),
-    Window(WindowCommand),
-    Layout(Option<LayoutSelection>),
-    Help,
-    Quit,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LayoutSelection {
-    Mode(LayoutMode),
-    View(ViewMode),
-}
+pub use completion::{CompletionContext, CompletionEngine, CompletionItem, CompletionResult};
+pub use parser::{
+    AnimationAction, LayoutSelection, ParsedCommand, SaveTarget, WindowCommand, parse_command,
+};
+pub use registry::{CommandDescriptor, CommandRegistry, CompletionProviderKind};
 
 #[derive(Debug, Clone, Default)]
 pub struct CommandLineState {
     pub active: bool,
     pub buffer: String,
+    pub cursor: usize,
     pub history: Vec<String>,
     pub history_index: Option<usize>,
+    pub draft_before_history: String,
+    pub suggestions: Vec<CompletionItem>,
+    pub selected_suggestion: Option<usize>,
+    pub replace_range: (usize, usize),
+    pub popup_open: bool,
 }
 
 impl CommandLineState {
-    pub fn open(&mut self) {
+    pub fn open(&mut self, registry: &CommandRegistry, ctx: &CompletionContext<'_>) {
         self.active = true;
         self.buffer.clear();
+        self.cursor = 0;
         self.history_index = None;
+        self.draft_before_history.clear();
+        self.selected_suggestion = None;
+        self.refresh_completions(registry, ctx);
     }
 
     pub fn cancel(&mut self) {
         self.active = false;
         self.buffer.clear();
+        self.cursor = 0;
         self.history_index = None;
+        self.draft_before_history.clear();
+        self.suggestions.clear();
+        self.selected_suggestion = None;
+        self.popup_open = false;
     }
 
-    pub fn push_char(&mut self, c: char) {
-        self.buffer.push(c);
-        self.history_index = None;
+    pub fn close_popup(&mut self) {
+        self.popup_open = false;
+        self.selected_suggestion = None;
     }
 
-    pub fn backspace(&mut self) {
-        self.buffer.pop();
+    pub fn insert_char(
+        &mut self,
+        c: char,
+        registry: &CommandRegistry,
+        ctx: &CompletionContext<'_>,
+    ) {
+        let pos = self.cursor.min(self.buffer.len());
+        self.buffer.insert(pos, c);
+        self.cursor = pos + c.len_utf8();
         self.history_index = None;
+        self.selected_suggestion = None;
+        self.refresh_completions(registry, ctx);
     }
 
-    pub fn submit(&mut self) -> String {
-        let cmd = self.buffer.trim().to_string();
-        if !cmd.is_empty() && self.history.last().map(String::as_str) != Some(&cmd) {
-            self.history.push(cmd.clone());
+    pub fn backspace(&mut self, registry: &CommandRegistry, ctx: &CompletionContext<'_>) {
+        if self.cursor == 0 || self.buffer.is_empty() {
+            return;
         }
-        self.active = false;
-        self.buffer.clear();
+        let mut prev = self.cursor.min(self.buffer.len()) - 1;
+        while prev > 0 && !self.buffer.is_char_boundary(prev) {
+            prev -= 1;
+        }
+        self.buffer.remove(prev);
+        self.cursor = prev;
         self.history_index = None;
-        cmd
+        self.selected_suggestion = None;
+        self.refresh_completions(registry, ctx);
     }
 
-    pub fn history_prev(&mut self) {
+    pub fn delete(&mut self, registry: &CommandRegistry, ctx: &CompletionContext<'_>) {
+        if self.cursor >= self.buffer.len() {
+            return;
+        }
+        self.buffer.remove(self.cursor);
+        self.history_index = None;
+        self.selected_suggestion = None;
+        self.refresh_completions(registry, ctx);
+    }
+
+    pub fn move_left(&mut self, registry: &CommandRegistry, ctx: &CompletionContext<'_>) {
+        if self.cursor == 0 {
+            return;
+        }
+        let mut prev = self.cursor - 1;
+        while prev > 0 && !self.buffer.is_char_boundary(prev) {
+            prev -= 1;
+        }
+        self.cursor = prev;
+        self.selected_suggestion = None;
+        self.refresh_completions(registry, ctx);
+    }
+
+    pub fn move_right(&mut self, registry: &CommandRegistry, ctx: &CompletionContext<'_>) {
+        if self.cursor >= self.buffer.len() {
+            return;
+        }
+        let mut next = self.cursor + 1;
+        while next < self.buffer.len() && !self.buffer.is_char_boundary(next) {
+            next += 1;
+        }
+        self.cursor = next;
+        self.selected_suggestion = None;
+        self.refresh_completions(registry, ctx);
+    }
+
+    pub fn move_home(&mut self, registry: &CommandRegistry, ctx: &CompletionContext<'_>) {
+        self.cursor = 0;
+        self.selected_suggestion = None;
+        self.refresh_completions(registry, ctx);
+    }
+
+    pub fn move_end(&mut self, registry: &CommandRegistry, ctx: &CompletionContext<'_>) {
+        self.cursor = self.buffer.len();
+        self.selected_suggestion = None;
+        self.refresh_completions(registry, ctx);
+    }
+
+    pub fn refresh_completions(&mut self, registry: &CommandRegistry, ctx: &CompletionContext<'_>) {
+        let res = CompletionEngine::complete(&self.buffer, self.cursor, registry, ctx);
+        self.suggestions = res.items;
+        self.replace_range = (res.replace_start, res.replace_end);
+        self.popup_open = !self.suggestions.is_empty();
+        if let Some(sel) = self.selected_suggestion
+            && sel >= self.suggestions.len()
+        {
+            self.selected_suggestion = None;
+        }
+    }
+
+    pub fn next_suggestion(&mut self) {
+        if self.suggestions.is_empty() {
+            return;
+        }
+        self.popup_open = true;
+        self.selected_suggestion = Some(match self.selected_suggestion {
+            None => 0,
+            Some(i) => (i + 1) % self.suggestions.len(),
+        });
+    }
+
+    pub fn prev_suggestion(&mut self) {
+        if self.suggestions.is_empty() {
+            return;
+        }
+        self.popup_open = true;
+        self.selected_suggestion = Some(match self.selected_suggestion {
+            None => self.suggestions.len() - 1,
+            Some(0) => self.suggestions.len() - 1,
+            Some(i) => i - 1,
+        });
+    }
+
+    /// Accepts the currently highlighted completion item into `buffer`, returning `true`
+    /// if the buffer changed (meaning the user accepted a suggestion rather than submitting).
+    pub fn accept_selected(
+        &mut self,
+        registry: &CommandRegistry,
+        ctx: &CompletionContext<'_>,
+    ) -> bool {
+        let Some(sel) = self.selected_suggestion else {
+            return false;
+        };
+        let Some(item) = self.suggestions.get(sel).cloned() else {
+            return false;
+        };
+
+        let (start, end) = self.replace_range;
+        let current_slice = self.buffer.get(start..end).unwrap_or("");
+        let append_space = item.expected_arg.is_some()
+            && !self.buffer[end..].starts_with(' ');
+
+        let mut replacement = item.insert_text.clone();
+        if append_space {
+            replacement.push(' ');
+        }
+
+        if current_slice == item.insert_text && !append_space {
+            return false;
+        }
+
+        self.buffer.replace_range(start..end, &replacement);
+        self.cursor = start + replacement.len();
+        self.selected_suggestion = None;
+        self.refresh_completions(registry, ctx);
+        true
+    }
+
+    pub fn handle_up(&mut self, registry: &CommandRegistry, ctx: &CompletionContext<'_>) {
+        if self.popup_open && !self.suggestions.is_empty() && !self.buffer.is_empty() {
+            match self.selected_suggestion {
+                Some(0) => {
+                    self.selected_suggestion = None;
+                }
+                Some(i) => {
+                    self.selected_suggestion = Some(i - 1);
+                }
+                None => {
+                    self.selected_suggestion = Some(self.suggestions.len() - 1);
+                }
+            }
+            return;
+        }
+        self.history_prev(registry, ctx);
+    }
+
+    pub fn handle_down(&mut self, registry: &CommandRegistry, ctx: &CompletionContext<'_>) {
+        if self.popup_open && !self.suggestions.is_empty() && !self.buffer.is_empty() {
+            match self.selected_suggestion {
+                Some(i) if i + 1 >= self.suggestions.len() => {
+                    self.selected_suggestion = None;
+                }
+                Some(i) => {
+                    self.selected_suggestion = Some(i + 1);
+                }
+                None => {
+                    self.selected_suggestion = Some(0);
+                }
+            }
+            return;
+        }
+        self.history_next(registry, ctx);
+    }
+
+    pub fn history_prev(&mut self, registry: &CommandRegistry, ctx: &CompletionContext<'_>) {
         if self.history.is_empty() {
             return;
+        }
+        if self.history_index.is_none() {
+            self.draft_before_history = self.buffer.clone();
         }
         let next_idx = match self.history_index {
             None => self.history.len() - 1,
@@ -87,215 +246,33 @@ impl CommandLineState {
         };
         self.history_index = Some(next_idx);
         self.buffer = self.history[next_idx].clone();
+        self.cursor = self.buffer.len();
+        self.selected_suggestion = None;
+        self.refresh_completions(registry, ctx);
     }
 
-    pub fn history_next(&mut self) {
+    pub fn history_next(&mut self, registry: &CommandRegistry, ctx: &CompletionContext<'_>) {
         let Some(idx) = self.history_index else {
             return;
         };
         if idx + 1 >= self.history.len() {
             self.history_index = None;
-            self.buffer.clear();
+            self.buffer = self.draft_before_history.clone();
         } else {
             self.history_index = Some(idx + 1);
             self.buffer = self.history[idx + 1].clone();
         }
+        self.cursor = self.buffer.len();
+        self.selected_suggestion = None;
+        self.refresh_completions(registry, ctx);
     }
 
-    pub fn autocomplete(&mut self, theme_names: &[String], anim_names: &[String]) {
-        let trimmed = self.buffer.trim_start();
-        let commands = [
-            "colorscheme",
-            "reload",
-            "animation",
-            "window",
-            "layout",
-            "effect",
-            "help",
-            "q",
-        ];
-
-        if !trimmed.contains(' ') {
-            if let Some(found) = commands.iter().find(|c| c.starts_with(trimmed)) {
-                self.buffer = format!("{found} ");
-            }
-            return;
+    pub fn submit(&mut self) -> String {
+        let cmd = self.buffer.trim().to_string();
+        if !cmd.is_empty() && self.history.last().map(String::as_str) != Some(&cmd) {
+            self.history.push(cmd.clone());
         }
-
-        let mut parts = trimmed.splitn(2, char::is_whitespace);
-        let cmd = parts.next().unwrap_or("");
-        let arg = parts.next().unwrap_or("").trim_start();
-
-        let candidates: Vec<String> = match cmd {
-            "colorscheme" | "theme" => theme_names.to_vec(),
-            "animation" | "anim" => anim_names.to_vec(),
-            "effect" => ["matrix", "water", "particles", "scanlines", "none"]
-                .iter()
-                .map(|s| (*s).to_string())
-                .collect(),
-            "layout" => ["responsive", "free", "compact", "minimal", "dashboard"]
-                .iter()
-                .map(|s| (*s).to_string())
-                .collect(),
-            "window" => [
-                "center",
-                "anchor",
-                "border",
-                "bg",
-                "drag",
-                "resize",
-                "padding",
-                "toggle",
-                "reset",
-            ]
-            .iter()
-            .map(|s| (*s).to_string())
-            .collect(),
-            _ => Vec::new(),
-        };
-
-        if let Some(found) = candidates
-            .into_iter()
-            .find(|c| c.to_ascii_lowercase().starts_with(&arg.to_ascii_lowercase()))
-        {
-            self.buffer = format!("{cmd} {found}");
-        }
-    }
-}
-
-pub fn parse_command(raw: &str) -> Result<ParsedCommand, String> {
-    let trimmed = raw.trim().trim_start_matches(':').trim();
-    if trimmed.is_empty() {
-        return Err("Comando vazio".to_string());
-    }
-
-    let mut tokens = trimmed.split_whitespace();
-    let head = tokens.next().unwrap_or("").to_ascii_lowercase();
-    let rest: Vec<&str> = tokens.collect();
-
-    match head.as_str() {
-        "q" | "quit" | "exit" => Ok(ParsedCommand::Quit),
-        "h" | "help" => Ok(ParsedCommand::Help),
-        "r" | "reload" => Ok(ParsedCommand::Reload),
-        "colorscheme" | "theme" => Ok(ParsedCommand::Colorscheme(
-            rest.first().map(|s| (*s).to_string()),
-        )),
-        "animation" | "anim" => Ok(ParsedCommand::Animation(
-            rest.first().map(|s| (*s).to_string()),
-        )),
-        "effect" | "fx" => {
-            let Some(arg) = rest.first() else {
-                return Ok(ParsedCommand::Effect(None));
-            };
-            let kind = match arg.to_ascii_lowercase().as_str() {
-                "matrix" => EffectKind::Matrix,
-                "water" => EffectKind::Water,
-                "particles" => EffectKind::Particles,
-                "scanlines" => EffectKind::Scanlines,
-                "none" | "off" => EffectKind::None,
-                other => return Err(format!("Efeito desconhecido: '{other}'")),
-            };
-            Ok(ParsedCommand::Effect(Some(kind)))
-        }
-        "layout" => {
-            let Some(arg) = rest.first() else {
-                return Ok(ParsedCommand::Layout(None));
-            };
-            let sel = match arg.to_ascii_lowercase().as_str() {
-                "responsive" => LayoutSelection::Mode(LayoutMode::Responsive),
-                "free" => LayoutSelection::Mode(LayoutMode::Free),
-                "compact" => LayoutSelection::View(ViewMode::Compact),
-                "minimal" => LayoutSelection::View(ViewMode::Minimal),
-                "dashboard" => LayoutSelection::View(ViewMode::Dashboard),
-                other => return Err(format!("Layout desconhecido: '{other}'")),
-            };
-            Ok(ParsedCommand::Layout(Some(sel)))
-        }
-        "window" | "win" => parse_window_command(&rest),
-        other => Err(format!("Comando desconhecido: ':{other}' (use :help)")),
-    }
-}
-
-fn parse_window_command(args: &[&str]) -> Result<ParsedCommand, String> {
-    let Some(sub) = args.first().map(|s| s.to_ascii_lowercase()) else {
-        return Ok(ParsedCommand::Window(WindowCommand::OpenInspector));
-    };
-
-    let cmd = match sub.as_str() {
-        "center" => WindowCommand::Center,
-        "reset" => WindowCommand::Reset,
-        "show" => WindowCommand::SetVisible(Some(true)),
-        "hide" => WindowCommand::SetVisible(Some(false)),
-        "toggle" => WindowCommand::SetVisible(None),
-        "drag" => WindowCommand::SetDraggable(parse_toggle_arg(args.get(1).copied())?),
-        "resize" => WindowCommand::SetResizable(parse_toggle_arg(args.get(1).copied())?),
-        "padding" => {
-            let val_str = args
-                .get(1)
-                .ok_or_else(|| "Uso: :window padding <0..10>".to_string())?;
-            let val: u16 = val_str
-                .parse()
-                .map_err(|_| format!("Padding inválido: '{val_str}'"))?;
-            WindowCommand::SetPadding(val.min(10))
-        }
-        "anchor" => {
-            let a_str = args
-                .get(1)
-                .ok_or_else(|| "Uso: :window anchor <top-left|center|bottom-right|...>".to_string())?;
-            WindowCommand::SetAnchor(parse_anchor(a_str)?)
-        }
-        "border" => {
-            let Some(arg) = args.get(1).map(|s| s.to_ascii_lowercase()) else {
-                return Ok(ParsedCommand::Window(WindowCommand::ToggleBorder(None)));
-            };
-            match arg.as_str() {
-                "on" | "true" => WindowCommand::ToggleBorder(Some(true)),
-                "off" | "false" => WindowCommand::ToggleBorder(Some(false)),
-                "rounded" => WindowCommand::SetBorderStyle(BorderStyle::Rounded),
-                "solid" | "plain" => WindowCommand::SetBorderStyle(BorderStyle::Plain),
-                "double" => WindowCommand::SetBorderStyle(BorderStyle::Double),
-                "thick" => WindowCommand::SetBorderStyle(BorderStyle::Thick),
-                other => return Err(format!("Estilo de borda inválido: '{other}'")),
-            }
-        }
-        "bg" | "background" => {
-            let Some(arg) = args.get(1).map(|s| s.to_ascii_lowercase()) else {
-                return Err("Uso: :window bg <solid|transparent>".to_string());
-            };
-            match arg.as_str() {
-                "solid" => WindowCommand::SetBackground(WindowBackgroundMode::Solid),
-                "transparent" | "trans" => {
-                    WindowCommand::SetBackground(WindowBackgroundMode::Transparent)
-                }
-                other => return Err(format!("Modo de fundo inválido: '{other}'")),
-            }
-        }
-        other => return Err(format!("Subcomando :window inválido: '{other}'")),
-    };
-
-    Ok(ParsedCommand::Window(cmd))
-}
-
-fn parse_toggle_arg(arg: Option<&str>) -> Result<Option<bool>, String> {
-    match arg.map(|s| s.to_ascii_lowercase()).as_deref() {
-        None | Some("toggle") => Ok(None),
-        Some("on") | Some("true") => Ok(Some(true)),
-        Some("off") | Some("false") => Ok(Some(false)),
-        Some(other) => Err(format!("Valor inválido '{other}' (use on|off)")),
-    }
-}
-
-fn parse_anchor(raw: &str) -> Result<Anchor, String> {
-    match raw.trim().to_ascii_lowercase().as_str() {
-        "top-left" => Ok(Anchor::TopLeft),
-        "top-center" => Ok(Anchor::TopCenter),
-        "top-right" => Ok(Anchor::TopRight),
-        "center-left" => Ok(Anchor::CenterLeft),
-        "center" => Ok(Anchor::Center),
-        "center-right" => Ok(Anchor::CenterRight),
-        "bottom-left" => Ok(Anchor::BottomLeft),
-        "bottom-center" => Ok(Anchor::BottomCenter),
-        "bottom-right" => Ok(Anchor::BottomRight),
-        other => Err(format!("Âncora inválida: '{other}'")),
+        self.cancel();
+        cmd
     }
 }

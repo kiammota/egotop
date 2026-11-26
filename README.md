@@ -1,41 +1,83 @@
 # egotop
 
-**egotop** é um ambiente visual interativo de terminal (*terminal welcome dashboard*) escrito em Rust para Linux, Hyprland, Wayland e X11.
+**egotop** is an interactive terminal welcome dashboard written in Rust for Linux, Hyprland, Wayland, and X11.
 
-Execute apenas `egotop` — sem argumentos obrigatórios — para iniciar a janela principal com coleta real do sistema, animações de entrada, efeitos de fundo, personalização visual e linha de comandos inspirada no Neovim.
-
----
-
-## Arquitetura
-
-- **Window Engine** ([`src/window/mod.rs`](src/window/mod.rs)): gerenciamento independente da janela principal (e preparado para múltiplas janelas via `z_index`), com posição absoluta ou relativa, âncoras (`top-left`, `top-center`, `top-right`, `center`, `bottom-left`, `bottom-center`, `bottom-right`), movimentação por mouse/teclado (`draggable`), redimensionamento (`resizable`), bordas configuráveis (`rounded`, `solid`, `double`, `thick`), padding, visibilidade e fundo sólido ou transparente em nível de célula do terminal (`Color::Reset`).
-- **Command Engine** ([`src/command/mod.rs`](src/command/mod.rs)): linha de comandos estilo Neovim oculta até pressionar `:`, com histórico (`↑`/`↓`) e autocompletar (`Tab`).
-- **Animation Engine** ([`src/animation/transition.rs`](src/animation/transition.rs)): animações nativas de entrada/transição (`crt_power_on`, `curtains`, `fade`, `slide`, `matrix_boot`, `none`) além de efeitos contínuos de plano de fundo (`matrix`, `water`, `particles`, `scanlines`, `none`) e suporte a animações declarativas da comunidade em TOML (`schema_version = 1`).
-- **Configuration & Theme Loaders** ([`src/config/`](src/config/)): tudo organizado sob `~/.config/egotop/` com carregamento em runtime (sem leitura de arquivos por frame).
-- **System Collector** ([`src/system/`](src/system/)): coleta nativa via `/proc`, `/sys`, `procfs` e `libc`.
+Run `egotop` with zero required arguments to launch a customizable terminal environment featuring live Linux system metrics, startup and background animations, FIGlet ASCII typography, a Neovim-style command line with contextual autocomplete, runtime border customization, and an interactive cursor startup mode.
 
 ---
 
-## Estrutura em `~/.config/egotop/`
+## Features
+
+- **English-first interface**: All panel titles, notifications, commands, autocomplete descriptions, and error messages are presented in English (while preserving user-supplied custom greetings and quotes).
+- **Command-line & Contextual Autocomplete (`:`)**:
+  - Hidden until `:` is pressed.
+  - Real-time popup powered by the central `CommandRegistry` and `CompletionEngine` (fetching themes, animations, layouts, and border properties dynamically from runtime managers with zero per-keystroke disk reads).
+  - Full cursor editing (`Left`, `Right`, `Home`, `End`, `Backspace`, `Delete`), navigation (`Tab`, `Shift+Tab`, `ArrowUp`, `ArrowDown`, `Enter`, `Esc`), and command history.
+- **Runtime Border Customization**:
+  - Centralized `BorderChars` system governing every window, panel, header, and modal.
+  - Customize individual characters live (`:set border.horizontal ━`, `:set border.top_left ╔`) or presets (`:set border.style rounded|plain|double|thick`) with Unicode display-width validation (`width == 1`).
+  - Changes remain temporary in runtime until explicitly persisted with `:save`.
+- **Cursor Startup Mode (`--startup cursor`)**:
+  - Displays only a blinking cursor on startup and reveals the dashboard via the Animation Engine (`cursor-expand`) originating from the exact mouse click or cursor coordinates.
+- **Window Engine**:
+  - Independent window state (`~/.config/egotop/window.toml`) with relative anchors, absolute positioning, mouse drag (top border), bottom-right resize handle (`◢`), configurable borders, padding, z-index, and solid or terminal-cell transparent (`Color::Reset`) backgrounds.
+- **Native Linux System Metrics**:
+  - Reads OS release, kernel, architecture, shell, terminal, DE/WM, CPU delta/temperature, RAM/Swap, mounted disks, GPU/VRAM, load average, processes, threads, and uptime directly from `/proc`, `/sys`, `procfs`, and `libc`.
+
+---
+
+## Configuration (`~/.config/egotop/`)
 
 ```text
 ~/.config/egotop/
-├── egotop.toml         # Configuração geral, tema ativo, animação inicial, layout e widgets
-├── window.toml         # Posição, âncora, tamanho, bordas, fundo, padding e flags da janela
-├── themes/             # Temas compartilháveis (*.toml)
-├── animations/         # Animações declarativas da comunidade (*.toml, schema_version = 1)
-├── fonts/              # Fontes FIGlet customizadas (*.flf)
-└── layouts/            # Presets de layout
+├── egotop.toml         # General settings, startup mode, theme, borders, layout, and widgets
+├── window.toml         # Main window geometry, anchor, border, background, and behavior
+├── themes/             # Shareable colorschemes (*.toml)
+├── animations/         # Community declarative animations (*.toml, schema_version = 1)
+├── fonts/              # Custom FIGlet fonts (*.flf)
+└── layouts/            # Custom layout presets (*.toml)
 ```
 
-### Formato declarativo de animações da comunidade (`~/.config/egotop/animations/*.toml`)
+### Custom Borders (`[theme.borders]`)
+
+```toml
+[theme.borders]
+top_left = "╭"
+top_right = "╮"
+bottom_left = "╰"
+bottom_right = "╯"
+horizontal = "─"
+vertical = "│"
+left_separator = "├"
+right_separator = "┤"
+top_separator = "┬"
+bottom_separator = "┴"
+intersection = "┼"
+```
+
+### Cursor Startup Mode (`[startup]`)
+
+```toml
+[startup]
+mode = "cursor"             # "normal" | "cursor"
+animation = "cursor-expand" # Any native or community animation
+trigger = "mouse"           # "mouse" | "key" | "any"
+
+[startup.cursor]
+character = "▌"
+blink = true
+blink_interval = 500
+color = "#39FF88"
+```
+
+### Community Declarative Animations (`~/.config/egotop/animations/*.toml`)
 
 ```toml
 schema_version = 1
 name = "cyber_boot"
 display_name = "Cyber Boot (Community)"
 author = "egotop"
-description = "Flash inicial CRT seguido de embaralhamento Matrix."
+description = "Initial CRT flash followed by Matrix scramble and smooth reveal."
 
 [[steps]]
 effect = "crt_line"        # crt_line | curtains | fade | slide | matrix_scramble | flash | pause
@@ -43,59 +85,43 @@ duration_ms = 320
 easing = "ease_out"        # linear | ease_in | ease_out | ease_in_out
 target = "window"
 color = "#39FF88"
-
-[[steps]]
-effect = "matrix_scramble"
-duration_ms = 550
-easing = "ease_in_out"
-target = "content"
-chars = "01ｱｶｻﾀﾅﾊ#$"
 ```
 
 ---
 
-## Interação: Teclado, Mouse e Linha de Comandos
+## Commands (`:`)
 
-### Mouse & Interação Visual
-
-- **Arrastar a borda superior** da janela move a janela (quando `draggable = true`).
-- **Arrastar o canto inferior direito (`◢`)** redimensiona a janela (quando `resizable = true`).
-- **Clicar em `[⚙]`** (ou pressionar `F2` / `g`) abre o painel visual interativo com abas para **Temas**, **Animações** (com pré-visualização ao vivo), **Janela** e **Layout**.
-- **Clicar em `[?]`** (ou pressionar `h` / `?`) abre a ajuda.
-
-### Comandos (`:` estilo Neovim)
-
-Pressione `:` para abrir o prompt, `Tab` para autocompletar, `Enter` para executar e `Esc` para cancelar:
-
-- `:colorscheme <nome>` (ou `:colorscheme` para abrir o seletor visual de temas)
-- `:animation [nome]` (seleciona ou abre a interface interativa de pré-visualização/seleção de animações)
-- `:window [center|anchor <pos>|border <on|off|rounded|solid|double|thick>|bg <solid|transparent>|drag <on|off>|resize <on|off>|padding <n>|reset]`
-- `:layout [responsive|free|compact|minimal|dashboard]`
-- `:effect [matrix|water|particles|scanlines|none]`
-- `:reload` — recarrega configurações, temas, janela e animações de `~/.config/egotop/`
-- `:help` — abre a ajuda
-- `:q` — sai e restaura o terminal
-
-### Atalhos Diretos
-
-| Tecla | Ação |
-| --- | --- |
-| `:` | Abrir linha de comandos |
-| `F2` / `g` | Abrir painel visual de personalização |
-| `Setas` / `Shift+Setas` | Mover / redimensionar a janela |
-| `r` / `p` / `c` | Atualizar dados / pausar animações / recarregar TOML |
-| `m` / `e` / `1-3` | Modo de visualização / efeito de fundo / páginas |
-| `q` / `Esc` / `Ctrl+C` | Fechar modal ou sair |
+- `:colorscheme <name>` — Apply a colorscheme from built-ins or `~/.config/egotop/themes/`
+- `:set border.<prop> <char>` — Set individual border character (`horizontal`, `vertical`, `top_left`, `top_right`, `bottom_left`, `bottom_right`, etc.)
+- `:set border.style <style>` — Apply border preset (`rounded`, `plain`, `double`, `thick`)
+- `:set background <dark|light>` — Switch background brightness mode in runtime
+- `:animation [play|set] <name>` — Preview or set the startup animation
+- `:layout [load|mode] <name>` — Switch layout mode or load a preset
+- `:window [subcommand]` — Configure anchor, borders, background, drag, resize, padding, or reset
+- `:effect [name]` — Switch background ambient effect (`matrix`, `water`, `particles`, `scanlines`, `none`)
+- `:save [all|config|window|theme]` — Persist runtime changes to `~/.config/egotop/`
+- `:reload` — Reload configuration, themes, animations, and window state from disk
+- `:help` / `:q` — Open help or quit
 
 ---
 
-## Compilação, Testes e Integração
+## Build, CLI, and Shell / Hyprland Integration
 
 ```bash
 cd ~/projects/egotop
 cargo test
 cargo build --release
 cargo install --path .
+```
+
+CLI options:
+
+```bash
+egotop                    # Launch with ~/.config/egotop/egotop.toml
+egotop --startup cursor   # Launch in cursor startup mode (overrides TOML)
+egotop --startup normal   # Launch in normal startup mode
+egotop --effect water     # Override background effect
+egotop --check-config     # Validate configuration and exit
 ```
 
 ### Zsh (`~/.zshrc`) / Bash (`~/.bashrc`)

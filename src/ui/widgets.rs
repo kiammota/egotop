@@ -1,4 +1,4 @@
-use crate::config::{Align, BorderStyle, Config, GraphStyle, ViewMode, WidgetConfig, WidgetId};
+use crate::config::{Align, Config, GraphStyle, ViewMode, WidgetConfig, WidgetId};
 use crate::system::{SystemSnapshot, format_bytes, uptime::format_uptime};
 use crate::ui::layout::ComputedLayout;
 use crate::ui::theme::{Theme, parse_color};
@@ -9,7 +9,7 @@ use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph, Sparkline, Wrap};
+use ratatui::widgets::{Block, Borders, Clear, Paragraph, Sparkline, Wrap};
 use unicode_width::UnicodeWidthStr;
 
 pub struct RenderContext<'a> {
@@ -84,12 +84,6 @@ pub fn render_window_frame(frame: &mut Frame, win: &WindowState, ctx: &RenderCon
 
     let win_style = Style::default().fg(ctx.theme.text).bg(bg);
     if win.config.border.enabled {
-        let border_type = match win.config.border.style {
-            BorderStyle::Rounded => BorderType::Rounded,
-            BorderStyle::Plain => BorderType::Plain,
-            BorderStyle::Double => BorderType::Double,
-            BorderStyle::Thick => BorderType::Thick,
-        };
         let border_color = win
             .config
             .border
@@ -105,7 +99,7 @@ pub fn render_window_frame(frame: &mut Frame, win: &WindowState, ctx: &RenderCon
             .unwrap_or(&ctx.config.general.name);
         let block = Block::default()
             .borders(Borders::ALL)
-            .border_type(border_type)
+            .border_set(ctx.theme.borders.as_ratatui_set())
             .border_style(Style::default().fg(border_color).bg(bg))
             .style(win_style)
             .title(Span::styled(
@@ -238,7 +232,7 @@ fn render_header(frame: &mut Frame, area: Rect, ctx: &RenderContext) {
     if area.height >= 3 {
         let block = Block::default()
             .borders(Borders::ALL)
-            .border_type(ctx.theme.border_type)
+            .border_set(ctx.theme.borders.as_ratatui_set())
             .border_style(ctx.border_style(None))
             .style(ctx.panel_style());
         let inner = block.inner(area);
@@ -307,7 +301,7 @@ fn panel_block<'a>(widget: &'a WidgetConfig, ctx: &'a RenderContext) -> (Block<'
     let block = if show_border {
         Block::default()
             .borders(Borders::ALL)
-            .border_type(ctx.theme.border_type)
+            .border_set(ctx.theme.borders.as_ratatui_set())
             .border_style(ctx.border_style(widget.border_color.as_deref()))
             .style(ctx.panel_style())
             .title(Span::styled(
@@ -543,7 +537,7 @@ fn render_system_widget(frame: &mut Frame, area: Rect, widget: &WidgetConfig, ct
         ),
         (
             "user",
-            format!("{} Usuário", icons.user()),
+            format!("{} User", icons.user()),
             ctx.config
                 .general
                 .user_override
@@ -569,7 +563,7 @@ fn render_system_widget(frame: &mut Frame, area: Rect, widget: &WidgetConfig, ct
         ),
         (
             "session",
-            format!("{} Sessão", icons.wm()),
+            format!("{} Session", icons.wm()),
             sess.session_type.clone(),
         ),
         (
@@ -624,21 +618,21 @@ fn render_hardware_widget(
 
     let cpu_usage_line = match (hw.cpu.usage_percent, hw.cpu.temp_celsius) {
         (Some(pct), Some(temp)) => Some(bar_line(
-            "   Uso CPU",
+            "   CPU Usage",
             pct,
             &format!("{pct:.1}% ({temp:.0}°C)"),
             bar_width,
             ctx.theme,
         )),
         (Some(pct), None) => Some(bar_line(
-            "   Uso CPU",
+            "   CPU Usage",
             pct,
             &format!("{pct:.1}% ({} cores)", hw.cpu.cores),
             bar_width,
             ctx.theme,
         )),
-        (None, Some(temp)) => Some(kv_line("   Temp CPU", &format!("{temp:.1}°C"), ctx.theme)),
-        (None, None) if !hide => Some(kv_line("   Uso CPU", "N/A", ctx.theme)),
+        (None, Some(temp)) => Some(kv_line("   CPU Temp", &format!("{temp:.1}°C"), ctx.theme)),
+        (None, None) if !hide => Some(kv_line("   CPU Usage", "N/A", ctx.theme)),
         (None, None) => None,
     };
     if let Some(line) = cpu_usage_line {
@@ -694,7 +688,7 @@ fn render_hardware_widget(
             format_bytes(disk.total_bytes)
         );
         lines.push(bar_line(
-            &format!("{} Disco ({})", icons.disk(), disk.mount_point),
+            &format!("{} Disk ({})", icons.disk(), disk.mount_point),
             pct,
             &info,
             bar_width,
@@ -702,7 +696,7 @@ fn render_hardware_widget(
         ));
     } else if !hide {
         lines.push(kv_line(
-            &format!("{} Disco", icons.disk()),
+            &format!("{} Disk", icons.disk()),
             "N/A",
             ctx.theme,
         ));
@@ -756,7 +750,7 @@ fn render_activity_widget(
         .map(|p| p.to_string())
         .unwrap_or_else(|| "N/A".to_string());
     let threads_str = match (act.runnable_threads, act.thread_count) {
-        (Some(run), Some(tot)) => format!("{tot} ({run} ativos)"),
+        (Some(run), Some(tot)) => format!("{tot} ({run} active)"),
         (None, Some(tot)) => tot.to_string(),
         _ => "N/A".to_string(),
     };
@@ -767,7 +761,7 @@ fn render_activity_widget(
             &load_str,
             ctx.theme,
         ),
-        kv_line("   Processos", &procs_str, ctx.theme),
+        kv_line("   Processes", &procs_str, ctx.theme),
         kv_line("   Threads", &threads_str, ctx.theme),
     ];
 
@@ -785,7 +779,7 @@ fn render_activity_widget(
         frame.render_widget(Paragraph::new(info_lines), chunks[0]);
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(
-                "Histórico CPU % / RAM %:",
+                "CPU % / RAM % History:",
                 Style::default().fg(ctx.theme.muted),
             ))),
             chunks[1],
@@ -863,7 +857,7 @@ fn render_session_widget(
     }
 
     lines.push(kv_line(
-        "   Horário",
+        "   Time",
         &now.format(&ctx.config.general.time_format).to_string(),
         ctx.theme,
     ));
@@ -874,7 +868,7 @@ fn render_session_widget(
     }
 
     if sess.is_hyprland {
-        lines.push(kv_line("   Compositor", "Hyprland ativo", ctx.theme));
+        lines.push(kv_line("   Compositor", "Hyprland active", ctx.theme));
     }
 
     frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), inner);

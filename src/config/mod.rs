@@ -9,13 +9,14 @@ pub use animation_loader::{
     EasingKind, StepDirection, StepTarget, load_community_animations,
 };
 pub use loader::{
-    ConfigLoadResult, default_config_path, load_from_path, load_or_create,
+    ConfigLoadResult, default_config_path, load_from_path, load_layout_names, load_or_create,
     load_or_create_window_config, save_config_to_path, save_window_config,
 };
 pub use schema::{
     Align, Anchor, BackgroundConfig, BorderStyle, Config, ConfigError, EffectKind, GeneralConfig,
     GraphStyle, HeaderConfig, LayoutConfig, LayoutMode, MatrixCharset, MatrixConfig,
-    ParticlesConfig, RegionConfig, RegionUnit, ScanlinesConfig, SizeSpec, ThemeConfig,
-    TypographyConfig, ViewMode, WaterConfig, WidgetConfig, WidgetId,
+    ParticlesConfig, RegionConfig, RegionUnit, ScanlinesConfig, SizeSpec, StartupConfig,
+    StartupCursorConfig, StartupMode, StartupTrigger, ThemeConfig, TypographyConfig, ViewMode,
+    WaterConfig, WidgetConfig, WidgetId,
 };
 pub use theme_loader::{ThemeEntry, load_all_themes};

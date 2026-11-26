@@ -1,14 +1,19 @@
 use crate::animation::{AnimationCatalog, BackgroundEffect, TransitionPlayer, create_effect};
-use crate::command::{CommandLineState, LayoutSelection, ParsedCommand, WindowCommand, parse_command};
+use crate::command::{
+    AnimationAction, CommandLineState, CommandRegistry, CompletionContext, LayoutSelection,
+    ParsedCommand, SaveTarget, WindowCommand, parse_command,
+};
 use crate::config::{
-    Config, EffectKind, ThemeEntry, ViewMode, load_all_themes, load_from_path,
-    load_or_create_window_config, save_config_to_path, save_window_config,
+    Config, EffectKind, StartupMode, StartupTrigger, ThemeEntry, ViewMode, load_all_themes,
+    load_from_path, load_layout_names, load_or_create_window_config, save_config_to_path,
+    save_window_config,
 };
 use crate::system::{SystemCollector, SystemSnapshot};
 use crate::terminal::TerminalGuard;
 use crate::terminal::input::{InputEvent, poll_event};
-use crate::terminal::renderer::draw_frame;
+use crate::terminal::renderer::{CursorStartupState, draw_frame};
 use crate::ui::RevealState;
+use crate::ui::borders::parse_border_style;
 use crate::ui::customizer::{
     CustomizerState, CustomizerTab, cycle_anchor, cycle_border_style, cycle_layout_mode,
     layout_items_summary, toggle_widget_enabled, window_items_summary,
@@ -31,7 +36,10 @@ pub struct App {
     theme_list: Vec<ThemeEntry>,
     theme: Theme,
     animations: AnimationCatalog,
+    layout_names: Vec<String>,
     transition: TransitionPlayer,
+    startup_cursor: CursorStartupState,
+    registry: CommandRegistry,
     collector: SystemCollector,
     snapshot: SystemSnapshot,
     effect: Box<dyn BackgroundEffect>,
@@ -64,11 +72,18 @@ impl App {
         windows.resolve_all(Rect::new(0, 0, width, height));
 
         let animations = AnimationCatalog::load();
-        let transition = TransitionPlayer::new(
-            &config.general.startup_animation,
-            &animations,
-            config.general.startup_duration_ms,
-        );
+        let layout_names = load_layout_names();
+
+        let is_cursor_startup = config.startup.mode == StartupMode::Cursor;
+        let transition = if is_cursor_startup {
+            TransitionPlayer::new("none", &animations, 0)
+        } else {
+            TransitionPlayer::new(
+                &config.general.startup_animation,
+                &animations,
+                config.general.startup_duration_ms,
+            )
+        };
 
         let mut collector = SystemCollector::new();
         let snapshot = collector.collect(width, height);
@@ -85,11 +100,18 @@ impl App {
             theme_list,
             theme,
             animations,
+            layout_names,
             transition,
+            startup_cursor: CursorStartupState::new(is_cursor_startup),
+            registry: CommandRegistry::new(),
             collector,
             snapshot,
             effect,
-            reveal: RevealState::new(0.65),
+            reveal: if is_cursor_startup {
+                RevealState::complete()
+            } else {
+                RevealState::new(0.65)
+            },
             command_line: CommandLineState::default(),
             customizer: CustomizerState::default(),
             active_page,
@@ -123,7 +145,9 @@ impl App {
             );
             let sys_interval = Duration::from_millis(self.config.general.refresh_rate_ms.max(100));
 
-            if now.duration_since(last_sys_refresh) >= sys_interval {
+            if !self.startup_cursor.pending
+                && now.duration_since(last_sys_refresh) >= sys_interval
+            {
                 let sz = guard.terminal.size()?;
                 self.snapshot = self.collector.collect(sz.width, sz.height);
                 last_sys_refresh = now;
@@ -136,10 +160,17 @@ impl App {
             }
 
             let dt = now.duration_since(last_frame).as_secs_f32().clamp(0.001, 0.25);
+            let dt_ms = now.duration_since(last_frame).as_millis() as u64;
             last_frame = now;
             self.fps = (self.fps * 0.85) + ((1.0 / dt) * 0.15);
 
-            if !self.paused {
+            if self.startup_cursor.pending {
+                self.startup_cursor.update_blink(
+                    dt_ms,
+                    self.config.startup.cursor.blink,
+                    self.config.startup.cursor.blink_interval,
+                );
+            } else if !self.paused {
                 self.effect.update(dt, &self.config.background);
                 self.transition.update(dt);
                 self.reveal.advance(dt);
@@ -168,6 +199,7 @@ impl App {
             let windows_ref = &mut self.windows;
             let customizer_ref = &mut self.customizer;
             let cmd_ref = &self.command_line;
+            let startup_ref = &self.startup_cursor;
             let themes_ref = &self.theme_list;
             let anim_ref = &self.animations;
 
@@ -180,6 +212,7 @@ impl App {
                     windows_ref,
                     customizer_ref,
                     cmd_ref,
+                    startup_ref,
                     themes_ref,
                     anim_ref,
                     &ctx,
@@ -196,6 +229,27 @@ impl App {
         Ok(())
     }
 
+    fn completion_ctx(&self) -> CompletionContext<'_> {
+        CompletionContext {
+            themes: &self.theme_list,
+            animations: &self.animations,
+            layouts: &self.layout_names,
+        }
+    }
+
+    fn trigger_cursor_startup(&mut self, origin: (u16, u16), viewport: Rect) {
+        self.startup_cursor.pending = false;
+        self.windows.resolve_all(viewport);
+        self.snapshot = self.collector.collect(viewport.width, viewport.height);
+        self.transition.restart_from_origin(
+            &self.config.startup.animation,
+            &self.animations,
+            self.config.general.startup_duration_ms,
+            origin,
+        );
+        self.reveal = RevealState::new(0.65);
+    }
+
     fn handle_input_event(
         &mut self,
         ev: InputEvent,
@@ -204,6 +258,47 @@ impl App {
     ) -> Result<()> {
         let sz = guard.terminal.size()?;
         let viewport = Rect::new(0, 0, sz.width, sz.height);
+
+        if self.startup_cursor.pending {
+            match ev {
+                InputEvent::Resize(w, h) => {
+                    let vp = Rect::new(0, 0, w, h);
+                    self.windows.resolve_all(vp);
+                    self.effect.resize(w, h, &self.config.background);
+                }
+                InputEvent::Mouse(mouse) => {
+                    match mouse.kind {
+                        MouseEventKind::Moved | MouseEventKind::Drag(_) => {
+                            self.startup_cursor.pos = Some((mouse.column, mouse.row));
+                        }
+                        MouseEventKind::Down(MouseButton::Left)
+                            if matches!(
+                                self.config.startup.trigger,
+                                StartupTrigger::Mouse | StartupTrigger::Any
+                            ) =>
+                        {
+                            self.startup_cursor.pos = Some((mouse.column, mouse.row));
+                            self.trigger_cursor_startup((mouse.column, mouse.row), viewport);
+                        }
+                        _ => {}
+                    }
+                }
+                InputEvent::Key(key) => {
+                    if key.modifiers.contains(KeyModifiers::CONTROL)
+                        && key.code == KeyCode::Char('c')
+                        || matches!(key.code, KeyCode::Char('q') | KeyCode::Char('Q') | KeyCode::Esc)
+                    {
+                        self.should_quit = true;
+                        return Ok(());
+                    }
+                    if matches!(key.code, KeyCode::Enter | KeyCode::Char(' ')) {
+                        let origin = self.startup_cursor.resolved_pos(viewport);
+                        self.trigger_cursor_startup(origin, viewport);
+                    }
+                }
+            }
+            return Ok(());
+        }
 
         match ev {
             InputEvent::Resize(w, h) => {
@@ -305,26 +400,53 @@ impl App {
         guard: &TerminalGuard,
         viewport: Rect,
     ) -> Result<()> {
+        let mut cmd_state = std::mem::take(&mut self.command_line);
+        let ctx = self.completion_ctx();
+
+        let mut execute_str: Option<String> = None;
         match key.code {
-            KeyCode::Esc => self.command_line.cancel(),
-            KeyCode::Enter => {
-                let cmd = self.command_line.submit();
-                if !cmd.is_empty() {
-                    self.execute_command_str(&cmd, guard, viewport)?;
+            KeyCode::Esc => {
+                if cmd_state.popup_open {
+                    cmd_state.close_popup();
+                } else {
+                    cmd_state.cancel();
                 }
             }
-            KeyCode::Backspace => self.command_line.backspace(),
-            KeyCode::Up => self.command_line.history_prev(),
-            KeyCode::Down => self.command_line.history_next(),
-            KeyCode::Tab => {
-                let theme_names: Vec<String> =
-                    self.theme_list.iter().map(|t| t.name.clone()).collect();
-                let anim_names: Vec<String> =
-                    self.animations.entries.iter().map(|a| a.id.clone()).collect();
-                self.command_line.autocomplete(&theme_names, &anim_names);
+            KeyCode::Enter => {
+                if cmd_state.selected_suggestion.is_some()
+                    && cmd_state.accept_selected(&self.registry, &ctx)
+                {
+                    // Accepted completion token into command buffer
+                } else {
+                    let cmd = cmd_state.submit();
+                    if !cmd.is_empty() {
+                        execute_str = Some(cmd);
+                    }
+                }
             }
-            KeyCode::Char(c) => self.command_line.push_char(c),
+            KeyCode::Tab => cmd_state.next_suggestion(),
+            KeyCode::BackTab => cmd_state.prev_suggestion(),
+            KeyCode::Up => cmd_state.handle_up(&self.registry, &ctx),
+            KeyCode::Down => cmd_state.handle_down(&self.registry, &ctx),
+            KeyCode::Left => cmd_state.move_left(&self.registry, &ctx),
+            KeyCode::Right => cmd_state.move_right(&self.registry, &ctx),
+            KeyCode::Home => cmd_state.move_home(&self.registry, &ctx),
+            KeyCode::End => cmd_state.move_end(&self.registry, &ctx),
+            KeyCode::Backspace => cmd_state.backspace(&self.registry, &ctx),
+            KeyCode::Delete => cmd_state.delete(&self.registry, &ctx),
+            KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                cmd_state.history_prev(&self.registry, &ctx);
+            }
+            KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                cmd_state.history_next(&self.registry, &ctx);
+            }
+            KeyCode::Char(c) => cmd_state.insert_char(c, &self.registry, &ctx),
             _ => {}
+        }
+
+        self.command_line = cmd_state;
+        if let Some(cmd) = execute_str {
+            self.execute_command_str(&cmd, guard, viewport)?;
         }
         Ok(())
     }
@@ -381,7 +503,7 @@ impl App {
             CustomizerTab::Themes => {
                 if let Some(entry) = self.theme_list.get(idx).cloned() {
                     self.apply_theme_entry(&entry);
-                    self.set_toast(format!("Tema '{}' aplicado", entry.name));
+                    self.set_toast(format!("Colorscheme '{}' applied (runtime)", entry.name));
                 }
             }
             CustomizerTab::Animations => {
@@ -392,9 +514,9 @@ impl App {
                             &self.animations,
                             self.config.general.startup_duration_ms,
                         );
-                        self.reveal = RevealState::new(0.8);
+                        self.reveal = RevealState::new(0.65);
                         self.customizer.close();
-                        self.set_toast(format!("Pré-visualizando '{}'", entry.display_name));
+                        self.set_toast(format!("Previewing '{}'", entry.display_name));
                     } else {
                         self.config.general.startup_animation = entry.id.clone();
                         self.transition.restart(
@@ -402,9 +524,8 @@ impl App {
                             &self.animations,
                             self.config.general.startup_duration_ms,
                         );
-                        let _ = save_config_to_path(&self.config_path, &self.config);
                         self.set_toast(format!(
-                            "Animação inicial definida: '{}'",
+                            "Startup animation set to '{}' (use :save to persist)",
                             entry.display_name
                         ));
                     }
@@ -422,7 +543,11 @@ impl App {
                             win.config.offset_x = 0;
                             win.config.offset_y = 0;
                         }
-                        1 => cycle_border_style(&mut win.config),
+                        1 => {
+                            cycle_border_style(&mut win.config);
+                            let style = win.config.border.style;
+                            self.theme.set_border_style(style);
+                        }
                         2 => {
                             win.config.background.mode = match win.config.background.mode {
                                 WindowBackgroundMode::Solid => WindowBackgroundMode::Transparent,
@@ -438,8 +563,8 @@ impl App {
                         7 => {
                             let cfg_clone = win.config.clone();
                             match save_window_config(&cfg_clone) {
-                                Ok(()) => self.set_toast("Janela salva em window.toml"),
-                                Err(e) => self.set_toast(format!("Erro ao salvar: {e}")),
+                                Ok(()) => self.set_toast("Saved window settings to window.toml"),
+                                Err(e) => self.set_toast(format!("Save error: {e}")),
                             }
                             return Ok(());
                         }
@@ -458,8 +583,8 @@ impl App {
                 last if last == layout_items_summary(&self.config).len() - 1 => {
                     self.config.general.view_mode = self.view_mode;
                     match save_config_to_path(&self.config_path, &self.config) {
-                        Ok(()) => self.set_toast("Configuração salva em egotop.toml"),
-                        Err(e) => self.set_toast(format!("Erro ao salvar: {e}")),
+                        Ok(()) => self.set_toast("Saved configuration to egotop.toml"),
+                        Err(e) => self.set_toast(format!("Save error: {e}")),
                     }
                 }
                 widget_idx => {
@@ -469,7 +594,7 @@ impl App {
                         self.set_toast(format!(
                             "{}: {}",
                             id.default_title(),
-                            if now_on { "visível" } else { "oculto" }
+                            if now_on { "visible" } else { "hidden" }
                         ));
                     }
                 }
@@ -482,17 +607,22 @@ impl App {
         match self.customizer.tab {
             CustomizerTab::Window => {
                 match save_window_config(&self.windows.main_window().config) {
-                    Ok(()) => self.set_toast("Janela salva em ~/.config/egotop/window.toml"),
-                    Err(e) => self.set_toast(format!("Erro ao salvar: {e}")),
+                    Ok(()) => self.set_toast("Saved window settings to ~/.config/egotop/window.toml"),
+                    Err(e) => self.set_toast(format!("Save error: {e}")),
                 }
             }
             _ => {
-                self.config.general.view_mode = self.view_mode;
-                match save_config_to_path(&self.config_path, &self.config) {
-                    Ok(()) => self.set_toast("Configuração salva em ~/.config/egotop/egotop.toml"),
-                    Err(e) => self.set_toast(format!("Erro ao salvar: {e}")),
-                }
+                self.save_main_config();
             }
+        }
+    }
+
+    fn save_main_config(&mut self) {
+        self.config.general.view_mode = self.view_mode;
+        self.config.theme.borders = self.theme.borders.to_config();
+        match save_config_to_path(&self.config_path, &self.config) {
+            Ok(()) => self.set_toast("Saved configuration to ~/.config/egotop/egotop.toml"),
+            Err(e) => self.set_toast(format!("Save error: {e}")),
         }
     }
 
@@ -511,7 +641,10 @@ impl App {
         match key.code {
             KeyCode::Char(':') => {
                 self.show_help = false;
-                self.command_line.open();
+                let mut cmd_state = std::mem::take(&mut self.command_line);
+                let ctx = self.completion_ctx();
+                cmd_state.open(&self.registry, &ctx);
+                self.command_line = cmd_state;
             }
             KeyCode::Char('q') | KeyCode::Char('Q') | KeyCode::Esc => {
                 if self.show_help {
@@ -531,14 +664,14 @@ impl App {
                 let sz = guard.terminal.size()?;
                 self.snapshot = self.collector.collect(sz.width, sz.height);
                 *last_sys_refresh = Instant::now();
-                self.set_toast("Dados do sistema atualizados");
+                self.set_toast("System metrics refreshed");
             }
             KeyCode::Char('p') | KeyCode::Char('P') => {
                 self.paused = !self.paused;
                 self.set_toast(if self.paused {
-                    "Animações pausadas"
+                    "Animations paused"
                 } else {
-                    "Animações retomadas"
+                    "Animations resumed"
                 });
             }
             KeyCode::Char('c') | KeyCode::Char('C') => {
@@ -546,16 +679,16 @@ impl App {
             }
             KeyCode::Char('m') | KeyCode::Char('M') => {
                 self.view_mode = self.view_mode.next();
-                self.set_toast(format!("Modo: {}", self.view_mode.label()));
+                self.set_toast(format!("View mode: {}", self.view_mode.label()));
             }
             KeyCode::Char('e') | KeyCode::Char('E') => {
                 let next = self.config.background.effect.next();
                 self.set_effect(next, guard)?;
-                self.set_toast(format!("Efeito: {}", next.label()));
+                self.set_toast(format!("Background effect: {}", next.label()));
             }
             KeyCode::Char(d @ '1'..='3') => {
                 self.active_page = (d as u8) - b'0';
-                self.set_toast(format!("Página {}", self.active_page));
+                self.set_toast(format!("Page {}", self.active_page));
             }
             KeyCode::Left if key.modifiers.contains(KeyModifiers::SHIFT) => {
                 self.windows.resize_main_by(-2, 0, viewport);
@@ -596,6 +729,7 @@ impl App {
             ParsedCommand::Quit => self.should_quit = true,
             ParsedCommand::Help => self.show_help = true,
             ParsedCommand::Reload => self.reload_all(guard)?,
+            ParsedCommand::Save(target) => self.execute_save(target),
             ParsedCommand::Colorscheme(None) => {
                 self.customizer.open_tab(CustomizerTab::Themes);
             }
@@ -603,36 +737,57 @@ impl App {
                 let key = name.trim().to_ascii_lowercase();
                 if let Some(entry) = self.themes_map.get(&key).cloned() {
                     self.apply_theme_entry(&entry);
-                    let _ = save_config_to_path(&self.config_path, &self.config);
-                    self.set_toast(format!("Colorscheme '{}' ativado", entry.name));
+                    self.set_toast(format!(
+                        "Colorscheme '{}' applied (use :save to persist)",
+                        entry.name
+                    ));
                 } else {
                     self.set_toast(format!(
-                        "Tema '{name}' não encontrado em built-ins ou ~/.config/egotop/themes/"
+                        "Colorscheme '{name}' not found in built-ins or ~/.config/egotop/themes/"
                     ));
                 }
             }
-            ParsedCommand::Animation(None) => {
-                self.customizer.open_tab(CustomizerTab::Animations);
+            ParsedCommand::Set { key, value } => {
+                self.execute_set_option(&key, &value);
             }
-            ParsedCommand::Animation(Some(name)) => {
-                self.config.general.startup_animation = name.clone();
-                self.transition.restart(
-                    &name,
-                    &self.animations,
-                    self.config.general.startup_duration_ms,
-                );
-                self.reveal = RevealState::new(0.9);
-                let _ = save_config_to_path(&self.config_path, &self.config);
-                self.set_toast(format!("Animação inicial: '{name}'"));
-            }
+            ParsedCommand::Animation { action, name } => match action {
+                AnimationAction::OpenPicker => {
+                    self.customizer.open_tab(CustomizerTab::Animations);
+                }
+                AnimationAction::Play => {
+                    if let Some(anim_name) = name {
+                        self.transition.restart(
+                            &anim_name,
+                            &self.animations,
+                            self.config.general.startup_duration_ms,
+                        );
+                        self.reveal = RevealState::new(0.65);
+                        self.set_toast(format!("Playing animation '{anim_name}'"));
+                    }
+                }
+                AnimationAction::SetStartup => {
+                    if let Some(anim_name) = name {
+                        self.config.general.startup_animation = anim_name.clone();
+                        self.transition.restart(
+                            &anim_name,
+                            &self.animations,
+                            self.config.general.startup_duration_ms,
+                        );
+                        self.reveal = RevealState::new(0.65);
+                        self.set_toast(format!(
+                            "Startup animation set to '{anim_name}' (use :save to persist)"
+                        ));
+                    }
+                }
+            },
             ParsedCommand::Effect(None) => {
                 let next = self.config.background.effect.next();
                 self.set_effect(next, guard)?;
-                self.set_toast(format!("Efeito: {}", next.label()));
+                self.set_toast(format!("Background effect: {}", next.label()));
             }
             ParsedCommand::Effect(Some(kind)) => {
                 self.set_effect(kind, guard)?;
-                self.set_toast(format!("Efeito: {}", kind.label()));
+                self.set_toast(format!("Background effect: {}", kind.label()));
             }
             ParsedCommand::Layout(None) => {
                 self.customizer.open_tab(CustomizerTab::Layout);
@@ -640,11 +795,11 @@ impl App {
             ParsedCommand::Layout(Some(sel)) => match sel {
                 LayoutSelection::Mode(mode) => {
                     self.config.layout.mode = mode;
-                    self.set_toast(format!("Layout: {mode:?}"));
+                    self.set_toast(format!("Layout mode: {mode:?}"));
                 }
                 LayoutSelection::View(view) => {
                     self.view_mode = view;
-                    self.set_toast(format!("Modo: {}", view.label()));
+                    self.set_toast(format!("View mode: {}", view.label()));
                 }
             },
             ParsedCommand::Window(wcmd) => {
@@ -654,11 +809,87 @@ impl App {
         Ok(())
     }
 
+    fn execute_set_option(&mut self, key: &str, value: &str) {
+        let k = key.trim().to_ascii_lowercase();
+        if k == "background" {
+            match value.trim().to_ascii_lowercase().as_str() {
+                "dark" => {
+                    self.theme.set_brightness_mode(true);
+                    self.set_toast("Background set to dark (runtime)");
+                }
+                "light" => {
+                    self.theme.set_brightness_mode(false);
+                    self.set_toast("Background set to light (runtime)");
+                }
+                other => self.set_toast(format!(
+                    "Invalid background value '{other}' (expected dark or light)"
+                )),
+            }
+            return;
+        }
+
+        if k == "border.style" {
+            match parse_border_style(value) {
+                Ok(style) => {
+                    self.config.theme.border_type = style;
+                    self.windows.main_window_mut().config.border.style = style;
+                    self.theme.set_border_style(style);
+                    self.set_toast(format!("Border style set to '{}'", style.label()));
+                }
+                Err(err) => self.set_toast(err),
+            }
+            return;
+        }
+
+        if let Some(prop) = k.strip_prefix("border.") {
+            let mut next_borders = self.theme.borders.clone();
+            match next_borders.set_property(prop, value) {
+                Ok(()) => {
+                    self.theme.borders = next_borders;
+                    self.config.theme.borders = self.theme.borders.to_config();
+                    self.set_toast(format!("Updated border.{prop} = {value} (runtime)"));
+                }
+                Err(err) => {
+                    // Validation failed: preserve previous border configuration
+                    self.set_toast(err);
+                }
+            }
+            return;
+        }
+
+        self.set_toast(format!("Unknown property '{key}'"));
+    }
+
+    fn execute_save(&mut self, target: SaveTarget) {
+        match target {
+            SaveTarget::Config | SaveTarget::Theme => {
+                self.save_main_config();
+            }
+            SaveTarget::Window => match save_window_config(&self.windows.main_window().config) {
+                Ok(()) => self.set_toast("Saved window settings to ~/.config/egotop/window.toml"),
+                Err(e) => self.set_toast(format!("Save error: {e}")),
+            },
+            SaveTarget::All => {
+                self.config.general.view_mode = self.view_mode;
+                self.config.theme.borders = self.theme.borders.to_config();
+                let res_main = save_config_to_path(&self.config_path, &self.config);
+                let res_win = save_window_config(&self.windows.main_window().config);
+                match (res_main, res_win) {
+                    (Ok(()), Ok(())) => {
+                        self.set_toast("Saved all settings to ~/.config/egotop/");
+                    }
+                    (Err(e), _) | (_, Err(e)) => self.set_toast(format!("Save error: {e}")),
+                }
+            }
+        }
+    }
+
     fn execute_window_command(&mut self, wcmd: WindowCommand, viewport: Rect) {
         if matches!(wcmd, WindowCommand::OpenInspector) {
             self.customizer.open_tab(CustomizerTab::Window);
             return;
         }
+        let mut new_border_style = None;
         let toast_msg: Option<String> = {
             let win = self.windows.main_window_mut();
             match wcmd {
@@ -668,39 +899,40 @@ impl App {
                     win.config.anchor = crate::config::Anchor::Center;
                     win.config.offset_x = 0;
                     win.config.offset_y = 0;
-                    Some("Janela centralizada".to_string())
+                    Some("Window centered".to_string())
                 }
                 WindowCommand::SetAnchor(a) => {
                     win.config.position = PositionMode::Relative;
                     win.config.anchor = a;
                     win.config.offset_x = 0;
                     win.config.offset_y = 0;
-                    Some(format!("Âncora: {a:?}"))
+                    Some(format!("Window anchor set to {a:?}"))
                 }
                 WindowCommand::SetDraggable(opt) => {
                     win.config.draggable = opt.unwrap_or(!win.config.draggable);
-                    Some(format!("Drag: {}", win.config.draggable))
+                    Some(format!("Window draggable: {}", win.config.draggable))
                 }
                 WindowCommand::SetResizable(opt) => {
                     win.config.resizable = opt.unwrap_or(!win.config.resizable);
-                    Some(format!("Resize: {}", win.config.resizable))
+                    Some(format!("Window resizable: {}", win.config.resizable))
                 }
                 WindowCommand::ToggleBorder(opt) => {
                     win.config.border.enabled = opt.unwrap_or(!win.config.border.enabled);
-                    Some(format!("Bordas: {}", win.config.border.enabled))
+                    Some(format!("Window border: {}", win.config.border.enabled))
                 }
                 WindowCommand::SetBorderStyle(style) => {
                     win.config.border.enabled = true;
                     win.config.border.style = style;
-                    Some(format!("Borda: {}", style.label()))
+                    new_border_style = Some(style);
+                    Some(format!("Border style set to '{}'", style.label()))
                 }
                 WindowCommand::SetBackground(mode) => {
                     win.config.background.mode = mode;
-                    Some(format!("Fundo da janela: {mode:?}"))
+                    Some(format!("Window background: {mode:?}"))
                 }
                 WindowCommand::SetPadding(p) => {
                     win.config.padding = p;
-                    Some(format!("Padding: {p}"))
+                    Some(format!("Window padding set to {p}"))
                 }
                 WindowCommand::SetVisible(opt) => {
                     win.config.visible = opt.unwrap_or(!win.config.visible);
@@ -708,10 +940,13 @@ impl App {
                 }
                 WindowCommand::Reset => {
                     win.config = WindowConfig::default();
-                    Some("Janela restaurada ao padrão".to_string())
+                    Some("Window reset to defaults".to_string())
                 }
             }
         };
+        if let Some(style) = new_border_style {
+            self.theme.set_border_style(style);
+        }
         if let Some(msg) = toast_msg {
             self.set_toast(msg);
         }
@@ -722,6 +957,7 @@ impl App {
         self.themes_map = load_all_themes();
         self.theme_list = self.themes_map.values().cloned().collect();
         self.animations = AnimationCatalog::load();
+        self.layout_names = load_layout_names();
 
         match load_from_path(&self.config_path) {
             Ok(new_cfg) => {
@@ -742,10 +978,10 @@ impl App {
                 *self.windows.main_window_mut() = crate::window::WindowState::new(win_cfg);
                 self.windows.resolve_all(Rect::new(0, 0, sz.width, sz.height));
                 self.config = new_cfg;
-                self.set_toast("Configurações, temas e animações recarregados");
+                self.set_toast("Reloaded configuration, themes, and animations");
             }
             Err(err) => {
-                self.set_toast(format!("Erro no TOML: {err}"));
+                self.set_toast(format!("Invalid configuration: {err}"));
             }
         }
         Ok(())
@@ -764,6 +1000,7 @@ impl App {
             self.config.theme.muted.clear();
             self.config.theme.border.clear();
             self.config.theme.danger.clear();
+            self.config.theme.borders = Default::default();
         }
     }
 
@@ -792,7 +1029,9 @@ fn resolve_active_theme(cfg: &Config, themes_map: &BTreeMap<String, ThemeEntry>)
     if let Some(entry) = themes_map.get(&key)
         && entry.source_path.is_some()
     {
-        return entry.theme.clone();
+        let mut theme = entry.theme.clone();
+        let _ = theme.borders.apply_overrides(&cfg.theme.borders);
+        return theme;
     }
     Theme::from_config(&cfg.theme)
 }

@@ -1,4 +1,5 @@
 use crate::config::{BorderStyle, ThemeConfig};
+use crate::ui::borders::BorderChars;
 use ratatui::style::{Color, Style};
 use ratatui::widgets::BorderType;
 
@@ -15,6 +16,7 @@ pub struct Theme {
     pub border: Color,
     pub danger: Color,
     pub border_type: BorderType,
+    pub borders: BorderChars,
 }
 
 impl Theme {
@@ -49,13 +51,32 @@ impl Theme {
             base.danger = parse_color(&cfg.danger, base.danger);
         }
 
-        base.border_type = match cfg.border_type {
+        base.set_border_style(cfg.border_type);
+        let _ = base.borders.apply_overrides(&cfg.borders);
+        base
+    }
+
+    pub fn set_border_style(&mut self, style: BorderStyle) {
+        self.border_type = match style {
             BorderStyle::Rounded => BorderType::Rounded,
             BorderStyle::Plain => BorderType::Plain,
             BorderStyle::Double => BorderType::Double,
             BorderStyle::Thick => BorderType::Thick,
         };
-        base
+        self.borders = BorderChars::from_style(style);
+    }
+
+    pub fn set_brightness_mode(&mut self, dark: bool) {
+        if dark {
+            self.background = Color::Rgb(5, 10, 7);
+            self.panel_background = Color::Rgb(8, 17, 12);
+            self.text = Color::Rgb(229, 229, 229);
+        } else {
+            self.background = Color::Rgb(242, 246, 243);
+            self.panel_background = Color::Rgb(250, 252, 250);
+            self.text = Color::Rgb(24, 34, 28);
+            self.muted = Color::Rgb(92, 112, 100);
+        }
     }
 
     pub fn base_style(&self) -> Style {
@@ -92,6 +113,7 @@ pub fn preset_theme(name: &str) -> Theme {
             border: Color::Rgb(180, 40, 140),
             danger: Color::Rgb(255, 68, 85),
             border_type: BorderType::Rounded,
+            borders: BorderChars::from_style(BorderStyle::Rounded),
         },
         "nord" => Theme {
             name: "nord".to_string(),
@@ -105,6 +127,7 @@ pub fn preset_theme(name: &str) -> Theme {
             border: Color::Rgb(76, 86, 106),
             danger: Color::Rgb(191, 97, 106),
             border_type: BorderType::Rounded,
+            borders: BorderChars::from_style(BorderStyle::Rounded),
         },
         "amber" => Theme {
             name: "amber".to_string(),
@@ -118,6 +141,7 @@ pub fn preset_theme(name: &str) -> Theme {
             border: Color::Rgb(160, 100, 0),
             danger: Color::Rgb(255, 70, 50),
             border_type: BorderType::Plain,
+            borders: BorderChars::from_style(BorderStyle::Plain),
         },
         "dracula" => Theme {
             name: "dracula".to_string(),
@@ -131,6 +155,7 @@ pub fn preset_theme(name: &str) -> Theme {
             border: Color::Rgb(189, 147, 249),
             danger: Color::Rgb(255, 85, 85),
             border_type: BorderType::Rounded,
+            borders: BorderChars::from_style(BorderStyle::Rounded),
         },
         _ => Theme {
             name: "matrix".to_string(),
@@ -144,6 +169,7 @@ pub fn preset_theme(name: &str) -> Theme {
             border: Color::Rgb(31, 122, 76),
             danger: Color::Rgb(255, 85, 85),
             border_type: BorderType::Rounded,
+            borders: BorderChars::from_style(BorderStyle::Rounded),
         },
     }
 }

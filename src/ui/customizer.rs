@@ -34,9 +34,9 @@ impl CustomizerTab {
 
     pub fn title(self) -> &'static str {
         match self {
-            Self::Themes => "Temas",
-            Self::Animations => "Animações",
-            Self::Window => "Janela",
+            Self::Themes => "Themes",
+            Self::Animations => "Animations",
+            Self::Window => "Window",
             Self::Layout => "Layout",
         }
     }
@@ -115,55 +115,55 @@ impl CustomizerState {
 
 pub fn window_items_summary(win: &WindowConfig) -> Vec<(String, String)> {
     vec![
-        ("Âncora".to_string(), format!("{:?}", win.anchor)),
+        ("Anchor".to_string(), format!("{:?}", win.anchor)),
         (
-            "Bordas".to_string(),
+            "Borders".to_string(),
             if win.border.enabled {
-                format!("Ativa ({})", win.border.style.label())
+                format!("Enabled ({})", win.border.style.label())
             } else {
-                "Oculta".to_string()
+                "Hidden".to_string()
             },
         ),
         (
-            "Fundo da Janela".to_string(),
+            "Window Background".to_string(),
             match win.background.mode {
-                WindowBackgroundMode::Solid => "Sólido".to_string(),
-                WindowBackgroundMode::Transparent => "Transparente (células)".to_string(),
+                WindowBackgroundMode::Solid => "Solid".to_string(),
+                WindowBackgroundMode::Transparent => "Transparent (cells)".to_string(),
             },
         ),
-        ("Padding Interno".to_string(), format!("{}", win.padding)),
+        ("Inner Padding".to_string(), format!("{}", win.padding)),
         (
-            "Movimentação (Drag)".to_string(),
-            if win.draggable { "Sim" } else { "Não" }.to_string(),
+            "Draggable".to_string(),
+            if win.draggable { "Yes" } else { "No" }.to_string(),
         ),
         (
-            "Redimensionamento".to_string(),
-            if win.resizable { "Sim" } else { "Não" }.to_string(),
+            "Resizable".to_string(),
+            if win.resizable { "Yes" } else { "No" }.to_string(),
         ),
-        ("Centralizar & Resetar".to_string(), "Restaurar padrão".to_string()),
-        ("Salvar window.toml".to_string(), "Persistir em ~/.config/egotop/".to_string()),
+        ("Center & Reset".to_string(), "Restore default".to_string()),
+        ("Save window.toml".to_string(), "Persist to ~/.config/egotop/".to_string()),
     ]
 }
 
 pub fn layout_items_summary(cfg: &Config) -> Vec<(String, String)> {
     let mut items = vec![
-        ("Modo de Layout".to_string(), format!("{:?}", cfg.layout.mode)),
+        ("Layout Mode".to_string(), format!("{:?}", cfg.layout.mode)),
         (
-            "Modo de Visualização".to_string(),
+            "View Mode".to_string(),
             cfg.general.view_mode.label().to_string(),
         ),
         (
-            "Efeito de Fundo".to_string(),
+            "Background Effect".to_string(),
             cfg.background.effect.label().to_string(),
         ),
     ];
     for w in &cfg.widgets {
         items.push((
-            format!("Componente: {}", w.id.default_title()),
-            if w.enabled { "Visível" } else { "Oculto" }.to_string(),
+            format!("Component: {}", w.id.default_title()),
+            if w.enabled { "Visible" } else { "Hidden" }.to_string(),
         ));
     }
-    items.push(("Salvar egotop.toml".to_string(), "Persistir em ~/.config/egotop/".to_string()));
+    items.push(("Save egotop.toml".to_string(), "Persist to ~/.config/egotop/".to_string()));
     items
 }
 
@@ -210,11 +210,11 @@ pub fn render_customizer(
 
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_type(theme.border_type)
+        .border_set(theme.borders.as_ratatui_set())
         .border_style(Style::default().fg(theme.primary).bg(theme.panel_background))
         .style(theme.panel_style())
         .title(Span::styled(
-            " Personalização — egotop ",
+            " Customize — egotop ",
             Style::default()
                 .fg(theme.primary)
                 .add_modifier(Modifier::BOLD),
@@ -340,10 +340,10 @@ pub fn render_customizer(
     }
 
     let hint = match state.tab {
-        CustomizerTab::Themes => "↑/↓ navegar • Enter aplicar • s salvar • Tab aba • Esc fechar",
-        CustomizerTab::Animations => "↑/↓ navegar • p pré-visualizar • Enter definir inicial • Tab aba • Esc fechar",
-        CustomizerTab::Window => "↑/↓ navegar • Enter/Espaço alterar • s salvar window.toml • Esc fechar",
-        CustomizerTab::Layout => "↑/↓ navegar • Enter/Espaço alternar • s salvar egotop.toml • Esc fechar",
+        CustomizerTab::Themes => "↑/↓ navigate • Enter apply • s save • Tab switch tab • Esc close",
+        CustomizerTab::Animations => "↑/↓ navigate • p preview • Enter set startup • Tab switch tab • Esc close",
+        CustomizerTab::Window => "↑/↓ navigate • Enter/Space toggle • s save window.toml • Esc close",
+        CustomizerTab::Layout => "↑/↓ navigate • Enter/Space toggle • s save egotop.toml • Esc close",
     };
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(hint, Style::default().fg(theme.muted))))
@@ -387,7 +387,21 @@ pub fn render_command_line(
     let bar = Rect::new(screen.x, screen.bottom() - 1, screen.width, 1);
 
     if cmd_state.active {
+        if cmd_state.popup_open && !cmd_state.suggestions.is_empty() && screen.height >= 6 {
+            render_completion_popup(frame, screen, cmd_state, theme);
+        }
+
         frame.render_widget(Clear, bar);
+        let cursor = cmd_state.cursor.min(cmd_state.buffer.len());
+        let before = &cmd_state.buffer[..cursor];
+        let (cursor_ch, after) = if cursor < cmd_state.buffer.len() {
+            let ch = cmd_state.buffer[cursor..].chars().next().unwrap_or(' ');
+            let next = cursor + ch.len_utf8();
+            (ch.to_string(), &cmd_state.buffer[next..])
+        } else {
+            (" ".to_string(), "")
+        };
+
         let line = Line::from(vec![
             Span::styled(
                 ":",
@@ -395,14 +409,15 @@ pub fn render_command_line(
                     .fg(theme.primary)
                     .add_modifier(Modifier::BOLD),
             ),
+            Span::styled(before.to_string(), Style::default().fg(theme.text)),
             Span::styled(
-                cmd_state.buffer.clone(),
-                Style::default().fg(theme.text),
+                cursor_ch,
+                Style::default()
+                    .fg(theme.background)
+                    .bg(theme.primary)
+                    .add_modifier(Modifier::BOLD),
             ),
-            Span::styled(
-                "█",
-                Style::default().fg(theme.primary),
-            ),
+            Span::styled(after.to_string(), Style::default().fg(theme.text)),
         ]);
         frame.render_widget(Paragraph::new(line).style(theme.panel_style()), bar);
     } else if let Some(msg) = toast {
@@ -417,9 +432,97 @@ pub fn render_command_line(
     }
 }
 
+fn render_completion_popup(
+    frame: &mut Frame,
+    screen: Rect,
+    cmd_state: &CommandLineState,
+    theme: &Theme,
+) {
+    let total = cmd_state.suggestions.len();
+    let max_visible = 7usize.min(screen.height.saturating_sub(4) as usize).max(1);
+    let shown_count = total.min(max_visible);
+    let popup_h = (shown_count as u16) + 2;
+    let popup_w = 70.min(screen.width.saturating_sub(2)).max(24);
+    let popup_x = screen.x + 1.min(screen.width.saturating_sub(popup_w));
+    let popup_y = screen.bottom().saturating_sub(1 + popup_h);
+    let popup = Rect::new(popup_x, popup_y, popup_w, popup_h);
+
+    frame.render_widget(Clear, popup);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_set(theme.borders.as_ratatui_set())
+        .border_style(Style::default().fg(theme.border).bg(theme.panel_background))
+        .style(theme.panel_style());
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+
+    let sel = cmd_state.selected_suggestion;
+    let scroll_start = match sel {
+        Some(idx) if idx >= shown_count => idx + 1 - shown_count,
+        _ => 0,
+    };
+
+    let mut lines = Vec::with_capacity(shown_count);
+    for (rel_idx, item) in cmd_state
+        .suggestions
+        .iter()
+        .skip(scroll_start)
+        .take(shown_count)
+        .enumerate()
+    {
+        let abs_idx = scroll_start + rel_idx;
+        let is_selected = sel == Some(abs_idx);
+
+        let name_col = format!("{:<18}", item.label);
+        let arg_col = item
+            .expected_arg
+            .as_deref()
+            .map(|a| format!("{a:<14}"))
+            .unwrap_or_else(|| " ".repeat(14));
+
+        let row_bg = if is_selected {
+            theme.secondary
+        } else {
+            theme.panel_background
+        };
+        let prefix_fg = if is_selected { theme.background } else { theme.primary };
+        let name_fg = if is_selected { theme.background } else { theme.primary };
+        let arg_fg = if is_selected { theme.background } else { theme.accent };
+        let desc_fg = if is_selected { theme.background } else { theme.muted };
+
+        let used_cols = 2 + 18 + 14 + 1;
+        let max_desc = (inner.width as usize).saturating_sub(used_cols);
+        let desc: String = if item.description.chars().count() > max_desc && max_desc > 1 {
+            let mut s: String = item.description.chars().take(max_desc - 1).collect();
+            s.push('…');
+            s
+        } else {
+            item.description.chars().take(max_desc).collect()
+        };
+
+        lines.push(Line::from(vec![
+            Span::styled(
+                if is_selected { "▶ " } else { "  " },
+                Style::default().fg(prefix_fg).bg(row_bg),
+            ),
+            Span::styled(
+                name_col,
+                Style::default()
+                    .fg(name_fg)
+                    .bg(row_bg)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(arg_col, Style::default().fg(arg_fg).bg(row_bg)),
+            Span::styled(desc, Style::default().fg(desc_fg).bg(row_bg)),
+        ]));
+    }
+
+    frame.render_widget(Paragraph::new(lines), inner);
+}
+
 pub fn render_help_overlay(frame: &mut Frame, screen: Rect, theme: &Theme) {
-    let w = 68.min(screen.width.saturating_sub(4));
-    let h = 21.min(screen.height.saturating_sub(4));
+    let w = 72.min(screen.width.saturating_sub(4));
+    let h = 23.min(screen.height.saturating_sub(4));
     if w < 28 || h < 12 {
         return;
     }
@@ -433,11 +536,11 @@ pub fn render_help_overlay(frame: &mut Frame, screen: Rect, theme: &Theme) {
 
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_type(theme.border_type)
+        .border_set(theme.borders.as_ratatui_set())
         .border_style(Style::default().fg(theme.primary).bg(theme.panel_background))
         .style(theme.panel_style())
         .title(Span::styled(
-            " Ajuda — egotop ",
+            " Help — egotop ",
             Style::default()
                 .fg(theme.primary)
                 .add_modifier(Modifier::BOLD),
@@ -456,23 +559,24 @@ pub fn render_help_overlay(frame: &mut Frame, screen: Rect, theme: &Theme) {
     };
 
     let lines = vec![
-        kv(":", "Abrir linha de comandos (estilo Neovim)"),
-        kv(":colorscheme <nome>", "Trocar tema (inclui ~/.config/egotop/themes/)"),
-        kv(":animation [nome]", "Abrir seletor ou definir animação inicial"),
-        kv(":window [subcmd]", "Configurar janela (center, anchor, border, bg...)"),
-        kv(":layout [modo]", "Alternar layout (responsive, free, compact...)"),
-        kv(":reload", "Recarregar configurações de ~/.config/egotop/"),
-        kv(":q", "Sair e restaurar o terminal"),
+        kv(":", "Open command line (Neovim-style)"),
+        kv(":colorscheme <name>", "Switch colorscheme (built-in or ~/.config/egotop/themes/)"),
+        kv(":set border.<prop> <v>", "Customize border chars/style live in runtime"),
+        kv(":animation [name]", "Open picker or run startup animation"),
+        kv(":window [subcmd]", "Configure window (center, anchor, border, bg...)"),
+        kv(":layout [mode]", "Switch layout (responsive, free, compact...)"),
+        kv(":save", "Persist runtime changes to ~/.config/egotop/"),
+        kv(":reload", "Reload configs from ~/.config/egotop/"),
+        kv(":q", "Quit and restore terminal"),
         Line::from(""),
-        kv("Mouse (borda topo)", "Arrastar para mover a janela"),
-        kv("Mouse (canto inf-dir)", "Arrastar para redimensionar a janela"),
-        kv("Clique em [⚙]", "Abrir personalização visual interativa"),
-        kv("F2 / g", "Abrir/fechar painel visual de personalização"),
-        kv("r / p / 1-3", "Atualizar dados / Pausar animações / Páginas"),
-        kv("q / Esc", "Fechar modal ou sair"),
+        kv("Mouse (top border)", "Drag to move window"),
+        kv("Mouse (bottom-right)", "Drag to resize window"),
+        kv("Click [⚙] / F2 / g", "Open visual customization panel"),
+        kv("r / p / 1-3", "Refresh data / Pause animations / Pages"),
+        kv("q / Esc", "Close modal or quit"),
         Line::from(""),
         Line::from(Span::styled(
-            "Arquivos de personalização: ~/.config/egotop/",
+            "Configuration directory: ~/.config/egotop/",
             Style::default().fg(theme.muted),
         )),
     ];

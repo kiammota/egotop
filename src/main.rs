@@ -3,9 +3,24 @@ use clap::{Parser, ValueEnum};
 use crossterm::terminal;
 use egotop::app::App;
 use egotop::config::loader::DEFAULT_CONFIG_TOML;
-use egotop::config::{EffectKind, load_or_create};
+use egotop::config::{EffectKind, StartupMode, load_or_create};
 use std::path::PathBuf;
 use std::process;
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum CliStartup {
+    Normal,
+    Cursor,
+}
+
+impl From<CliStartup> for StartupMode {
+    fn from(value: CliStartup) -> Self {
+        match value {
+            CliStartup::Normal => Self::Normal,
+            CliStartup::Cursor => Self::Cursor,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum CliEffect {
@@ -46,6 +61,10 @@ struct Cli {
     /// Initial page to display (1..=3)
     #[arg(short, long, value_parser = clap::value_parser!(u8).range(1..=3))]
     page: Option<u8>,
+
+    /// Startup presentation mode (overrides TOML [startup].mode)
+    #[arg(long, value_enum)]
+    startup: Option<CliStartup>,
 
     /// Validate configuration file and exit
     #[arg(long)]
@@ -95,9 +114,13 @@ fn run() -> Result<()> {
         config.general.default_page = p;
     }
 
+    if let Some(st) = cli.startup {
+        config.startup.mode = st.into();
+    }
+
     let toast = loaded
         .created_default
-        .then(|| format!("Config padrão criada em {}", loaded.path.display()));
+        .then(|| format!("Default configuration created at {}", loaded.path.display()));
 
     let (cols, rows) = terminal::size().unwrap_or((120, 36));
     let mut app = App::new(config, loaded.path, toast, cols, rows);

@@ -114,7 +114,7 @@ fn select_widgets_for_view(cfg: &Config, active_page: u8, view_mode: ViewMode) -
         2 => vec![
             WidgetConfig {
                 id: WidgetId::Hardware,
-                title: Some("Hardware Detalhado".to_string()),
+                title: Some("Detailed Hardware".to_string()),
                 position: Anchor::TopLeft,
                 width: Some(SizeSpec::Percent(50)),
                 page: Some(2),
@@ -122,7 +122,7 @@ fn select_widgets_for_view(cfg: &Config, active_page: u8, view_mode: ViewMode) -
             },
             WidgetConfig {
                 id: WidgetId::Activity,
-                title: Some("Atividade & Gráficos".to_string()),
+                title: Some("Activity & Graphs".to_string()),
                 position: Anchor::TopRight,
                 width: Some(SizeSpec::Percent(50)),
                 page: Some(2),
@@ -130,7 +130,7 @@ fn select_widgets_for_view(cfg: &Config, active_page: u8, view_mode: ViewMode) -
             },
             WidgetConfig {
                 id: WidgetId::System,
-                title: Some("Sistema & Ambiente".to_string()),
+                title: Some("System & Environment".to_string()),
                 position: Anchor::BottomCenter,
                 width: Some(SizeSpec::Percent(100)),
                 page: Some(2),
@@ -140,7 +140,7 @@ fn select_widgets_for_view(cfg: &Config, active_page: u8, view_mode: ViewMode) -
         3 => vec![
             WidgetConfig {
                 id: WidgetId::Session,
-                title: Some("Sessão & Hyprland".to_string()),
+                title: Some("Session & Hyprland".to_string()),
                 position: Anchor::TopLeft,
                 width: Some(SizeSpec::Percent(50)),
                 page: Some(3),
@@ -148,7 +148,7 @@ fn select_widgets_for_view(cfg: &Config, active_page: u8, view_mode: ViewMode) -
             },
             WidgetConfig {
                 id: WidgetId::Uptime,
-                title: Some("Tempo & Boot".to_string()),
+                title: Some("Time & Boot".to_string()),
                 position: Anchor::TopRight,
                 width: Some(SizeSpec::Percent(50)),
                 page: Some(3),
@@ -156,7 +156,7 @@ fn select_widgets_for_view(cfg: &Config, active_page: u8, view_mode: ViewMode) -
             },
             WidgetConfig {
                 id: WidgetId::Message,
-                title: Some("Mensagem & Integração".to_string()),
+                title: Some("Message & Integration".to_string()),
                 position: Anchor::BottomCenter,
                 width: Some(SizeSpec::Percent(100)),
                 page: Some(3),

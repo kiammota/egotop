@@ -3,25 +3,29 @@ use egotop::animation::{
     resolve_region,
 };
 use egotop::command::{
-    CommandLineState, LayoutSelection, ParsedCommand, WindowCommand, parse_command,
+    AnimationAction, CommandLineState, CommandRegistry, CompletionContext, CompletionEngine,
+    LayoutSelection, ParsedCommand, SaveTarget, WindowCommand, parse_command,
 };
 use egotop::config::{
     Anchor, BackgroundConfig, BorderStyle, Config, DeclarativeAnimation, EffectKind, LayoutMode,
-    RegionConfig, RegionUnit, SizeSpec, ThemeEntry, ViewMode, WidgetConfig, WidgetId,
+    RegionConfig, RegionUnit, SizeSpec, StartupMode, ThemeEntry, ViewMode, WidgetConfig, WidgetId,
     load_from_path, load_or_create,
 };
 use egotop::system::SystemCollector;
 use egotop::system::os::parse_os_release;
 use egotop::system::uptime::format_uptime;
-use egotop::terminal::renderer::draw_frame;
+use egotop::terminal::renderer::{CursorStartupState, draw_frame};
 use egotop::ui::RevealState;
+use egotop::ui::borders::{BorderChars, parse_border_style, validate_border_char};
 use egotop::ui::customizer::CustomizerState;
 use egotop::ui::fonts::{FigletFont, available_fonts, load_font, normalize_ascii_text};
 use egotop::ui::layout::compute_layout;
 use egotop::ui::theme::{Theme, parse_color};
 use egotop::ui::typography::render_ascii_heading;
 use egotop::ui::widgets::RenderContext;
-use egotop::window::{PositionMode, WindowBackgroundMode, WindowConfig, WindowManager, resolve_window_rect};
+use egotop::window::{
+    PositionMode, WindowBackgroundMode, WindowConfig, WindowManager, resolve_window_rect,
+};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
@@ -38,7 +42,7 @@ fn temp_config_path(suffix: &str) -> std::path::PathBuf {
 }
 
 #[test]
-fn config_creates_default_and_loads_valid_toml() {
+fn config_creates_default_and_loads_valid_toml_in_english() {
     let path = temp_config_path("create_default");
     if path.exists() {
         let _ = std::fs::remove_file(&path);
@@ -48,6 +52,8 @@ fn config_creates_default_and_loads_valid_toml() {
     assert!(first.created_default);
     assert!(path.exists());
     assert_eq!(first.config.general.name, "egotop");
+    assert_eq!(first.config.general.greeting, "Hello, {user}!");
+    assert_eq!(first.config.startup.mode, StartupMode::Normal);
 
     let second = load_or_create(Some(&path)).expect("should load existing config");
     assert!(!second.created_default);
@@ -67,6 +73,10 @@ fn config_rejects_invalid_toml_and_out_of_range_values() {
     std::fs::write(&path, "[theme]\nprimary = \"not-a-color\"\n").unwrap();
     let err = load_from_path(&path).unwrap_err();
     assert!(err.to_string().contains("theme.primary"));
+
+    std::fs::write(&path, "[theme.borders]\nhorizontal = \"❌\"\n").unwrap();
+    let err = load_from_path(&path).unwrap_err();
+    assert!(err.to_string().contains("theme.borders.horizontal"));
 
     std::fs::write(&path, "[[widgets]\nmissing_bracket = true\n").unwrap();
     let err = load_from_path(&path).unwrap_err();
@@ -100,7 +110,6 @@ fn window_engine_anchors_drag_resize_and_clamping() {
     assert_eq!(mgr.main_window().resolved_rect.x, 50);
     assert_eq!(mgr.main_window().resolved_rect.y, 15);
 
-    // Resize via bottom-right corner
     let r = mgr.main_window().resolved_rect;
     assert!(mgr.begin_mouse_down(r.right() - 1, r.bottom() - 1, viewport));
     assert!(mgr.update_mouse_drag(r.right() + 5, r.bottom() + 2, viewport));
@@ -109,18 +118,29 @@ fn window_engine_anchors_drag_resize_and_clamping() {
 }
 
 #[test]
-fn command_engine_parses_and_autocompletes() {
+fn command_parser_and_contextual_completion_engine() {
     assert_eq!(
         parse_command(":colorscheme bamboo").unwrap(),
         ParsedCommand::Colorscheme(Some("bamboo".to_string()))
     );
     assert_eq!(parse_command("reload").unwrap(), ParsedCommand::Reload);
+    assert_eq!(parse_command(":save window").unwrap(), ParsedCommand::Save(SaveTarget::Window));
     assert_eq!(
-        parse_command(":animation crt_power_on").unwrap(),
-        ParsedCommand::Animation(Some("crt_power_on".to_string()))
+        parse_command(":set border.horizontal ━").unwrap(),
+        ParsedCommand::Set {
+            key: "border.horizontal".to_string(),
+            value: "━".to_string(),
+        }
     );
     assert_eq!(
-        parse_command(":window border solid").unwrap(),
+        parse_command(":animation play crt_power_on").unwrap(),
+        ParsedCommand::Animation {
+            action: AnimationAction::Play,
+            name: Some("crt_power_on".to_string()),
+        }
+    );
+    assert_eq!(
+        parse_command(":window border plain").unwrap(),
         ParsedCommand::Window(WindowCommand::SetBorderStyle(BorderStyle::Plain))
     );
     assert_eq!(
@@ -128,30 +148,126 @@ fn command_engine_parses_and_autocompletes() {
         ParsedCommand::Window(WindowCommand::SetBackground(WindowBackgroundMode::Transparent))
     );
     assert_eq!(
-        parse_command(":layout compact").unwrap(),
+        parse_command(":layout load compact").unwrap(),
         ParsedCommand::Layout(Some(LayoutSelection::View(ViewMode::Compact)))
     );
     assert_eq!(parse_command(":q").unwrap(), ParsedCommand::Quit);
 
+    let registry = CommandRegistry::new();
+    let cfg = Config::default();
+    let base_theme = Theme::from_config(&cfg.theme);
+    let themes = vec![
+        ThemeEntry {
+            name: "matrix".to_string(),
+            theme: base_theme.clone(),
+            source_path: None,
+        },
+        ThemeEntry {
+            name: "bamboo".to_string(),
+            theme: base_theme,
+            source_path: None,
+        },
+    ];
+    let animations = AnimationCatalog::load();
+    let layouts = vec!["my_grid".to_string()];
+    let ctx = CompletionContext {
+        themes: &themes,
+        animations: &animations,
+        layouts: &layouts,
+    };
+
+    // 1. Command prefix completion
+    let res = CompletionEngine::complete("col", 3, &registry, &ctx);
+    assert_eq!(res.items[0].insert_text, "colorscheme");
+
+    // 2. Dynamic theme completion from Theme Manager
+    let res = CompletionEngine::complete("colorscheme ba", 14, &registry, &ctx);
+    assert_eq!(res.items.len(), 1);
+    assert_eq!(res.items[0].insert_text, "bamboo");
+
+    // 3. Contextual animation play completion
+    let res = CompletionEngine::complete("animation play crt", 18, &registry, &ctx);
+    assert!(res.items.iter().any(|i| i.insert_text == "crt_power_on"));
+
+    // 4. Contextual layout load completion
+    let res = CompletionEngine::complete("layout load my_", 15, &registry, &ctx);
+    assert!(res.items.iter().any(|i| i.insert_text == "my_grid"));
+
+    // 5. Contextual border property & style completion
+    let res = CompletionEngine::complete("set border.", 11, &registry, &ctx);
+    assert!(res.items.iter().any(|i| i.insert_text == "border.horizontal"));
+    assert!(res.items.iter().any(|i| i.insert_text == "border.style"));
+
+    let res = CompletionEngine::complete("set border.style ", 17, &registry, &ctx);
+    assert!(res.items.iter().any(|i| i.insert_text == "double"));
+
+    let res = CompletionEngine::complete("set background ", 15, &registry, &ctx);
+    assert_eq!(res.items.len(), 2);
+
+    // 6. Editing, cursor movement, completion acceptance, and history navigation
     let mut cli = CommandLineState::default();
-    cli.open();
-    for ch in "colorscheme ba".chars() {
-        cli.push_char(ch);
+    cli.open(&registry, &ctx);
+    for ch in "col".chars() {
+        cli.insert_char(ch, &registry, &ctx);
     }
-    cli.autocomplete(&["matrix".into(), "bamboo".into()], &[]);
+    cli.next_suggestion();
+    assert!(cli.accept_selected(&registry, &ctx));
+    assert_eq!(cli.buffer, "colorscheme ");
+    assert!(cli.suggestions.iter().any(|i| i.insert_text == "bamboo"));
+
+    cli.insert_char('b', &registry, &ctx);
+    cli.next_suggestion();
+    assert!(cli.accept_selected(&registry, &ctx));
     assert_eq!(cli.buffer, "colorscheme bamboo");
-    assert_eq!(cli.submit(), "colorscheme bamboo");
+
+    // Cursor left/right editing
+    cli.move_left(&registry, &ctx);
+    cli.backspace(&registry, &ctx);
+    cli.insert_char('x', &registry, &ctx);
+    assert_eq!(cli.buffer, "colorscheme bambxo");
+
+    let submitted = cli.submit();
+    assert_eq!(submitted, "colorscheme bambxo");
     assert!(!cli.active);
+
+    // History recall when reopening with empty buffer
+    cli.open(&registry, &ctx);
+    cli.handle_up(&registry, &ctx);
+    assert_eq!(cli.buffer, "colorscheme bambxo");
 }
 
 #[test]
-fn animation_engine_native_and_declarative_toml() {
+fn border_chars_validation_and_runtime_application() {
+    assert!(validate_border_char("━").is_ok());
+    assert!(validate_border_char("╔").is_ok());
+    // Reject empty, multi-char, control, zero-width, and double-width characters
+    assert!(validate_border_char("").is_err());
+    assert!(validate_border_char("ab").is_err());
+    assert!(validate_border_char("\n").is_err());
+    assert!(validate_border_char("\u{200B}").is_err());
+    assert!(validate_border_char("🔥").is_err());
+
+    let mut borders = BorderChars::from_style(BorderStyle::Rounded);
+    assert_eq!(borders.top_left, "╭");
+    borders.set_property("horizontal", "━").unwrap();
+    assert_eq!(borders.horizontal, "━");
+    // Invalid update must fail and keep previous state
+    assert!(borders.set_property("vertical", "🔥🔥").is_err());
+    assert_eq!(borders.vertical, "│");
+
+    assert_eq!(parse_border_style("solid").unwrap(), BorderStyle::Plain);
+    assert_eq!(parse_border_style("double").unwrap(), BorderStyle::Double);
+}
+
+#[test]
+fn animation_engine_native_cursor_expand_and_declarative_toml() {
     let cfg = Config::default();
     let theme = Theme::from_config(&cfg.theme);
     let catalog = AnimationCatalog::load();
 
     for native in NativeTransition::all() {
         let mut player = TransitionPlayer::new(native.id(), &catalog, 600);
+        player.origin = Some((40, 12));
         let mut buf = Buffer::empty(Rect::new(0, 0, 80, 24));
         player.update(0.2);
         player.apply_to_buffer(&mut buf, Rect::new(5, 2, 70, 20), &theme);
@@ -167,9 +283,11 @@ fn animation_engine_native_and_declarative_toml() {
 }
 
 #[test]
-fn full_dashboard_renders_via_test_backend() {
-    let cfg = Config::default();
-    let theme = Theme::from_config(&cfg.theme);
+fn full_dashboard_and_cursor_startup_render_via_test_backend() {
+    let mut cfg = Config::default();
+    let mut theme = Theme::from_config(&cfg.theme);
+    theme.borders.set_property("horizontal", "━").unwrap();
+
     let mut collector = SystemCollector::new();
     let snapshot = collector.collect(120, 36);
     let mut effect = create_effect(EffectKind::Matrix, 120, 36, &cfg.background);
@@ -179,53 +297,27 @@ fn full_dashboard_renders_via_test_backend() {
     let catalog = AnimationCatalog::load();
     let transition = TransitionPlayer::new("none", &catalog, 0);
     let mut customizer = CustomizerState::default();
+    let registry = CommandRegistry::new();
     let mut cmd_line = CommandLineState::default();
     let themes = vec![ThemeEntry {
         name: "matrix".to_string(),
         theme: theme.clone(),
         source_path: None,
     }];
+    let layouts = vec![];
+    let cctx = CompletionContext {
+        themes: &themes,
+        animations: &catalog,
+        layouts: &layouts,
+    };
 
     let backend = TestBackend::new(120, 36);
     let mut terminal = Terminal::new(backend).unwrap();
 
-    for page in [1u8, 2u8, 3u8] {
-        for mode in [ViewMode::Dashboard, ViewMode::Compact, ViewMode::Minimal] {
-            let reveal = RevealState::complete();
-            let ctx = RenderContext {
-                config: &cfg,
-                theme: &theme,
-                snapshot: &snapshot,
-                reveal: &reveal,
-                active_page: page,
-                view_mode: mode,
-                paused: false,
-                show_help: false,
-                fps: 30.0,
-                status_toast: None,
-                window_transparent: false,
-            };
-            terminal
-                .draw(|frame| {
-                    draw_frame(
-                        frame,
-                        &cfg,
-                        effect.as_ref(),
-                        &transition,
-                        &mut windows,
-                        &mut customizer,
-                        &cmd_line,
-                        &themes,
-                        &catalog,
-                        &ctx,
-                    );
-                })
-                .unwrap();
-        }
-    }
-
-    cmd_line.open();
-    cmd_line.push_char('h');
+    // 1. Cursor startup mode renders only the blinking cursor (no dashboard panels)
+    cfg.startup.mode = StartupMode::Cursor;
+    let mut startup = CursorStartupState::new(true);
+    startup.pos = Some((30, 15));
     let reveal = RevealState::complete();
     let ctx = RenderContext {
         config: &cfg,
@@ -250,6 +342,34 @@ fn full_dashboard_renders_via_test_backend() {
                 &mut windows,
                 &mut customizer,
                 &cmd_line,
+                &startup,
+                &themes,
+                &catalog,
+                &ctx,
+            );
+        })
+        .unwrap();
+
+    let cursor_buf = terminal.backend().buffer();
+    assert_eq!(cursor_buf[(30, 15)].symbol(), "▌");
+
+    // 2. Normal dashboard + autocomplete popup + custom border character '━'
+    startup.pending = false;
+    cmd_line.open(&registry, &cctx);
+    cmd_line.insert_char('c', &registry, &cctx);
+    cmd_line.insert_char('o', &registry, &cctx);
+
+    terminal
+        .draw(|frame| {
+            draw_frame(
+                frame,
+                &cfg,
+                effect.as_ref(),
+                &transition,
+                &mut windows,
+                &mut customizer,
+                &cmd_line,
+                &startup,
                 &themes,
                 &catalog,
                 &ctx,
@@ -265,10 +385,12 @@ fn full_dashboard_renders_via_test_backend() {
         }
         dumped.push('\n');
     }
-    assert!(dumped.contains("Sistema"));
+    assert!(dumped.contains("System"));
     assert!(dumped.contains("Hardware"));
-    assert!(dumped.contains("Atividade"));
-    assert!(dumped.contains(":h"));
+    assert!(dumped.contains("Activity"));
+    assert!(dumped.contains("Session & Uptime"));
+    assert!(dumped.contains(":colorscheme"));
+    assert!(dumped.contains("━"));
 }
 
 #[test]
@@ -385,7 +507,6 @@ fn typography_renders_all_builtin_fonts_and_flf_parser() {
     let narrow = render_ascii_heading("Ola, Kiam!", "ANSI Shadow", false, 18);
     assert_eq!(narrow, vec!["Ola, Kiam!"]);
 
-    // Build a valid FLF font covering ASCII 32..=126 to test hardblanks, kerning, and smushing
     let mut kern_flf = String::from("flf2a$ 2 2 5 0 1\ncomment\n");
     for code in 32u32..=126u32 {
         if code == 65 {
@@ -399,10 +520,8 @@ fn typography_renders_all_builtin_fonts_and_flf_parser() {
     let parsed = FigletFont::from_flf_str("kern", &kern_flf).expect("valid flf");
     let rendered = parsed.render_lines("AB");
     assert_eq!(rendered.len(), 2);
-    // Hardblank '$' prevents 'B' from collapsing onto 'A'
     assert_eq!(rendered[0], "A B");
 
-    // FLF horizontal smushing rule 1 (equal char) + rule 2 (underscore)
     let mut smush_flf = String::from("flf2a$ 2 2 5 3 1\ncomment\n");
     for code in 32u32..=126u32 {
         if code == 65 {
