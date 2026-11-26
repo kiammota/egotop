@@ -35,7 +35,7 @@ impl From<CliEffect> for EffectKind {
     about = "Interactive animated terminal welcome dashboard for Linux & Hyprland"
 )]
 struct Cli {
-    /// Path to TOML configuration file (defaults to ~/.config/egotop.toml)
+    /// Path to TOML configuration file (defaults to ~/.config/egotop/egotop.toml)
     #[arg(short, long, value_name = "PATH")]
     config: Option<PathBuf>,
 

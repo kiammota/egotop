@@ -22,6 +22,10 @@ hide_unavailable = false
 view_mode = "dashboard"
 # Initial page (1..=3)
 default_page = 1
+# Startup transition animation: "crt_power_on" | "curtains" | "fade" | "slide" | "matrix_boot" | "none"
+# Or any custom animation name from ~/.config/egotop/animations/*.toml
+startup_animation = "matrix_boot"
+startup_duration_ms = 1100
 
 [theme]
 # Built-in presets: "matrix" | "cyberpunk" | "nord" | "amber" | "dracula" | "custom"

@@ -1,0 +1,25 @@
+schema_version = 1
+name = "cyber_boot"
+display_name = "Cyber Boot (Community)"
+author = "egotop"
+description = "Flash inicial CRT seguido de embaralhamento Matrix e revelação suave."
+
+[[steps]]
+effect = "crt_line"
+duration_ms = 320
+easing = "ease_out"
+target = "window"
+color = "#39FF88"
+
+[[steps]]
+effect = "matrix_scramble"
+duration_ms = 550
+easing = "ease_in_out"
+target = "content"
+chars = "01ｱｶｻﾀﾅﾊ#$"
+
+[[steps]]
+effect = "fade"
+duration_ms = 350
+easing = "ease_out"
+target = "content"

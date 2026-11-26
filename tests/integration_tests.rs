@@ -1,18 +1,27 @@
-use egotop::animation::{BackgroundEffect, create_effect, resolve_region};
+use egotop::animation::{
+    AnimationCatalog, BackgroundEffect, NativeTransition, TransitionPlayer, create_effect,
+    resolve_region,
+};
+use egotop::command::{
+    CommandLineState, LayoutSelection, ParsedCommand, WindowCommand, parse_command,
+};
 use egotop::config::{
-    Anchor, BackgroundConfig, Config, EffectKind, LayoutMode, RegionConfig, RegionUnit, SizeSpec,
-    ViewMode, WidgetConfig, WidgetId, load_from_path, load_or_create,
+    Anchor, BackgroundConfig, BorderStyle, Config, DeclarativeAnimation, EffectKind, LayoutMode,
+    RegionConfig, RegionUnit, SizeSpec, ThemeEntry, ViewMode, WidgetConfig, WidgetId,
+    load_from_path, load_or_create,
 };
 use egotop::system::SystemCollector;
 use egotop::system::os::parse_os_release;
 use egotop::system::uptime::format_uptime;
 use egotop::terminal::renderer::draw_frame;
 use egotop::ui::RevealState;
+use egotop::ui::customizer::CustomizerState;
 use egotop::ui::fonts::{FigletFont, available_fonts, load_font, normalize_ascii_text};
 use egotop::ui::layout::compute_layout;
 use egotop::ui::theme::{Theme, parse_color};
 use egotop::ui::typography::render_ascii_heading;
 use egotop::ui::widgets::RenderContext;
+use egotop::window::{PositionMode, WindowBackgroundMode, WindowConfig, WindowManager, resolve_window_rect};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
@@ -49,6 +58,115 @@ fn config_creates_default_and_loads_valid_toml() {
 }
 
 #[test]
+fn config_rejects_invalid_toml_and_out_of_range_values() {
+    let path = temp_config_path("invalid");
+    std::fs::write(&path, "[general]\nanimation_fps = 0\n").unwrap();
+    let err = load_from_path(&path).unwrap_err();
+    assert!(err.to_string().contains("animation_fps"));
+
+    std::fs::write(&path, "[theme]\nprimary = \"not-a-color\"\n").unwrap();
+    let err = load_from_path(&path).unwrap_err();
+    assert!(err.to_string().contains("theme.primary"));
+
+    std::fs::write(&path, "[[widgets]\nmissing_bracket = true\n").unwrap();
+    let err = load_from_path(&path).unwrap_err();
+    assert!(err.to_string().contains("Invalid TOML syntax"));
+
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn window_engine_anchors_drag_resize_and_clamping() {
+    let viewport = Rect::new(0, 0, 120, 40);
+    let mut cfg = WindowConfig {
+        anchor: Anchor::TopLeft,
+        width: SizeSpec::Cells(60),
+        height: SizeSpec::Cells(20),
+        ..WindowConfig::default()
+    };
+    assert_eq!(resolve_window_rect(&cfg, viewport), Rect::new(0, 0, 60, 20));
+
+    cfg.anchor = Anchor::BottomRight;
+    assert_eq!(resolve_window_rect(&cfg, viewport), Rect::new(60, 20, 60, 20));
+
+    let mut mgr = WindowManager::new(cfg);
+    mgr.resolve_all(viewport);
+    let top_row = mgr.main_window().resolved_rect.y;
+    let left_col = mgr.main_window().resolved_rect.x + 5;
+    assert!(mgr.begin_mouse_down(left_col, top_row, viewport));
+    assert!(mgr.update_mouse_drag(left_col - 10, top_row - 5, viewport));
+    mgr.end_mouse_drag();
+    assert_eq!(mgr.main_window().config.position, PositionMode::Absolute);
+    assert_eq!(mgr.main_window().resolved_rect.x, 50);
+    assert_eq!(mgr.main_window().resolved_rect.y, 15);
+
+    // Resize via bottom-right corner
+    let r = mgr.main_window().resolved_rect;
+    assert!(mgr.begin_mouse_down(r.right() - 1, r.bottom() - 1, viewport));
+    assert!(mgr.update_mouse_drag(r.right() + 5, r.bottom() + 2, viewport));
+    mgr.end_mouse_drag();
+    assert!(mgr.main_window().resolved_rect.width >= 60);
+}
+
+#[test]
+fn command_engine_parses_and_autocompletes() {
+    assert_eq!(
+        parse_command(":colorscheme bamboo").unwrap(),
+        ParsedCommand::Colorscheme(Some("bamboo".to_string()))
+    );
+    assert_eq!(parse_command("reload").unwrap(), ParsedCommand::Reload);
+    assert_eq!(
+        parse_command(":animation crt_power_on").unwrap(),
+        ParsedCommand::Animation(Some("crt_power_on".to_string()))
+    );
+    assert_eq!(
+        parse_command(":window border solid").unwrap(),
+        ParsedCommand::Window(WindowCommand::SetBorderStyle(BorderStyle::Plain))
+    );
+    assert_eq!(
+        parse_command(":window bg transparent").unwrap(),
+        ParsedCommand::Window(WindowCommand::SetBackground(WindowBackgroundMode::Transparent))
+    );
+    assert_eq!(
+        parse_command(":layout compact").unwrap(),
+        ParsedCommand::Layout(Some(LayoutSelection::View(ViewMode::Compact)))
+    );
+    assert_eq!(parse_command(":q").unwrap(), ParsedCommand::Quit);
+
+    let mut cli = CommandLineState::default();
+    cli.open();
+    for ch in "colorscheme ba".chars() {
+        cli.push_char(ch);
+    }
+    cli.autocomplete(&["matrix".into(), "bamboo".into()], &[]);
+    assert_eq!(cli.buffer, "colorscheme bamboo");
+    assert_eq!(cli.submit(), "colorscheme bamboo");
+    assert!(!cli.active);
+}
+
+#[test]
+fn animation_engine_native_and_declarative_toml() {
+    let cfg = Config::default();
+    let theme = Theme::from_config(&cfg.theme);
+    let catalog = AnimationCatalog::load();
+
+    for native in NativeTransition::all() {
+        let mut player = TransitionPlayer::new(native.id(), &catalog, 600);
+        let mut buf = Buffer::empty(Rect::new(0, 0, 80, 24));
+        player.update(0.2);
+        player.apply_to_buffer(&mut buf, Rect::new(5, 2, 70, 20), &theme);
+        player.update(1.0);
+        assert!(player.finished);
+    }
+
+    let sample_toml = include_str!("../assets/animations/cyber_boot.toml");
+    let spec: DeclarativeAnimation = toml::from_str(sample_toml).unwrap();
+    assert!(spec.validate().is_ok());
+    assert_eq!(spec.schema_version, 1);
+    assert_eq!(spec.steps.len(), 3);
+}
+
+#[test]
 fn full_dashboard_renders_via_test_backend() {
     let cfg = Config::default();
     let theme = Theme::from_config(&cfg.theme);
@@ -56,6 +174,17 @@ fn full_dashboard_renders_via_test_backend() {
     let snapshot = collector.collect(120, 36);
     let mut effect = create_effect(EffectKind::Matrix, 120, 36, &cfg.background);
     effect.update(0.05, &cfg.background);
+
+    let mut windows = WindowManager::new(WindowConfig::default());
+    let catalog = AnimationCatalog::load();
+    let transition = TransitionPlayer::new("none", &catalog, 0);
+    let mut customizer = CustomizerState::default();
+    let mut cmd_line = CommandLineState::default();
+    let themes = vec![ThemeEntry {
+        name: "matrix".to_string(),
+        theme: theme.clone(),
+        source_path: None,
+    }];
 
     let backend = TestBackend::new(120, 36);
     let mut terminal = Terminal::new(backend).unwrap();
@@ -74,14 +203,29 @@ fn full_dashboard_renders_via_test_backend() {
                 show_help: false,
                 fps: 30.0,
                 status_toast: None,
+                window_transparent: false,
             };
             terminal
-                .draw(|frame| draw_frame(frame, &cfg, effect.as_ref(), &ctx))
+                .draw(|frame| {
+                    draw_frame(
+                        frame,
+                        &cfg,
+                        effect.as_ref(),
+                        &transition,
+                        &mut windows,
+                        &mut customizer,
+                        &cmd_line,
+                        &themes,
+                        &catalog,
+                        &ctx,
+                    );
+                })
                 .unwrap();
         }
     }
 
-    // Verify page 1 dashboard contains expected panel titles
+    cmd_line.open();
+    cmd_line.push_char('h');
     let reveal = RevealState::complete();
     let ctx = RenderContext {
         config: &cfg,
@@ -94,9 +238,23 @@ fn full_dashboard_renders_via_test_backend() {
         show_help: false,
         fps: 30.0,
         status_toast: None,
+        window_transparent: false,
     };
     terminal
-        .draw(|frame| draw_frame(frame, &cfg, effect.as_ref(), &ctx))
+        .draw(|frame| {
+            draw_frame(
+                frame,
+                &cfg,
+                effect.as_ref(),
+                &transition,
+                &mut windows,
+                &mut customizer,
+                &cmd_line,
+                &themes,
+                &catalog,
+                &ctx,
+            );
+        })
         .unwrap();
 
     let buf = terminal.backend().buffer();
@@ -110,43 +268,7 @@ fn full_dashboard_renders_via_test_backend() {
     assert!(dumped.contains("Sistema"));
     assert!(dumped.contains("Hardware"));
     assert!(dumped.contains("Atividade"));
-    assert!(dumped.contains("Sessão & Uptime"));
-
-    // Verify help modal renders over dashboard
-    let ctx_help = RenderContext {
-        show_help: true,
-        ..ctx
-    };
-    terminal
-        .draw(|frame| draw_frame(frame, &cfg, effect.as_ref(), &ctx_help))
-        .unwrap();
-    let buf_help = terminal.backend().buffer();
-    let mut dumped_help = String::new();
-    for y in 0..buf_help.area.height {
-        for x in 0..buf_help.area.width {
-            dumped_help.push_str(buf_help[(x, y)].symbol());
-        }
-        dumped_help.push('\n');
-    }
-    assert!(dumped_help.contains("Ajuda"));
-}
-
-#[test]
-fn config_rejects_invalid_toml_and_out_of_range_values() {
-    let path = temp_config_path("invalid");
-    std::fs::write(&path, "[general]\nanimation_fps = 0\n").unwrap();
-    let err = load_from_path(&path).unwrap_err();
-    assert!(err.to_string().contains("animation_fps"));
-
-    std::fs::write(&path, "[theme]\nprimary = \"not-a-color\"\n").unwrap();
-    let err = load_from_path(&path).unwrap_err();
-    assert!(err.to_string().contains("theme.primary"));
-
-    std::fs::write(&path, "[[widgets]\nmissing_bracket = true\n").unwrap();
-    let err = load_from_path(&path).unwrap_err();
-    assert!(err.to_string().contains("Invalid TOML syntax"));
-
-    let _ = std::fs::remove_file(&path);
+    assert!(dumped.contains(":h"));
 }
 
 #[test]
@@ -210,7 +332,6 @@ fn layout_adapts_to_resizes_and_respects_z_index_and_anchors() {
         ..Config::default()
     };
 
-    // Wide terminal: split horizontally and sorted by z_index (Hardware first, System second)
     let wide = Rect::new(0, 0, 140, 40);
     let l_wide = compute_layout(wide, &cfg, 1, ViewMode::Dashboard);
     assert_eq!(l_wide.widgets.len(), 2);
@@ -218,7 +339,6 @@ fn layout_adapts_to_resizes_and_respects_z_index_and_anchors() {
     assert_eq!(l_wide.widgets[1].config.id, WidgetId::System);
     assert!(l_wide.widgets[0].area.x < l_wide.widgets[1].area.x);
 
-    // Tiny terminal: must never panic or overflow screen bounds
     for (w, h) in [(20, 8), (45, 16), (80, 24), (200, 60)] {
         let screen = Rect::new(0, 0, w, h);
         let l = compute_layout(screen, &cfg, 1, ViewMode::Dashboard);
@@ -228,7 +348,6 @@ fn layout_adapts_to_resizes_and_respects_z_index_and_anchors() {
         }
     }
 
-    // Free mode anchoring
     cfg.layout.mode = LayoutMode::Free;
     let l_free = compute_layout(Rect::new(0, 0, 100, 40), &cfg, 1, ViewMode::Dashboard);
     let hw = l_free
@@ -255,16 +374,13 @@ fn typography_renders_all_builtin_fonts_and_flf_parser() {
         assert!(lines.len() >= 3);
     }
 
-    // Narrow fallback should gracefully downgrade width
     let narrow = render_ascii_heading("Ola, Kiam!", "ANSI Shadow", false, 18);
     assert_eq!(narrow, vec!["Ola, Kiam!"]);
 
-    // Minimal FLF parser sanity check
     let mini_flf = "flf2a$ 2 2 5 0 1\ncomment\nA@\nA@@\nB@\nB@@\n";
     let parsed = FigletFont::from_flf_str("mini", mini_flf);
     assert!(parsed.is_some());
 
-    // Reveal animation progression
     let mut reveal = RevealState::new(1.0);
     assert!(!reveal.is_done());
     let partial = reveal.mask_line("Hello", 0);

@@ -1,103 +1,104 @@
 # egotop
 
-**egotop** é um dashboard interativo de terminal (*terminal welcome dashboard*) escrito em Rust para ambientes Linux — com atenção especial para setups **Hyprland**, **Wayland**, **Kitty**, **Alacritty**, **WezTerm** e **foot**.
+**egotop** é um ambiente visual interativo de terminal (*terminal welcome dashboard*) escrito em Rust para Linux, Hyprland, Wayland e X11.
 
-Ele combina a coleta nativa de informações do sistema (semelhante ao Fastfetch) com um motor de animações em plano de fundo, fontes ASCII no estilo FIGlet, layout totalmente personalizável em TOML e controles interativos.
-
----
-
-## Recursos
-
-- **Coleta nativa no Linux** (sem `sudo`, sem executar comandos externos repetidamente):
-  - **Sistema**: distribuição (`/etc/os-release`), kernel, arquitetura, hostname, usuário, shell e versão, terminal, DE/WM, sessão Wayland/X11 e dimensões do terminal.
-  - **Hardware**: modelo da CPU, utilização real em tempo real (delta `/proc/stat`), temperatura via `hwmon`/`thermal_zone`, RAM e Swap (`/proc/meminfo`), armazenamento (`/proc/mounts` + `statvfs`) e GPU/VRAM via `/sys/class/drm`.
-  - **Atividade**: load average (`1m / 5m / 15m`), processos, threads e sparklines em tempo real de CPU% e RAM%.
-  - **Sessão & Uptime**: tempo ligado, horário de inicialização e hora/data configuráveis.
-- **Motor extensível de animações de fundo**:
-  - `matrix`: chuva de caracteres caindo verticalmente (Katakana, Hex, ASCII ou Binary), densidade, comprimento e região configuráveis.
-  - `water`: ondas animadas em interferência contínua com velocidade, amplitude e densidade.
-  - `particles`: partículas flutuantes independentes.
-  - `scanlines`: linhas horizontais CRT com varredura contínua.
-  - `none`: fundo estático.
-- **Tipografia ASCII & Logos**:
-  - Fontes integradas: `ANSI Shadow`, `Standard`, `Big`, `Slant`, `Small`, `Block`, `Doom`.
-  - Suporte a arquivos `.flf` customizados em `~/.config/egotop/fonts/`.
-  - Fallback automático para ASCII quando `ascii_fallback = true` ou `use_nerd_fonts = false`.
-  - Logos integrados (`auto`, `arch`, `hyprland`, `linux`, `egotop`) ou logo customizado inline/arquivo.
-  - Efeito gradual de revelação estilo Matrix na saudação inicial.
-- **Layout flexível e responsivo**:
-  - Posicionamento por âncoras (`top-left`, `top-center`, `top-right`, `center-left`, `center`, `center-right`, `bottom-left`, `bottom-center`, `bottom-right`, `absolute`).
-  - Largura e altura em células ou porcentagem (`"50%"`).
-  - Ordem de renderização configurável por `z_index`.
-  - Modos `responsive`, `free` e `compact` que se adaptam ao redimensionamento da janela sem quebrar.
+Execute apenas `egotop` — sem argumentos obrigatórios — para iniciar a janela principal com coleta real do sistema, animações de entrada, efeitos de fundo, personalização visual e linha de comandos inspirada no Neovim.
 
 ---
 
-## Instalação e Execução
+## Arquitetura
 
-```bash
-cd ~/projects/egotop
-cargo build --release
-./target/release/egotop
+- **Window Engine** ([`src/window/mod.rs`](src/window/mod.rs)): gerenciamento independente da janela principal (e preparado para múltiplas janelas via `z_index`), com posição absoluta ou relativa, âncoras (`top-left`, `top-center`, `top-right`, `center`, `bottom-left`, `bottom-center`, `bottom-right`), movimentação por mouse/teclado (`draggable`), redimensionamento (`resizable`), bordas configuráveis (`rounded`, `solid`, `double`, `thick`), padding, visibilidade e fundo sólido ou transparente em nível de célula do terminal (`Color::Reset`).
+- **Command Engine** ([`src/command/mod.rs`](src/command/mod.rs)): linha de comandos estilo Neovim oculta até pressionar `:`, com histórico (`↑`/`↓`) e autocompletar (`Tab`).
+- **Animation Engine** ([`src/animation/transition.rs`](src/animation/transition.rs)): animações nativas de entrada/transição (`crt_power_on`, `curtains`, `fade`, `slide`, `matrix_boot`, `none`) além de efeitos contínuos de plano de fundo (`matrix`, `water`, `particles`, `scanlines`, `none`) e suporte a animações declarativas da comunidade em TOML (`schema_version = 1`).
+- **Configuration & Theme Loaders** ([`src/config/`](src/config/)): tudo organizado sob `~/.config/egotop/` com carregamento em runtime (sem leitura de arquivos por frame).
+- **System Collector** ([`src/system/`](src/system/)): coleta nativa via `/proc`, `/sys`, `procfs` e `libc`.
+
+---
+
+## Estrutura em `~/.config/egotop/`
+
+```text
+~/.config/egotop/
+├── egotop.toml         # Configuração geral, tema ativo, animação inicial, layout e widgets
+├── window.toml         # Posição, âncora, tamanho, bordas, fundo, padding e flags da janela
+├── themes/             # Temas compartilháveis (*.toml)
+├── animations/         # Animações declarativas da comunidade (*.toml, schema_version = 1)
+├── fonts/              # Fontes FIGlet customizadas (*.flf)
+└── layouts/            # Presets de layout
 ```
 
-Para instalar no PATH local do Cargo (`~/.cargo/bin/egotop`):
+### Formato declarativo de animações da comunidade (`~/.config/egotop/animations/*.toml`)
 
-```bash
-cargo install --path .
-```
+```toml
+schema_version = 1
+name = "cyber_boot"
+display_name = "Cyber Boot (Community)"
+author = "egotop"
+description = "Flash inicial CRT seguido de embaralhamento Matrix."
 
-### Opções de Linha de Comando
+[[steps]]
+effect = "crt_line"        # crt_line | curtains | fade | slide | matrix_scramble | flash | pause
+duration_ms = 320
+easing = "ease_out"        # linear | ease_in | ease_out | ease_in_out
+target = "window"
+color = "#39FF88"
 
-```bash
-egotop                          # Inicia com ~/.config/egotop.toml (cria padrão se não existir)
-egotop --config /caminho.toml   # Usa um arquivo de configuração específico
-egotop --effect water           # Sobrescreve o efeito de fundo na sessão atual
-egotop --page 2                 # Abre diretamente na página 2
-egotop --check-config           # Valida o TOML e sai
-egotop --print-default-config   # Imprime a configuração padrão no stdout
+[[steps]]
+effect = "matrix_scramble"
+duration_ms = 550
+easing = "ease_in_out"
+target = "content"
+chars = "01ｱｶｻﾀﾅﾊ#$"
 ```
 
 ---
 
-## Controles Interativos
+## Interação: Teclado, Mouse e Linha de Comandos
+
+### Mouse & Interação Visual
+
+- **Arrastar a borda superior** da janela move a janela (quando `draggable = true`).
+- **Arrastar o canto inferior direito (`◢`)** redimensiona a janela (quando `resizable = true`).
+- **Clicar em `[⚙]`** (ou pressionar `F2` / `g`) abre o painel visual interativo com abas para **Temas**, **Animações** (com pré-visualização ao vivo), **Janela** e **Layout**.
+- **Clicar em `[?]`** (ou pressionar `h` / `?`) abre a ajuda.
+
+### Comandos (`:` estilo Neovim)
+
+Pressione `:` para abrir o prompt, `Tab` para autocompletar, `Enter` para executar e `Esc` para cancelar:
+
+- `:colorscheme <nome>` (ou `:colorscheme` para abrir o seletor visual de temas)
+- `:animation [nome]` (seleciona ou abre a interface interativa de pré-visualização/seleção de animações)
+- `:window [center|anchor <pos>|border <on|off|rounded|solid|double|thick>|bg <solid|transparent>|drag <on|off>|resize <on|off>|padding <n>|reset]`
+- `:layout [responsive|free|compact|minimal|dashboard]`
+- `:effect [matrix|water|particles|scanlines|none]`
+- `:reload` — recarrega configurações, temas, janela e animações de `~/.config/egotop/`
+- `:help` — abre a ajuda
+- `:q` — sai e restaura o terminal
+
+### Atalhos Diretos
 
 | Tecla | Ação |
 | --- | --- |
-| `q` / `Esc` / `Ctrl+C` | Sair e restaurar o terminal |
-| `r` | Atualizar informações do sistema imediatamente |
-| `p` | Pausar / retomar animações |
-| `c` | Recarregar `~/.config/egotop.toml` sem reiniciar |
-| `m` | Alternar modo de visualização (`Dashboard` / `Compacto` / `Minimal`) |
-| `e` | Alternar efeito de fundo (`Matrix` / `Water` / `Particles` / `Scanlines` / `None`) |
-| `1`, `2`, `3` | Alternar entre páginas do dashboard |
-| `h` / `?` | Abrir ou fechar o painel de ajuda |
+| `:` | Abrir linha de comandos |
+| `F2` / `g` | Abrir painel visual de personalização |
+| `Setas` / `Shift+Setas` | Mover / redimensionar a janela |
+| `r` / `p` / `c` | Atualizar dados / pausar animações / recarregar TOML |
+| `m` / `e` / `1-3` | Modo de visualização / efeito de fundo / páginas |
+| `q` / `Esc` / `Ctrl+C` | Fechar modal ou sair |
 
 ---
 
-## Configuração (`~/.config/egotop.toml`)
+## Compilação, Testes e Integração
 
-Na primeira execução, o `egotop` cria automaticamente `~/.config/egotop.toml` com o arquivo padrão documentado em [`config/default.toml`](config/default.toml).
+```bash
+cd ~/projects/egotop
+cargo test
+cargo build --release
+cargo install --path .
+```
 
-### Seções principais
-
-- `[general]`: `name`, `greeting` (placeholders `{user}`, `{host}`, `{distro}`, `{wm}`), `user_override`, `message`, `refresh_rate_ms`, `animation_fps`, `time_format`, `date_format`, `hide_unavailable`, `view_mode`, `default_page`.
-- `[theme]`: presets (`matrix`, `cyberpunk`, `nord`, `amber`, `dracula`, `custom`), `background` (aceita `#RRGGBB`, nome de cor ou `"reset"` para transparência do terminal), `panel_background`, `primary`, `secondary`, `accent`, `text`, `muted`, `border`, `danger`, `border_type` (`rounded`, `plain`, `double`, `thick`).
-- `[typography]`: `font`, `logo_font`, `use_nerd_fonts`, `ascii_fallback`, `logo_preset`, `custom_logo`, `custom_logo_file`.
-- `[header]`: `enabled`, `show_clock`, `show_date`, `show_indicators`, `show_fps`.
-- `[background]` e `[background.<efeito>]`: `effect`, `enabled`, `speed`, `density`, `opacity` e `region` opcional (`{ x, y, width, height, unit = "percent" | "cells" }`).
-- `[layout]`: `mode` (`responsive`, `free`, `compact`), `padding`, `gap`, `min_width_for_split`.
-- `[[widgets]]`: lista de painéis independentes (`greeting`, `logo`, `system`, `hardware`, `activity`, `session`, `uptime`, `message`) com `enabled`, `title`, `position`, `page`, `width`, `height`, `x`, `y`, `offset_x`, `offset_y`, `align`, `z_index`, `font`, `color`, `border_color`, `show_border`, `fields`, `graph_style`, `reveal_animation`.
-
----
-
-## Integração com Zsh, Bash e Hyprland
-
-> O `egotop` **não modifica** seus arquivos de configuração automaticamente. Use os exemplos abaixo conforme sua preferência.
-
-### Zsh (`~/.zshrc`)
-
-Para exibir o `egotop` ao abrir um novo terminal interativo (sem atrapalhar subshells ou scripts):
+### Zsh (`~/.zshrc`) / Bash (`~/.bashrc`)
 
 ```zsh
 if [[ -o interactive ]] && [[ -z "$EGOTOP_SHOWN" ]] && command -v egotop >/dev/null 2>&1; then
@@ -106,38 +107,12 @@ if [[ -o interactive ]] && [[ -z "$EGOTOP_SHOWN" ]] && command -v egotop >/dev/n
 fi
 ```
 
-### Bash (`~/.bashrc`)
-
-```bash
-if [[ $- == *i* ]] && [[ -z "$EGOTOP_SHOWN" ]] && command -v egotop >/dev/null 2>&1; then
-  export EGOTOP_SHOWN=1
-  egotop
-fi
-```
-
 ### Hyprland (`~/.config/hypr/hyprland.conf`)
 
-Para abrir automaticamente uma janela de boas-vindas com o Kitty ao iniciar a sessão do Hyprland:
-
 ```ini
-# Abre um terminal flutuante de boas-vindas com o egotop no login
 windowrulev2 = float, class:^(egotop-welcome)$
 windowrulev2 = size 1150 720, class:^(egotop-welcome)$
 windowrulev2 = center, class:^(egotop-welcome)$
 
 exec-once = kitty --class egotop-welcome -e egotop
-```
-
-Ou crie um atalho dedicado no Hyprland (ex.: `SUPER + W`):
-
-```ini
-bind = $mainMod, W, exec, kitty --class egotop-welcome -e egotop
-```
-
----
-
-## Testes
-
-```bash
-cargo test
 ```

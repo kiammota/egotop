@@ -1,0 +1,19 @@
+schema_version = 1
+name = "neon_curtains"
+display_name = "Neon Curtains (Community)"
+author = "egotop"
+description = "Cortinas simétricas revelando a janela principal com brilho lateral."
+
+[[steps]]
+effect = "curtains"
+duration_ms = 650
+easing = "ease_in_out"
+target = "window"
+direction = "center"
+color = "#00D9FF"
+
+[[steps]]
+effect = "fade"
+duration_ms = 250
+easing = "linear"
+target = "content"

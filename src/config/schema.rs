@@ -129,6 +129,10 @@ pub struct GeneralConfig {
     pub hide_unavailable: bool,
     pub view_mode: ViewMode,
     pub default_page: u8,
+    /// Startup transition animation name: "crt_power_on", "curtains", "fade",
+    /// "slide", "matrix_boot", "none", or a community TOML animation name.
+    pub startup_animation: String,
+    pub startup_duration_ms: u64,
 }
 
 impl Default for GeneralConfig {
@@ -145,6 +149,8 @@ impl Default for GeneralConfig {
             hide_unavailable: false,
             view_mode: ViewMode::Dashboard,
             default_page: 1,
+            startup_animation: "matrix_boot".to_string(),
+            startup_duration_ms: 1100,
         }
     }
 }
@@ -215,9 +221,30 @@ impl Default for ThemeConfig {
 pub enum BorderStyle {
     #[default]
     Rounded,
+    #[serde(alias = "solid")]
     Plain,
     Double,
     Thick,
+}
+
+impl BorderStyle {
+    pub fn next(self) -> Self {
+        match self {
+            Self::Rounded => Self::Plain,
+            Self::Plain => Self::Double,
+            Self::Double => Self::Thick,
+            Self::Thick => Self::Rounded,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Rounded => "rounded",
+            Self::Plain => "solid",
+            Self::Double => "double",
+            Self::Thick => "thick",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -738,6 +765,9 @@ impl Config {
 
 pub fn is_valid_color_spec(spec: &str) -> bool {
     let s = spec.trim().to_ascii_lowercase();
+    if s.is_empty() {
+        return true;
+    }
     if matches!(
         s.as_str(),
         "reset"

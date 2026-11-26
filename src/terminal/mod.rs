@@ -2,7 +2,9 @@ pub mod input;
 pub mod renderer;
 
 use crossterm::{
-    cursor, execute,
+    cursor,
+    event::{DisableMouseCapture, EnableMouseCapture},
+    execute,
     style::ResetColor,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
@@ -21,7 +23,7 @@ impl TerminalGuard {
         install_panic_hook();
         enable_raw_mode()?;
         let mut stdout = io::stdout();
-        execute!(stdout, EnterAlternateScreen, cursor::Hide)?;
+        execute!(stdout, EnterAlternateScreen, EnableMouseCapture, cursor::Hide)?;
         TERMINAL_ACTIVE.store(true, Ordering::SeqCst);
 
         let backend = CrosstermBackend::new(stdout);
@@ -41,7 +43,13 @@ pub fn restore_terminal() -> io::Result<()> {
     if TERMINAL_ACTIVE.swap(false, Ordering::SeqCst) {
         let _ = disable_raw_mode();
         let mut stdout = io::stdout();
-        let _ = execute!(stdout, ResetColor, cursor::Show, LeaveAlternateScreen);
+        let _ = execute!(
+            stdout,
+            DisableMouseCapture,
+            ResetColor,
+            cursor::Show,
+            LeaveAlternateScreen
+        );
     }
     Ok(())
 }

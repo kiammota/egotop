@@ -2,6 +2,7 @@ pub mod matrix;
 pub mod none;
 pub mod particles;
 pub mod scanlines;
+pub mod transition;
 pub mod water;
 
 use crate::config::{BackgroundConfig, EffectKind, RegionConfig, RegionUnit};
@@ -13,6 +14,9 @@ pub use matrix::MatrixEffect;
 pub use none::NoneEffect;
 pub use particles::ParticlesEffect;
 pub use scanlines::ScanlinesEffect;
+pub use transition::{
+    AnimationCatalog, AnimationCatalogEntry, AnimationSource, NativeTransition, TransitionPlayer,
+};
 pub use water::WaterEffect;
 
 pub trait BackgroundEffect: Send {

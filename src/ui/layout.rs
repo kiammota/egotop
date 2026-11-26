@@ -45,17 +45,9 @@ pub fn compute_layout(
     } else {
         0
     };
-    let footer_h = if inner.height >= 8 { 1 } else { 0 };
+    let footer_h = 0;
 
     let header = (header_h > 0).then(|| Rect::new(inner.x, inner.y, inner.width, header_h));
-    let footer = (footer_h > 0).then(|| {
-        Rect::new(
-            inner.x,
-            inner.bottom().saturating_sub(footer_h),
-            inner.width,
-            footer_h,
-        )
-    });
     let body_y = inner.y + header_h;
     let body_h = inner
         .height
@@ -84,7 +76,7 @@ pub fn compute_layout(
     ComputedLayout {
         header,
         body,
-        footer: footer.unwrap_or(Rect::ZERO),
+        footer: Rect::ZERO,
         widgets,
     }
 }

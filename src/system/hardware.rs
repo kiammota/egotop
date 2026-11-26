@@ -189,9 +189,11 @@ fn collect_memory() -> MemorySnapshot {
     };
 
     let total = mem.mem_total;
-    let available = mem
-        .mem_available
-        .unwrap_or_else(|| mem.mem_free.saturating_add(mem.buffers).saturating_add(mem.cached));
+    let available = mem.mem_available.unwrap_or_else(|| {
+        mem.mem_free
+            .saturating_add(mem.buffers)
+            .saturating_add(mem.cached)
+    });
     let used = total.saturating_sub(available);
     let swap_used = mem.swap_total.saturating_sub(mem.swap_free);
 
@@ -283,15 +285,20 @@ fn collect_disks() -> Vec<DiskInfo> {
     for line in mounts.lines() {
         let mut parts = line.split_whitespace();
         let Some(source) = parts.next() else { continue };
-        let Some(mount_point) = parts.next() else { continue };
-        let Some(fs_type) = parts.next() else { continue };
+        let Some(mount_point) = parts.next() else {
+            continue;
+        };
+        let Some(fs_type) = parts.next() else {
+            continue;
+        };
 
         let is_root = mount_point == "/";
         let is_real_device = source.starts_with("/dev/");
         if !is_root && (!is_real_device || !allowed_fs.contains(&fs_type)) {
             continue;
         }
-        if mount_point.starts_with("/boot") && disks.iter().any(|d: &DiskInfo| d.mount_point == "/") {
+        if mount_point.starts_with("/boot") && disks.iter().any(|d: &DiskInfo| d.mount_point == "/")
+        {
             // Keep EFI/boot secondary unless it's distinct and user has few disks; skip snap/loop noise
         }
         if source.contains("loop") || !seen_mounts.insert(mount_point.to_string()) {

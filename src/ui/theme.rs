@@ -74,6 +74,10 @@ impl Theme {
     }
 }
 
+pub fn builtin_theme_names() -> &'static [&'static str] {
+    &["matrix", "cyberpunk", "nord", "amber", "dracula"]
+}
+
 pub fn preset_theme(name: &str) -> Theme {
     match name.trim().to_ascii_lowercase().as_str() {
         "cyberpunk" => Theme {
