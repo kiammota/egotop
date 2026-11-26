@@ -1,12 +1,14 @@
 use crate::animation::{AnimationCatalog, BackgroundEffect};
 use crate::config::{Anchor, BorderStyle, Config, EffectKind, LayoutMode, ThemeEntry, WidgetId};
 use crate::ui::theme::Theme;
+use crate::ui::widgets::{allocate_three_column_widths, pad_display_width, truncate_display_width};
 use crate::window::{WindowBackgroundMode, WindowConfig};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Tabs, Wrap};
+use unicode_width::UnicodeWidthStr;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum CustomizerTab {
@@ -256,8 +258,20 @@ pub fn render_customizer(
         tx = tx.saturating_add(tw + 1);
     }
 
+    // `render_selectable_list` reserves 2 columns on the left for `"▶ "` / `"  "`.
+    let row_budget = (chunks[1].width as usize).saturating_sub(2);
+    let content_budget = row_budget.saturating_sub(2);
+
     match state.tab {
         CustomizerTab::Themes => {
+            let max_name_w = themes
+                .iter()
+                .map(|e| e.name.width())
+                .max()
+                .unwrap_or(10)
+                .clamp(8, 20);
+            let (name_w, _, origin_w) =
+                allocate_three_column_widths(content_budget, max_name_w + 1, 8, 0);
             let items: Vec<ListItem> = themes
                 .iter()
                 .map(|entry| {
@@ -268,52 +282,107 @@ pub fn render_customizer(
                         "built-in"
                     };
                     let mark = if active { "● " } else { "  " };
-                    ListItem::new(Line::from(vec![
-                        Span::styled(mark, Style::default().fg(theme.primary)),
-                        Span::styled(
-                            format!("{:<18}", entry.name),
+                    let mut spans = vec![Span::styled(mark, Style::default().fg(theme.primary))];
+                    if origin_w > 0 {
+                        let name_cell =
+                            format!("{} ", pad_display_width(&entry.name, name_w.saturating_sub(1)));
+                        let origin_cell = truncate_display_width(&format!("({origin})"), origin_w);
+                        spans.push(Span::styled(
+                            name_cell,
                             Style::default().fg(theme.text).add_modifier(Modifier::BOLD),
-                        ),
-                        Span::styled(format!(" ({origin})"), Style::default().fg(theme.muted)),
-                    ]))
+                        ));
+                        spans.push(Span::styled(origin_cell, Style::default().fg(theme.muted)));
+                    } else {
+                        spans.push(Span::styled(
+                            pad_display_width(&entry.name, name_w),
+                            Style::default().fg(theme.text).add_modifier(Modifier::BOLD),
+                        ));
+                    }
+                    ListItem::new(Line::from(spans))
                 })
                 .collect();
             render_selectable_list(frame, chunks[1], items, state.selected, theme);
         }
         CustomizerTab::Animations => {
             let active_startup = &config.general.startup_animation;
+            let max_name_w = animations
+                .entries
+                .iter()
+                .map(|e| e.display_name.width())
+                .max()
+                .unwrap_or(14);
+            let pref_name_w = (max_name_w + 1).clamp(12, 24);
+            let (name_w, tag_w, desc_w) =
+                allocate_three_column_widths(content_budget, pref_name_w, 10, 9);
             let items: Vec<ListItem> = animations
                 .entries
                 .iter()
                 .map(|entry| {
                     let is_startup = entry.id.eq_ignore_ascii_case(active_startup);
                     let mark = if is_startup { "★ " } else { "  " };
-                    let tag = if entry.is_community { "TOML" } else { "NATIVA" };
-                    ListItem::new(Line::from(vec![
-                        Span::styled(mark, Style::default().fg(theme.accent)),
-                        Span::styled(
-                            format!("{:<24}", entry.display_name),
-                            Style::default().fg(theme.text).add_modifier(Modifier::BOLD),
-                        ),
-                        Span::styled(format!("[{tag}] "), Style::default().fg(theme.secondary)),
-                        Span::styled(&entry.description, Style::default().fg(theme.muted)),
-                    ]))
+                    let tag = if entry.is_community { "[TOML]" } else { "[NATIVE]" };
+
+                    let mut spans = vec![Span::styled(mark, Style::default().fg(theme.accent))];
+                    let name_cell = if tag_w > 0 || desc_w > 0 {
+                        format!(
+                            "{} ",
+                            pad_display_width(&entry.display_name, name_w.saturating_sub(1))
+                        )
+                    } else {
+                        pad_display_width(&entry.display_name, name_w)
+                    };
+                    spans.push(Span::styled(
+                        name_cell,
+                        Style::default().fg(theme.text).add_modifier(Modifier::BOLD),
+                    ));
+                    if tag_w > 0 {
+                        let tag_cell = if desc_w > 0 {
+                            format!("{} ", pad_display_width(tag, tag_w.saturating_sub(1)))
+                        } else {
+                            pad_display_width(tag, tag_w)
+                        };
+                        spans.push(Span::styled(tag_cell, Style::default().fg(theme.secondary)));
+                    }
+                    if desc_w > 0 {
+                        spans.push(Span::styled(
+                            truncate_display_width(&entry.description, desc_w),
+                            Style::default().fg(theme.muted),
+                        ));
+                    }
+                    ListItem::new(Line::from(spans))
                 })
                 .collect();
             render_selectable_list(frame, chunks[1], items, state.selected, theme);
         }
         CustomizerTab::Window => {
             let rows = window_items_summary(window_cfg);
+            let max_key_w = rows.iter().map(|(k, _)| k.width()).max().unwrap_or(16).clamp(12, 24);
+            let (key_w, _, val_w) =
+                allocate_three_column_widths(content_budget, max_key_w + 1, 10, 0);
             let items: Vec<ListItem> = rows
                 .into_iter()
                 .map(|(k, v)| {
-                    ListItem::new(Line::from(vec![
-                        Span::styled(
-                            format!("  {:<24}", k),
-                            Style::default().fg(theme.secondary).add_modifier(Modifier::BOLD),
-                        ),
-                        Span::styled(v, Style::default().fg(theme.text)),
-                    ]))
+                    let mut spans = vec![Span::raw("  ")];
+                    if val_w > 0 {
+                        spans.push(Span::styled(
+                            format!("{} ", pad_display_width(&k, key_w.saturating_sub(1))),
+                            Style::default()
+                                .fg(theme.secondary)
+                                .add_modifier(Modifier::BOLD),
+                        ));
+                        spans.push(Span::styled(
+                            truncate_display_width(&v, val_w),
+                            Style::default().fg(theme.text),
+                        ));
+                    } else {
+                        spans.push(Span::styled(
+                            pad_display_width(&k, key_w),
+                            Style::default()
+                                .fg(theme.secondary)
+                                .add_modifier(Modifier::BOLD),
+                        ));
+                    }
+                    ListItem::new(Line::from(spans))
                 })
                 .collect();
             render_selectable_list(frame, chunks[1], items, state.selected, theme);
@@ -322,16 +391,33 @@ pub fn render_customizer(
             let mut cfg_view = config.clone();
             cfg_view.background.effect = bg_effect.kind();
             let rows = layout_items_summary(&cfg_view);
+            let max_key_w = rows.iter().map(|(k, _)| k.width()).max().unwrap_or(18).clamp(12, 28);
+            let (key_w, _, val_w) =
+                allocate_three_column_widths(content_budget, max_key_w + 1, 10, 0);
             let items: Vec<ListItem> = rows
                 .into_iter()
                 .map(|(k, v)| {
-                    ListItem::new(Line::from(vec![
-                        Span::styled(
-                            format!("  {:<28}", k),
-                            Style::default().fg(theme.secondary).add_modifier(Modifier::BOLD),
-                        ),
-                        Span::styled(v, Style::default().fg(theme.text)),
-                    ]))
+                    let mut spans = vec![Span::raw("  ")];
+                    if val_w > 0 {
+                        spans.push(Span::styled(
+                            format!("{} ", pad_display_width(&k, key_w.saturating_sub(1))),
+                            Style::default()
+                                .fg(theme.secondary)
+                                .add_modifier(Modifier::BOLD),
+                        ));
+                        spans.push(Span::styled(
+                            truncate_display_width(&v, val_w),
+                            Style::default().fg(theme.text),
+                        ));
+                    } else {
+                        spans.push(Span::styled(
+                            pad_display_width(&k, key_w),
+                            Style::default()
+                                .fg(theme.secondary)
+                                .add_modifier(Modifier::BOLD),
+                        ));
+                    }
+                    ListItem::new(Line::from(spans))
                 })
                 .collect();
             render_selectable_list(frame, chunks[1], items, state.selected, theme);

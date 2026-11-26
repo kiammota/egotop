@@ -11,7 +11,7 @@ use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Sparkline, Wrap};
-use unicode_width::UnicodeWidthStr;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 pub struct RenderContext<'a> {
     pub config: &'a Config,
@@ -960,20 +960,109 @@ fn bar_line<'a>(label: &str, pct: f32, suffix: &str, bar_width: usize, theme: &T
     ])
 }
 
-fn truncate_str(s: &str, max_chars: usize) -> String {
-    if max_chars == 0 {
+/// Truncates `s` so its terminal display width never exceeds `max_width` columns,
+/// appending `…` when characters are omitted.
+pub fn truncate_display_width(s: &str, max_width: usize) -> String {
+    if max_width == 0 {
         return String::new();
     }
-    let count = s.chars().count();
-    if count <= max_chars {
-        s.to_string()
-    } else if max_chars <= 3 {
-        s.chars().take(max_chars).collect()
+    let clean;
+    let src = if s.contains(['\n', '\r', '\t']) {
+        clean = s
+            .chars()
+            .map(|c| match c {
+                '\n' | '\r' | '\t' => ' ',
+                other => other,
+            })
+            .collect::<String>();
+        clean.as_str()
     } else {
-        let mut out: String = s.chars().take(max_chars - 1).collect();
-        out.push('…');
-        out
+        s
+    };
+
+    if src.width() <= max_width {
+        return src.to_string();
     }
+    if max_width == 1 {
+        return "…".to_string();
+    }
+
+    let limit = max_width - 1;
+    let mut out = String::new();
+    let mut used = 0usize;
+    for ch in src.chars() {
+        let cw = ch.width().unwrap_or(0);
+        if used + cw > limit {
+            break;
+        }
+        out.push(ch);
+        used += cw;
+    }
+    out.push('…');
+    out
+}
+
+/// Truncates or right-pads `s` with spaces so its terminal display width equals `width`.
+pub fn pad_display_width(s: &str, width: usize) -> String {
+    let mut out = truncate_display_width(s, width);
+    let w = out.width();
+    if w < width {
+        out.push_str(&" ".repeat(width - w));
+    }
+    out
+}
+
+/// Allocates `(name_width, tag_width, desc_width)` for a multi-column popup row so that
+/// `name_width + tag_width + desc_width <= available_width`.
+///
+/// The description receives only the remaining width after name and optional tag columns,
+/// hiding gracefully (and collapsing the tag column if necessary) on narrow terminals.
+pub fn allocate_three_column_widths(
+    available_width: usize,
+    preferred_name_width: usize,
+    min_name_width: usize,
+    preferred_tag_width: usize,
+) -> (usize, usize, usize) {
+    if available_width == 0 {
+        return (0, 0, 0);
+    }
+
+    let min_name = min_name_width.min(available_width).max(1);
+    let pref_name = preferred_name_width.max(min_name).min(available_width);
+
+    if preferred_tag_width == 0 {
+        let desc_budget = available_width.saturating_sub(pref_name);
+        if desc_budget >= 4 {
+            return (pref_name, 0, desc_budget);
+        }
+        if available_width >= min_name + 4 {
+            let name_w = available_width.saturating_sub(4).min(pref_name);
+            return (name_w, 0, available_width - name_w);
+        }
+        return (available_width, 0, 0);
+    }
+
+    if available_width >= pref_name + preferred_tag_width + 4 {
+        let desc_w = available_width - pref_name - preferred_tag_width;
+        return (pref_name, preferred_tag_width, desc_w);
+    }
+
+    if available_width >= min_name + preferred_tag_width + 4 {
+        let name_w = available_width - preferred_tag_width - 4;
+        let desc_w = available_width - name_w - preferred_tag_width;
+        return (name_w, preferred_tag_width, desc_w);
+    }
+
+    if available_width >= min_name + preferred_tag_width {
+        let name_w = available_width - preferred_tag_width;
+        return (name_w, preferred_tag_width, 0);
+    }
+
+    (available_width, 0, 0)
+}
+
+fn truncate_str(s: &str, max_width: usize) -> String {
+    truncate_display_width(s, max_width)
 }
 
 /// Renders the Neovim-style command line and its discrete contextual completion popup
@@ -1102,24 +1191,61 @@ fn render_completion_popup(
         _ => 0,
     };
 
-    let panel_bg = ctx.panel_bg();
-    let mut lines = Vec::with_capacity(shown_count);
-    for (rel_idx, item) in cmd_state
+    let avail_width = inner.width as usize;
+    if avail_width <= 2 {
+        return;
+    }
+
+    let visible: Vec<_> = cmd_state
         .suggestions
         .iter()
         .skip(scroll_start)
         .take(shown_count)
-        .enumerate()
-    {
+        .collect();
+    let max_label_w = visible
+        .iter()
+        .map(|i| i.label.width())
+        .max()
+        .unwrap_or(8);
+    let pref_name_w = (max_label_w + 1).clamp(10, 18);
+    let max_arg_w = visible
+        .iter()
+        .filter_map(|i| i.expected_arg.as_deref())
+        .map(UnicodeWidthStr::width)
+        .max()
+        .unwrap_or(0);
+    let pref_arg_w = if max_arg_w > 0 {
+        (max_arg_w + 1).clamp(6, 14)
+    } else {
+        0
+    };
+
+    let prefix_w = 2usize;
+    let content_avail = avail_width.saturating_sub(prefix_w);
+    let (name_w, arg_w, desc_w) =
+        allocate_three_column_widths(content_avail, pref_name_w, 8, pref_arg_w);
+
+    let panel_bg = ctx.panel_bg();
+    let mut lines = Vec::with_capacity(shown_count);
+    for (rel_idx, item) in visible.into_iter().enumerate() {
         let abs_idx = scroll_start + rel_idx;
         let is_selected = sel == Some(abs_idx);
 
-        let name_col = format!("{:<16}", truncate_str(&item.label, 16));
-        let arg_col = item
-            .expected_arg
-            .as_deref()
-            .map(|a| format!("{:<13}", truncate_str(a, 13)))
-            .unwrap_or_else(|| " ".repeat(13));
+        let name_col = if arg_w > 0 || desc_w > 0 {
+            format!("{} ", pad_display_width(&item.label, name_w.saturating_sub(1)))
+        } else {
+            pad_display_width(&item.label, name_w)
+        };
+        let arg_col = if arg_w > 0 {
+            let arg_text = item.expected_arg.as_deref().unwrap_or("");
+            if desc_w > 0 {
+                format!("{} ", pad_display_width(arg_text, arg_w.saturating_sub(1)))
+            } else {
+                pad_display_width(arg_text, arg_w)
+            }
+        } else {
+            String::new()
+        };
 
         let row_bg = if is_selected {
             ctx.theme.secondary
@@ -1147,11 +1273,17 @@ fn render_completion_popup(
             ctx.theme.muted
         };
 
-        let used_cols = 2 + 16 + 13;
-        let max_desc = (inner.width as usize).saturating_sub(used_cols);
-        let desc = truncate_str(&item.description, max_desc);
+        let desc = if desc_w > 0 {
+            if is_selected {
+                pad_display_width(&item.description, desc_w)
+            } else {
+                truncate_display_width(&item.description, desc_w)
+            }
+        } else {
+            String::new()
+        };
 
-        lines.push(Line::from(vec![
+        let mut spans = vec![
             Span::styled(
                 if is_selected { "▶ " } else { "  " },
                 Style::default().fg(prefix_fg).bg(row_bg),
@@ -1163,9 +1295,15 @@ fn render_completion_popup(
                     .bg(row_bg)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::styled(arg_col, Style::default().fg(arg_fg).bg(row_bg)),
-            Span::styled(desc, Style::default().fg(desc_fg).bg(row_bg)),
-        ]));
+        ];
+        if arg_w > 0 {
+            spans.push(Span::styled(arg_col, Style::default().fg(arg_fg).bg(row_bg)));
+        }
+        if desc_w > 0 {
+            spans.push(Span::styled(desc, Style::default().fg(desc_fg).bg(row_bg)));
+        }
+
+        lines.push(Line::from(spans));
     }
 
     frame.render_widget(Paragraph::new(lines), inner);

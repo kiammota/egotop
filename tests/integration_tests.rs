@@ -1,6 +1,6 @@
 use egotop::animation::{
-    AnimationCatalog, BackgroundEffect, NativeTransition, TransitionPlayer, create_effect,
-    resolve_region,
+    AnimationCatalog, AnimationCatalogEntry, AnimationSource, BackgroundEffect, NativeTransition,
+    TransitionPlayer, create_effect, resolve_region,
 };
 use egotop::command::{
     AnimationAction, CommandLineState, CommandRegistry, CompletionContext, CompletionEngine,
@@ -17,12 +17,16 @@ use egotop::system::uptime::format_uptime;
 use egotop::terminal::renderer::{CursorStartupState, draw_frame};
 use egotop::ui::RevealState;
 use egotop::ui::borders::{BorderChars, parse_border_style, validate_border_char};
-use egotop::ui::customizer::CustomizerState;
+use egotop::ui::customizer::{CustomizerState, CustomizerTab, render_customizer};
 use egotop::ui::fonts::{FigletFont, available_fonts, load_font, normalize_ascii_text};
 use egotop::ui::layout::compute_layout;
 use egotop::ui::theme::{Theme, parse_color};
 use egotop::ui::typography::render_ascii_heading;
-use egotop::ui::widgets::RenderContext;
+use egotop::ui::widgets::{
+    RenderContext, allocate_three_column_widths, pad_display_width, render_command_line,
+    truncate_display_width,
+};
+use unicode_width::UnicodeWidthStr;
 use egotop::window::{
     PositionMode, WindowBackgroundMode, WindowConfig, WindowManager, resolve_window_rect,
 };
@@ -671,5 +675,307 @@ fn animations_update_and_render_within_bounds_and_regions() {
         eff.render(&mut buf, area, &bg_cfg, &theme);
         eff.resize(40, 12, &bg_cfg);
         eff.update(0.033, &bg_cfg);
+    }
+}
+
+#[test]
+fn completion_excludes_exact_matches_and_preserves_alternatives() {
+    let registry = CommandRegistry::new();
+    let base_theme = Theme::from_config(&Config::default().theme);
+    let themes = vec![
+        ThemeEntry {
+            name: "matrix".to_string(),
+            theme: base_theme.clone(),
+            source_path: None,
+        },
+        ThemeEntry {
+            name: "matrix_dark".to_string(),
+            theme: base_theme.clone(),
+            source_path: None,
+        },
+        // Duplicate theme name to verify deduplication
+        ThemeEntry {
+            name: "matrix".to_string(),
+            theme: base_theme.clone(),
+            source_path: None,
+        },
+        ThemeEntry {
+            name: "bamboo".to_string(),
+            theme: base_theme.clone(),
+            source_path: None,
+        },
+        ThemeEntry {
+            name: "nord".to_string(),
+            theme: base_theme,
+            source_path: None,
+        },
+    ];
+    let animations = AnimationCatalog::load();
+    let layouts = vec!["my_grid".to_string(), "compact".to_string()];
+    let ctx = CompletionContext {
+        themes: &themes,
+        animations: &animations,
+        layouts: &layouts,
+    };
+
+    // Case A: partial command suggests full command
+    let res = CompletionEngine::complete("color", 5, &registry, &ctx);
+    assert_eq!(res.items.len(), 1);
+    assert_eq!(res.items[0].insert_text, "colorscheme");
+
+    // Case B: exact command excludes itself from suggestions
+    let res = CompletionEngine::complete("colorscheme", 11, &registry, &ctx);
+    assert!(
+        res.items.is_empty(),
+        "exact command match must not suggest itself: {:?}",
+        res.items
+    );
+
+    // Exact command alias `:w` excludes `write`, preserves `window`
+    let res = CompletionEngine::complete("w", 1, &registry, &ctx);
+    assert!(!res.items.iter().any(|i| i.insert_text == "write"));
+    assert!(res.items.iter().any(|i| i.insert_text == "window"));
+
+    // Case C: partial argument suggests non-exact candidates without duplicates
+    let res = CompletionEngine::complete("colorscheme ma", 14, &registry, &ctx);
+    let names: Vec<&str> = res.items.iter().map(|i| i.insert_text.as_str()).collect();
+    assert_eq!(names, vec!["matrix", "matrix_dark"]);
+
+    // Case D / E: exact argument excludes itself while preserving longer alternatives
+    let res = CompletionEngine::complete("colorscheme matrix", 18, &registry, &ctx);
+    let names: Vec<&str> = res.items.iter().map(|i| i.insert_text.as_str()).collect();
+    assert_eq!(names, vec!["matrix_dark"]);
+
+    // Unique exact argument yields zero suggestions
+    let res = CompletionEngine::complete("colorscheme bamboo", 18, &registry, &ctx);
+    assert!(res.items.is_empty());
+
+    // Exact argument completed mid-line evaluates only the token under cursor
+    let res = CompletionEngine::complete("colorscheme matrix trailing", 18, &registry, &ctx);
+    let names: Vec<&str> = res.items.iter().map(|i| i.insert_text.as_str()).collect();
+    assert_eq!(names, vec!["matrix_dark"]);
+    assert_eq!(res.replace_start, 12);
+    assert_eq!(res.replace_end, 18);
+
+    // Exact match on animation argument
+    let res = CompletionEngine::complete("animation play crt_power_on", 27, &registry, &ctx);
+    assert!(res.items.is_empty());
+
+    // Pressing Tab when no suggestions exist leaves buffer untouched (no duplication)
+    let mut cli = CommandLineState::default();
+    cli.open(&registry, &ctx);
+    for ch in "colorscheme bamboo".chars() {
+        cli.insert_char(ch, &registry, &ctx);
+    }
+    assert!(cli.suggestions.is_empty());
+    assert!(!cli.popup_open);
+    cli.next_suggestion(&registry, &ctx);
+    assert_eq!(cli.buffer, "colorscheme bamboo");
+
+    // Deleting back to partial prefix recalculates suggestions immediately
+    for _ in 0..3 {
+        cli.backspace(&registry, &ctx);
+    }
+    assert_eq!(cli.buffer, "colorscheme bam");
+    assert_eq!(cli.suggestions.len(), 1);
+    assert_eq!(cli.suggestions[0].insert_text, "bamboo");
+    cli.next_suggestion(&registry, &ctx);
+    assert_eq!(cli.buffer, "colorscheme bamboo");
+    assert_eq!(cli.submit(), "colorscheme bamboo");
+}
+
+#[test]
+fn popup_layout_prevents_overflow_handles_unicode_and_resizes_cleanly() {
+    // 1. Display-width helpers handle ASCII and wide CJK/emoji cells accurately
+    let cjk = "日本語テスト🔥AnimationDescription";
+    let trunc = truncate_display_width(cjk, 12);
+    assert!(
+        trunc.width() <= 12,
+        "truncated width {} exceeded 12: {trunc:?}",
+        trunc.width()
+    );
+    assert!(trunc.ends_with('…'));
+
+    let padded = pad_display_width("日本", 8);
+    assert_eq!(padded.width(), 8);
+
+    let (n, t, d) = allocate_three_column_widths(20, 16, 10, 9);
+    assert!(n + t + d <= 20);
+    assert_eq!(d, 0, "description must hide when narrow width only fits name + tag");
+
+    // 2. Customizer popup (especially Animations tab) stays strictly inside borders across resizes
+    let cfg = Config::default();
+    let theme = Theme::from_config(&cfg.theme);
+    let themes = vec![
+        ThemeEntry {
+            name: "very_long_custom_theme_name_for_overflow_check".to_string(),
+            theme: theme.clone(),
+            source_path: Some(std::path::PathBuf::from("/tmp/long_theme.toml")),
+        },
+        ThemeEntry {
+            name: "matrix".to_string(),
+            theme: theme.clone(),
+            source_path: None,
+        },
+    ];
+    let catalog = AnimationCatalog {
+        entries: vec![
+            AnimationCatalogEntry {
+                id: "ultra_long_animation_identifier_test".to_string(),
+                display_name: "UltraLongDisplayName🔥日本語".to_string(),
+                description: "中文説明文🔥 This extraordinarily long animation description previously overflowed the right popup border on standard and narrow terminals."
+                    .to_string(),
+                is_community: false,
+                source: AnimationSource::Native(NativeTransition::CrtPowerOn),
+            },
+            AnimationCatalogEntry {
+                id: "community_wave".to_string(),
+                display_name: "Community Wave".to_string(),
+                description: "Another long TOML preset description extending far past normal window bounds."
+                    .to_string(),
+                is_community: true,
+                source: AnimationSource::Native(NativeTransition::Fade),
+            },
+        ],
+    };
+
+    let bg = create_effect(EffectKind::None, 80, 24, &cfg.background);
+    let win_cfg = WindowConfig::default();
+
+    for (term_w, term_h) in [(90u16, 28u16), (52, 18), (34, 16)] {
+        for tab in [
+            CustomizerTab::Animations,
+            CustomizerTab::Themes,
+            CustomizerTab::Window,
+            CustomizerTab::Layout,
+        ] {
+            let mut state = CustomizerState {
+                open: true,
+                tab,
+                selected: 0,
+                ..CustomizerState::default()
+            };
+            let mut terminal = Terminal::new(TestBackend::new(term_w, term_h)).unwrap();
+            terminal
+                .draw(|frame| {
+                    render_customizer(
+                        frame,
+                        frame.area(),
+                        &mut state,
+                        &cfg,
+                        &win_cfg,
+                        &themes,
+                        &catalog,
+                        bg.as_ref(),
+                        &theme,
+                    );
+                })
+                .unwrap();
+
+            let rect = state.modal_rect;
+            assert!(rect.width >= 30);
+            assert!(rect.right() <= term_w);
+            let buf = terminal.backend().buffer();
+
+            // Borders around modal must stay intact (never overwritten by overflowing spans)
+            assert_eq!(buf[(rect.x, rect.y)].symbol(), theme.borders.top_left);
+            assert_eq!(buf[(rect.right() - 1, rect.y)].symbol(), theme.borders.top_right);
+            assert_eq!(buf[(rect.x, rect.bottom() - 1)].symbol(), theme.borders.bottom_left);
+            assert_eq!(
+                buf[(rect.right() - 1, rect.bottom() - 1)].symbol(),
+                theme.borders.bottom_right
+            );
+            for y in (rect.y + 1)..(rect.bottom() - 1) {
+                assert_eq!(
+                    buf[(rect.x, y)].symbol(),
+                    theme.borders.vertical,
+                    "left border overwritten on row {y} ({tab:?}, {term_w}x{term_h})"
+                );
+                assert_eq!(
+                    buf[(rect.right() - 1, y)].symbol(),
+                    theme.borders.vertical,
+                    "right border overwritten on row {y} ({tab:?}, {term_w}x{term_h})"
+                );
+                // Outside modal right edge must remain clean empty space
+                if rect.right() < term_w {
+                    assert_eq!(
+                        buf[(rect.right(), y)].symbol(),
+                        " ",
+                        "cell leaked outside right border on row {y} ({tab:?}, {term_w}x{term_h})"
+                    );
+                }
+            }
+
+            if tab == CustomizerTab::Animations {
+                let mut dumped = String::new();
+                for y in rect.y..rect.bottom() {
+                    for x in rect.x..rect.right() {
+                        dumped.push_str(buf[(x, y)].symbol());
+                    }
+                    dumped.push('\n');
+                }
+                assert!(!dumped.contains("NATIVA"));
+                assert!(dumped.contains("[NATIVE]"));
+                assert!(dumped.contains("[TOML]"));
+                if term_w >= 52 {
+                    assert!(
+                        dumped.contains('…'),
+                        "long animation description should truncate with ellipsis at {term_w}x{term_h}:\n{dumped}"
+                    );
+                }
+            }
+        }
+    }
+
+    // 3. Completion popup stays cleanly within borders when resized to narrow terminals
+    let registry = CommandRegistry::new();
+    let layouts = Vec::new();
+    let cctx = CompletionContext {
+        themes: &themes,
+        animations: &catalog,
+        layouts: &layouts,
+    };
+    let mut cmd_line = CommandLineState::default();
+    cmd_line.open(&registry, &cctx);
+    cmd_line.next_suggestion(&registry, &cctx);
+
+    let mut collector = SystemCollector::new();
+    let snap = collector.collect(80, 24);
+    let reveal = RevealState::complete();
+    let render_ctx = RenderContext {
+        config: &cfg,
+        theme: &theme,
+        snapshot: &snap,
+        reveal: &reveal,
+        active_page: 0,
+        view_mode: ViewMode::Compact,
+        paused: false,
+        show_help: false,
+        fps: 30.0,
+        status_toast: None,
+        window_transparent: false,
+    };
+
+    for (term_w, term_h) in [(80u16, 20u16), (34u16, 14u16)] {
+        let mut terminal = Terminal::new(TestBackend::new(term_w, term_h)).unwrap();
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                let anchor = Rect::new(1, 1, area.width.saturating_sub(2), area.height.saturating_sub(3));
+                render_command_line(frame, area, anchor, &cmd_line, &render_ctx);
+            })
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        let mut dumped = String::new();
+        for y in 0..term_h {
+            for x in 0..term_w {
+                dumped.push_str(buf[(x, y)].symbol());
+            }
+            dumped.push('\n');
+        }
+        assert!(
+            dumped.contains(theme.borders.vertical.as_str()),
+            "completion popup border missing at {term_w}x{term_h}:\n{dumped}"
+        );
     }
 }

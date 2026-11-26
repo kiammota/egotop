@@ -45,7 +45,7 @@ impl CompletionEngine {
         let first_ws = trimmed_start.find(char::is_whitespace);
         if first_ws.is_none() {
             let prefix = trimmed_start.to_ascii_lowercase();
-            let items = complete_commands(&prefix, registry);
+            let items = finalize_suggestions(complete_commands(&prefix, registry), &prefix);
             return CompletionResult {
                 items,
                 replace_start: leading_ws,
@@ -67,57 +67,63 @@ impl CompletionEngine {
         let (prev_args, current_token, replace_start) =
             split_args_and_current(rest_before, leading_ws + cmd_token.len(), clamped_cursor);
 
-        let items = match desc.provider {
-            CompletionProviderKind::None => Vec::new(),
-            CompletionProviderKind::Colorscheme => {
-                if prev_args.is_empty() {
-                    complete_themes(&current_token, ctx.themes)
-                } else {
-                    Vec::new()
+        let items = finalize_suggestions(
+            match desc.provider {
+                CompletionProviderKind::None => Vec::new(),
+                CompletionProviderKind::Colorscheme => {
+                    if prev_args.is_empty() {
+                        complete_themes(&current_token, ctx.themes)
+                    } else {
+                        Vec::new()
+                    }
                 }
-            }
-            CompletionProviderKind::Animation => {
-                complete_animation(&prev_args, &current_token, ctx.animations)
-            }
-            CompletionProviderKind::Layout => {
-                complete_layout(&prev_args, &current_token, ctx.layouts)
-            }
-            CompletionProviderKind::SetOption => complete_set_option(&prev_args, &current_token),
-            CompletionProviderKind::Window => complete_window(&prev_args, &current_token),
-            CompletionProviderKind::Effect => {
-                if prev_args.is_empty() {
-                    complete_from_pairs(
-                        &current_token,
-                        &[
-                            ("matrix", "Matrix falling glyphs background"),
-                            ("water", "Animated sine wave surface"),
-                            ("particles", "Floating glowing particles"),
-                            ("scanlines", "CRT horizontal scanline bands"),
-                            ("none", "Static background with no ambient effect"),
-                        ],
-                        None,
-                    )
-                } else {
-                    Vec::new()
+                CompletionProviderKind::Animation => {
+                    complete_animation(&prev_args, &current_token, ctx.animations)
                 }
-            }
-            CompletionProviderKind::WriteTarget => {
-                if prev_args.is_empty() {
-                    complete_from_pairs(
-                        &current_token,
-                        &[
-                            ("all", "Write egotop.toml and window.toml"),
-                            ("config", "Write ~/.config/egotop/egotop.toml"),
-                            ("window", "Write ~/.config/egotop/window.toml"),
-                            ("theme", "Write active theme colors and borders into egotop.toml"),
-                        ],
-                        None,
-                    )
-                } else {
-                    Vec::new()
+                CompletionProviderKind::Layout => {
+                    complete_layout(&prev_args, &current_token, ctx.layouts)
                 }
-            }
-        };
+                CompletionProviderKind::SetOption => complete_set_option(&prev_args, &current_token),
+                CompletionProviderKind::Window => complete_window(&prev_args, &current_token),
+                CompletionProviderKind::Effect => {
+                    if prev_args.is_empty() {
+                        complete_from_pairs(
+                            &current_token,
+                            &[
+                                ("matrix", "Matrix falling glyphs background"),
+                                ("water", "Animated sine wave surface"),
+                                ("particles", "Floating glowing particles"),
+                                ("scanlines", "CRT horizontal scanline bands"),
+                                ("none", "Static background with no ambient effect"),
+                            ],
+                            None,
+                        )
+                    } else {
+                        Vec::new()
+                    }
+                }
+                CompletionProviderKind::WriteTarget => {
+                    if prev_args.is_empty() {
+                        complete_from_pairs(
+                            &current_token,
+                            &[
+                                ("all", "Write egotop.toml and window.toml"),
+                                ("config", "Write ~/.config/egotop/egotop.toml"),
+                                ("window", "Write ~/.config/egotop/window.toml"),
+                                (
+                                    "theme",
+                                    "Write active theme colors and borders into egotop.toml",
+                                ),
+                            ],
+                            None,
+                        )
+                    } else {
+                        Vec::new()
+                    }
+                }
+            },
+            &current_token,
+        );
 
         CompletionResult {
             items,
@@ -166,11 +172,36 @@ fn split_args_and_current(
     }
 }
 
+/// Removes exact matches against the token being typed (so completed tokens do not
+/// suggest themselves) and deduplicates suggestions while preserving priority order.
+fn finalize_suggestions(items: Vec<CompletionItem>, current_token: &str) -> Vec<CompletionItem> {
+    let token_lower = current_token.trim().to_ascii_lowercase();
+    let mut seen = Vec::with_capacity(items.len());
+    let mut out = Vec::with_capacity(items.len());
+    for item in items {
+        let candidate_lower = item.insert_text.to_ascii_lowercase();
+        if !token_lower.is_empty() && candidate_lower == token_lower {
+            continue;
+        }
+        if !seen.contains(&candidate_lower) {
+            seen.push(candidate_lower);
+            out.push(item);
+        }
+    }
+    out
+}
+
 fn complete_commands(prefix: &str, registry: &CommandRegistry) -> Vec<CompletionItem> {
     let mut prefix_matches = Vec::new();
     let mut sub_matches = Vec::new();
 
     for cmd in registry.commands() {
+        let is_exact = !prefix.is_empty()
+            && (cmd.name.eq_ignore_ascii_case(prefix)
+                || cmd.aliases.iter().any(|a| a.eq_ignore_ascii_case(prefix)));
+        if is_exact {
+            continue;
+        }
         let expected_arg = cmd.args.first().map(|a| a.name.to_string());
         let item = CompletionItem {
             insert_text: cmd.name.to_string(),
