@@ -1,5 +1,6 @@
 use crate::animation::{AnimationCatalog, BackgroundEffect};
 use crate::config::{Anchor, BorderStyle, Config, EffectKind, LayoutMode, ThemeEntry, WidgetId};
+use crate::runtime::{DiagnosticEngine, DiagnosticSeverity};
 use crate::ui::theme::Theme;
 use crate::ui::widgets::{allocate_three_column_widths, pad_display_width, truncate_display_width};
 use crate::window::{WindowBackgroundMode, WindowConfig};
@@ -560,4 +561,212 @@ pub fn effect_names() -> Vec<String> {
     .iter()
     .map(|e| e.label().to_ascii_lowercase())
     .collect()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DiagnosticsViewMode {
+    #[default]
+    Errors,
+    Messages,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct DiagnosticsOverlayState {
+    pub open: bool,
+    pub mode: DiagnosticsViewMode,
+    pub scroll: usize,
+}
+
+impl DiagnosticsOverlayState {
+    pub fn open_mode(&mut self, mode: DiagnosticsViewMode) {
+        self.open = true;
+        self.mode = mode;
+        self.scroll = 0;
+    }
+
+    pub fn close(&mut self) {
+        self.open = false;
+    }
+
+    pub fn toggle_mode(&mut self) {
+        self.mode = match self.mode {
+            DiagnosticsViewMode::Errors => DiagnosticsViewMode::Messages,
+            DiagnosticsViewMode::Messages => DiagnosticsViewMode::Errors,
+        };
+        self.scroll = 0;
+    }
+
+    pub fn scroll_up(&mut self) {
+        self.scroll = self.scroll.saturating_sub(1);
+    }
+
+    pub fn scroll_down(&mut self) {
+        self.scroll = self.scroll.saturating_add(1);
+    }
+}
+
+/// Renders active configuration errors (`:errors`) or chronological diagnostic/log
+/// history (`:messages`) inside a themed, bordered modal overlay.
+pub fn render_diagnostics_overlay(
+    frame: &mut Frame,
+    screen: Rect,
+    state: &mut DiagnosticsOverlayState,
+    engine: &DiagnosticEngine,
+    theme: &Theme,
+) {
+    let w = 84.min(screen.width.saturating_sub(4));
+    let h = 24.min(screen.height.saturating_sub(4));
+    if w < 32 || h < 10 {
+        return;
+    }
+    let modal = Rect::new(
+        screen.x + (screen.width - w) / 2,
+        screen.y + (screen.height - h) / 2,
+        w,
+        h,
+    );
+    frame.render_widget(Clear, modal);
+
+    let title = match state.mode {
+        DiagnosticsViewMode::Errors => {
+            format!(" Configuration Errors ({}) — egotop ", engine.error_count())
+        }
+        DiagnosticsViewMode::Messages => {
+            format!(
+                " Configuration Messages & Logs ({}) — egotop ",
+                engine.history().len() + engine.logs().len()
+            )
+        }
+    };
+    let border_color = if state.mode == DiagnosticsViewMode::Errors && engine.error_count() > 0 {
+        theme.danger
+    } else {
+        theme.primary
+    };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_set(theme.borders.as_ratatui_set())
+        .border_style(Style::default().fg(border_color).bg(theme.panel_background))
+        .style(theme.panel_style())
+        .title(Span::styled(
+            truncate_display_width(&title, w.saturating_sub(4) as usize),
+            Style::default()
+                .fg(border_color)
+                .add_modifier(Modifier::BOLD),
+        ));
+    let inner = block.inner(modal);
+    frame.render_widget(block, modal);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(3), Constraint::Length(1)])
+        .split(inner);
+
+    let max_line_w = chunks[0].width.saturating_sub(2) as usize;
+    let mut lines: Vec<Line> = Vec::new();
+
+    match state.mode {
+        DiagnosticsViewMode::Errors => {
+            let items = engine.active_warnings_and_errors();
+            if items.is_empty() {
+                lines.push(Line::from(Span::styled(
+                    "No active configuration errors. Previous or current configuration is valid.",
+                    Style::default().fg(theme.primary),
+                )));
+            } else {
+                for diag in items {
+                    let sev_color = match diag.severity {
+                        DiagnosticSeverity::Error => theme.danger,
+                        DiagnosticSeverity::Warning => theme.accent,
+                        DiagnosticSeverity::Info => theme.secondary,
+                    };
+                    for (idx, text) in diag.format_lines().into_iter().enumerate() {
+                        let style = if idx == 0 {
+                            Style::default().fg(sev_color).add_modifier(Modifier::BOLD)
+                        } else if text.starts_with("Expected:") || text.starts_with("Hint:") {
+                            Style::default().fg(theme.secondary)
+                        } else {
+                            Style::default().fg(theme.text)
+                        };
+                        lines.push(Line::from(Span::styled(
+                            truncate_display_width(&text, max_line_w),
+                            style,
+                        )));
+                    }
+                    lines.push(Line::from(""));
+                }
+            }
+        }
+        DiagnosticsViewMode::Messages => {
+            if engine.history().is_empty() && engine.logs().is_empty() {
+                lines.push(Line::from(Span::styled(
+                    "No configuration messages recorded yet.",
+                    Style::default().fg(theme.muted),
+                )));
+            } else {
+                for entry in engine.logs().iter().rev().take(60) {
+                    let color = match entry.severity {
+                        DiagnosticSeverity::Error => theme.danger,
+                        DiagnosticSeverity::Warning => theme.accent,
+                        DiagnosticSeverity::Info => theme.secondary,
+                    };
+                    let formatted =
+                        format!("{} [{}] {}", entry.timestamp, entry.category, entry.message);
+                    lines.push(Line::from(Span::styled(
+                        truncate_display_width(&formatted, max_line_w),
+                        Style::default().fg(color),
+                    )));
+                }
+                if !engine.history().is_empty() {
+                    lines.push(Line::from(""));
+                    lines.push(Line::from(Span::styled(
+                        "--- Diagnostic History ---",
+                        Style::default()
+                            .fg(theme.primary)
+                            .add_modifier(Modifier::BOLD),
+                    )));
+                    for diag in engine.history().iter().rev().take(40) {
+                        let sev_color = match diag.severity {
+                            DiagnosticSeverity::Error => theme.danger,
+                            DiagnosticSeverity::Warning => theme.accent,
+                            DiagnosticSeverity::Info => theme.secondary,
+                        };
+                        let loc = diag
+                            .file
+                            .as_ref()
+                            .and_then(|p| p.file_name())
+                            .and_then(|s| s.to_str())
+                            .unwrap_or("config");
+                        let summary = format!(
+                            "[{}] {} {}: {}",
+                            diag.timestamp, diag.code, loc, diag.message
+                        );
+                        lines.push(Line::from(Span::styled(
+                            truncate_display_width(&summary, max_line_w),
+                            Style::default().fg(sev_color),
+                        )));
+                    }
+                }
+            }
+        }
+    }
+
+    let visible_h = chunks[0].height as usize;
+    let max_scroll = lines.len().saturating_sub(visible_h);
+    if state.scroll > max_scroll {
+        state.scroll = max_scroll;
+    }
+    let body = Paragraph::new(lines)
+        .scroll((state.scroll as u16, 0))
+        .wrap(Wrap { trim: false });
+    frame.render_widget(body, chunks[0]);
+
+    let hint = "↑/↓ scroll • Tab switch Errors/Messages • Esc close";
+    frame.render_widget(
+        Paragraph::new(Span::styled(
+            truncate_display_width(hint, max_line_w),
+            Style::default().fg(theme.muted),
+        )),
+        chunks[1],
+    );
 }

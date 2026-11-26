@@ -40,10 +40,11 @@ pub enum BackgroundCommand {
     List,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LayoutSelection {
     Mode(LayoutMode),
     View(ViewMode),
+    Preset(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -58,6 +59,8 @@ pub enum WriteTarget {
 pub enum ParsedCommand {
     Colorscheme(Option<String>),
     Reload,
+    Messages,
+    Errors,
     Write(WriteTarget),
     Animation {
         action: AnimationAction,
@@ -89,6 +92,8 @@ pub fn parse_command(raw: &str) -> Result<ParsedCommand, String> {
         "q" | "quit" => Ok(ParsedCommand::Quit),
         "h" | "help" => Ok(ParsedCommand::Help),
         "r" | "reload" => Ok(ParsedCommand::Reload),
+        "msg" | "messages" => Ok(ParsedCommand::Messages),
+        "err" | "errors" => Ok(ParsedCommand::Errors),
         "w" | "write" => {
             let target = match rest.first().map(|s| s.to_ascii_lowercase()).as_deref() {
                 None | Some("all") => WriteTarget::All,
@@ -256,7 +261,7 @@ fn parse_layout_command(args: &[&str]) -> Result<ParsedCommand, String> {
         "compact" => LayoutSelection::View(ViewMode::Compact),
         "minimal" => LayoutSelection::View(ViewMode::Minimal),
         "dashboard" => LayoutSelection::View(ViewMode::Dashboard),
-        other => return Err(format!("Unknown layout '{other}'")),
+        other => LayoutSelection::Preset(other.to_string()),
     };
     Ok(ParsedCommand::Layout(Some(sel)))
 }

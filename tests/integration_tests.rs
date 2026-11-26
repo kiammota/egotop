@@ -21,7 +21,14 @@ use egotop::system::uptime::format_uptime;
 use egotop::terminal::renderer::{CursorStartupState, draw_frame};
 use egotop::ui::RevealState;
 use egotop::ui::borders::{BorderChars, parse_border_style, validate_border_char};
-use egotop::ui::customizer::{CustomizerState, CustomizerTab, render_customizer};
+use egotop::runtime::{
+    ChangeDebouncer, ConfigurationRuntime, LoadStatus, ManagedAppTarget, ResourceId, ResourceKind,
+    ResourceRegistry, RuntimePaths, RuntimeResourceManager, ValidationStatus, WatchEventKind,
+};
+use egotop::ui::customizer::{
+    CustomizerState, CustomizerTab, DiagnosticsOverlayState, DiagnosticsViewMode, render_customizer,
+    render_diagnostics_overlay,
+};
 use egotop::ui::fonts::{FigletFont, available_fonts, load_font, normalize_ascii_text};
 use egotop::ui::layout::compute_layout;
 use egotop::ui::theme::{Theme, adapt_color, parse_color, rgb_to_ansi256};
@@ -379,6 +386,7 @@ fn full_dashboard_and_cursor_startup_render_via_test_backend() {
         fps: 30.0,
         status_toast: None,
         window_transparent: false,
+        config_error_count: 0,
     };
     terminal
         .draw(|frame| {
@@ -960,6 +968,7 @@ fn popup_layout_prevents_overflow_handles_unicode_and_resizes_cleanly() {
         fps: 30.0,
         status_toast: None,
         window_transparent: false,
+        config_error_count: 0,
     };
 
     for (term_w, term_h) in [(80u16, 20u16), (34u16, 14u16)] {
@@ -1345,4 +1354,361 @@ count = 9999
     assert!(res.items.iter().any(|i| i.insert_text == "add"));
     let exact_bg = CompletionEngine::complete("background starfield", 20, &registry, &cctx);
     assert!(!exact_bg.items.iter().any(|i| i.insert_text == "starfield"));
+}
+
+#[test]
+fn live_configuration_runtime_validation_diagnostics_and_last_known_good() {
+    use std::collections::BTreeMap;
+    use std::time::{Duration, Instant};
+
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!("egotop_runtime_test_{nanos}"));
+    let paths = RuntimePaths::from_root_dir(root.clone());
+    std::fs::create_dir_all(&paths.themes_dir).unwrap();
+    std::fs::create_dir_all(&paths.animations_dir).unwrap();
+    std::fs::create_dir_all(&paths.layouts_dir).unwrap();
+    std::fs::create_dir_all(&paths.fonts_dir).unwrap();
+
+    // 1. Valid initial files + custom theme
+    let valid_theme = r##"
+name = "bamboo"
+background = "#050A07"
+panel_background = "#08110C"
+primary = "#39FF88"
+secondary = "#00D9FF"
+accent = "#FFC857"
+text = "#E5E5E5"
+muted = "#5F7D6B"
+border = "#1F7A4C"
+danger = "#FF5555"
+"##;
+    let bamboo_path = paths.themes_dir.join("bamboo.toml");
+    std::fs::write(&bamboo_path, valid_theme).unwrap();
+
+    let mut initial_cfg = Config::default();
+    initial_cfg.theme.name = "bamboo".to_string();
+    std::fs::write(&paths.config_path, toml::to_string_pretty(&initial_cfg).unwrap()).unwrap();
+    std::fs::write(
+        &paths.window_path,
+        toml::to_string_pretty(&WindowConfig::default()).unwrap(),
+    )
+    .unwrap();
+
+    let mut runtime =
+        ConfigurationRuntime::start(paths.clone(), initial_cfg.clone(), WindowConfig::default(), false);
+    assert_eq!(runtime.diagnostics().error_count(), 0);
+    assert_eq!(runtime.state().config.theme.name, "bamboo");
+    assert!(runtime.state().themes.contains_key("bamboo"));
+
+    // Preserve active Theme & Config cleanly for visual comparison
+    let mut active_theme = runtime.state().themes["bamboo"].theme.clone();
+    let mut active_cfg = runtime.state().config.clone();
+    let mut active_themes = runtime.state().themes.clone();
+    let mut active_theme_list: Vec<_> = active_themes.values().cloned().collect();
+    let mut active_anims = runtime.state().animations.clone();
+    let mut active_layouts_map = BTreeMap::new();
+    let mut active_layout_names = Vec::new();
+    let mut active_windows = WindowManager::new(runtime.state().window.clone());
+    let mut active_bg = BackgroundPipeline::from_config(&active_cfg.background, 80, 24);
+    let mut active_transition = TransitionPlayer::new("none", &active_anims, 0);
+
+    // 2. Invalid TOML syntax (E1001) preserves LastKnownGood
+    let broken_syntax = "[general\nname = 'broken'\n";
+    std::fs::write(&paths.config_path, broken_syntax).unwrap();
+    let commit = runtime.reload_all();
+    assert!(commit.had_errors);
+    assert!(runtime.diagnostics().error_count() >= 1);
+    assert_eq!(runtime.diagnostics().active_errors()[0].code, "E1001");
+    assert!(runtime.diagnostics().active_errors()[0].line.is_some());
+    assert_eq!(runtime.state().config.theme.name, "bamboo");
+
+    // 3. Unknown field (E1002) with exact location
+    let mut with_unknown = toml::to_string_pretty(&initial_cfg).unwrap();
+    with_unknown.push_str("\n[general]\nnonexistent_option = 42\n");
+    // Merge unknown key inside [general] cleanly
+    let unknown_cfg = "[general]\nname = \"egotop\"\nunknown_setting = true\n";
+    std::fs::write(&paths.config_path, unknown_cfg).unwrap();
+    let commit = runtime.reload_all();
+    assert!(commit.had_errors);
+    assert!(
+        runtime
+            .diagnostics()
+            .active_errors()
+            .iter()
+            .any(|d| d.code == "E1002" && d.field_path.as_deref() == Some("general.unknown_setting"))
+    );
+
+    // 4. Wrong field type (E1003)
+    std::fs::write(&paths.config_path, "[general]\nanimation_fps = \"fast\"\n").unwrap();
+    let commit = runtime.reload_all();
+    assert!(commit.had_errors);
+    assert!(
+        runtime
+            .diagnostics()
+            .active_errors()
+            .iter()
+            .any(|d| d.code == "E1003" || d.code == "E1001")
+    );
+
+    // 5. Invalid color in bamboo theme (E1004) with exact field, expected/actual, & LKG preservation
+    let bad_color_theme = r##"
+name = "bamboo"
+background = "#050A07"
+primary = "#39FF88"
+border = "invalid-color"
+"##;
+    std::fs::write(&bamboo_path, bad_color_theme).unwrap();
+    std::fs::write(&paths.config_path, toml::to_string_pretty(&initial_cfg).unwrap()).unwrap();
+    let commit = runtime.reload_all();
+    assert!(commit.had_errors);
+    let color_err = runtime
+        .diagnostics()
+        .active_errors()
+        .iter()
+        .find(|d| d.code == "E1004")
+        .copied()
+        .expect("expected E1004 color diagnostic");
+    assert_eq!(color_err.field_path.as_deref(), Some("theme.border"));
+    assert_eq!(color_err.actual.as_deref(), Some("invalid-color"));
+    assert!(color_err.line.is_some());
+    assert!(color_err.column.is_some());
+    // Active theme borders color MUST stay original #1F7A4C!
+    assert_eq!(active_theme.border, Color::Rgb(31, 122, 76));
+
+    // Apply commit check — refused cleanly when had_errors is true
+    {
+        let mut target = ManagedAppTarget {
+            config: &mut active_cfg,
+            theme: &mut active_theme,
+            themes_map: &mut active_themes,
+            theme_list: &mut active_theme_list,
+            animations: &mut active_anims,
+            layout_names: &mut active_layout_names,
+            layouts_map: &mut active_layouts_map,
+            windows: &mut active_windows,
+            background: &mut active_bg,
+            transition: &mut active_transition,
+            viewport: Rect::new(0, 0, 80, 24),
+        };
+        RuntimeResourceManager::apply_commit(&commit, runtime.state(), &mut target);
+    }
+    assert_eq!(active_theme.border, Color::Rgb(31, 122, 76));
+
+    // 10. Non-existent dependency (E1006: config references missing theme & font)
+    std::fs::write(&bamboo_path, valid_theme).unwrap();
+    let mut bad_dep_cfg = initial_cfg.clone();
+    bad_dep_cfg.theme.name = "missing_theme".to_string();
+    bad_dep_cfg.typography.font = "missing_font".to_string();
+    std::fs::write(&paths.config_path, toml::to_string_pretty(&bad_dep_cfg).unwrap()).unwrap();
+    let commit = runtime.reload_all();
+    assert!(commit.had_errors);
+    assert!(
+        runtime
+            .diagnostics()
+            .active_errors()
+            .iter()
+            .filter(|d| d.code == "E1006")
+            .count()
+            >= 2
+    );
+
+    // 12. Valid updated configuration commits & applies cleanly via RuntimeResourceManager
+    let mut updated_theme = valid_theme.replace("#39FF88", "#00AAFF");
+    updated_theme.push('\n');
+    std::fs::write(&bamboo_path, updated_theme).unwrap();
+    std::fs::write(&paths.config_path, toml::to_string_pretty(&initial_cfg).unwrap()).unwrap();
+    let commit = runtime.reload_all();
+    assert!(!commit.had_errors, "errors: {:?}", runtime.diagnostics().active_errors());
+    assert_eq!(runtime.diagnostics().error_count(), 0);
+    {
+        let mut target = ManagedAppTarget {
+            config: &mut active_cfg,
+            theme: &mut active_theme,
+            themes_map: &mut active_themes,
+            theme_list: &mut active_theme_list,
+            animations: &mut active_anims,
+            layout_names: &mut active_layout_names,
+            layouts_map: &mut active_layouts_map,
+            windows: &mut active_windows,
+            background: &mut active_bg,
+            transition: &mut active_transition,
+            viewport: Rect::new(0, 0, 80, 24),
+        };
+        RuntimeResourceManager::apply_commit(&commit, runtime.state(), &mut target);
+    }
+    assert_eq!(active_theme.primary, Color::Rgb(0, 170, 255));
+
+    // 13. Out-of-order generation update is rejected deterministically
+    let stale_gen = runtime.state().generation - 1;
+    let stale_commit = runtime.process_raw_candidate(
+        ResourceKind::Theme,
+        "bamboo",
+        &bamboo_path,
+        valid_theme.to_string(),
+        stale_gen,
+    );
+    assert!(stale_commit.had_errors);
+    assert_eq!(
+        runtime.state().themes["bamboo"].theme.primary,
+        Color::Rgb(0, 170, 255)
+    );
+
+    // 6 & 7 & 15. Removed file, Renamed file, and Rescan watcher recovery
+    let extra_theme = paths.themes_dir.join("temp_neon.toml");
+    std::fs::write(&extra_theme, valid_theme.replace("bamboo", "temp_neon")).unwrap();
+    runtime.watcher().inject_event(extra_theme.clone(), WatchEventKind::Renamed);
+    assert!(runtime.poll().is_none(), "debounce window must delay immediate reload");
+    std::thread::sleep(Duration::from_millis(140));
+    let commit = runtime.poll().expect("debounced rename event should flush");
+    assert!(!commit.had_errors);
+    assert!(runtime.state().themes.contains_key("temp_neon"));
+
+    std::fs::remove_file(&extra_theme).unwrap();
+    runtime.watcher().inject_event(extra_theme.clone(), WatchEventKind::Removed);
+    assert!(runtime.poll().is_none());
+    std::thread::sleep(Duration::from_millis(140));
+    let commit = runtime.poll().expect("debounced remove event should flush");
+    assert!(!commit.had_errors);
+    assert!(!runtime.state().themes.contains_key("temp_neon"));
+
+    // Watcher recovery after Rescan
+    runtime.watcher().inject_event(std::path::PathBuf::new(), WatchEventKind::Rescan);
+    assert!(runtime.poll().is_none());
+    std::thread::sleep(Duration::from_millis(140));
+    let rescan_commit = runtime.poll().expect("rescan recovery should trigger reload_all");
+    assert!(!rescan_commit.had_errors);
+
+    // 8 & 9. Atomic save & rapid burst debouncing inside ChangeDebouncer
+    let mut debouncer = ChangeDebouncer::new(Duration::from_millis(80));
+    let t0 = Instant::now();
+    let sample = paths.themes_dir.join("bamboo.toml");
+    debouncer.push(sample.clone(), WatchEventKind::Removed, t0);
+    debouncer.push(
+        sample.clone(),
+        WatchEventKind::Created,
+        t0 + Duration::from_millis(10),
+    );
+    debouncer.push(
+        sample.clone(),
+        WatchEventKind::Modified,
+        t0 + Duration::from_millis(20),
+    );
+    assert!(debouncer.flush_ready(t0 + Duration::from_millis(40)).0.is_empty());
+    let (ready, _) = debouncer.flush_ready(t0 + Duration::from_millis(120));
+    assert_eq!(ready.len(), 1);
+    assert_eq!(ready[0].event_count, 3);
+    assert_eq!(ready[0].kind, WatchEventKind::Modified);
+
+    // Dependency cycle detection in ResourceRegistry
+    let mut reg = ResourceRegistry::new();
+    let a = ResourceId::new(ResourceKind::Layout, "a");
+    let b = ResourceId::new(ResourceKind::Layout, "b");
+    reg.upsert(
+        a.clone(),
+        paths.layouts_dir.join("a.toml"),
+        LoadStatus::Loaded,
+        ValidationStatus::Valid,
+        vec![b.clone()],
+    );
+    assert!(reg.detect_cycle(&b, &[a]));
+
+    // 14. Commands :reload, :messages, :errors + Diagnostics overlay UI & header error badge
+    assert_eq!(parse_command(":reload").unwrap(), ParsedCommand::Reload);
+    assert_eq!(parse_command(":messages").unwrap(), ParsedCommand::Messages);
+    assert_eq!(parse_command(":errors").unwrap(), ParsedCommand::Errors);
+
+    // Inject one deliberate error to verify TUI diagnostics presentation renders cleanly
+    std::fs::write(&bamboo_path, bad_color_theme).unwrap();
+    let err_commit = runtime.reload_all();
+    assert!(err_commit.had_errors);
+    let mut diag_ui = DiagnosticsOverlayState::default();
+    diag_ui.open_mode(DiagnosticsViewMode::Errors);
+    let mut term = Terminal::new(TestBackend::new(90, 26)).unwrap();
+    term.draw(|frame| {
+        render_diagnostics_overlay(
+            frame,
+            frame.area(),
+            &mut diag_ui,
+            runtime.diagnostics(),
+            &active_theme,
+        );
+    })
+    .unwrap();
+    let buf = term.backend().buffer();
+    let mut dump = String::new();
+    for y in 0..26 {
+        for x in 0..90 {
+            dump.push_str(buf[(x, y)].symbol());
+        }
+        dump.push('\n');
+    }
+    assert!(dump.contains("E1004"), "overlay output:\n{dump}");
+    assert!(dump.contains("theme.border"), "overlay output:\n{dump}");
+
+    // Ensure logs contain structured [Config] entries
+    assert!(
+        runtime
+            .diagnostics()
+            .logs()
+            .iter()
+            .any(|l| l.category == "Config" && l.message.contains("Validation failed"))
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn real_notify_filesystem_watcher_detects_atomic_writes_and_edits() {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!("egotop_notify_live_{nanos}"));
+    let paths = RuntimePaths::from_root_dir(root.clone());
+    std::fs::create_dir_all(&paths.themes_dir).unwrap();
+    std::fs::create_dir_all(&paths.animations_dir).unwrap();
+
+    let cfg = Config::default();
+    std::fs::write(&paths.config_path, toml::to_string_pretty(&cfg).unwrap()).unwrap();
+    std::fs::write(
+        &paths.window_path,
+        toml::to_string_pretty(&WindowConfig::default()).unwrap(),
+    )
+    .unwrap();
+
+    let mut runtime = ConfigurationRuntime::start(paths.clone(), cfg, WindowConfig::default(), true);
+    assert!(!runtime.watcher().watched_roots().is_empty());
+
+    // Simulate editor atomic write: write tmp -> rename into themes/live_jade.toml
+    let tmp_file = paths.themes_dir.join(".live_jade.toml.tmp");
+    let final_file = paths.themes_dir.join("live_jade.toml");
+    std::fs::write(
+        &tmp_file,
+        "name = \"live_jade\"\nprimary = \"#22DD88\"\n",
+    )
+    .unwrap();
+    std::fs::rename(&tmp_file, &final_file).unwrap();
+
+    let mut seen_commit = None;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    while std::time::Instant::now() < deadline {
+        if let Some(c) = runtime.poll() {
+            seen_commit = Some(c);
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(35));
+    }
+
+    let commit = seen_commit.expect("real OS notify watcher should deliver debounced theme commit");
+    assert!(!commit.had_errors);
+    assert!(commit.themes_updated);
+    assert_eq!(
+        runtime.state().themes["live_jade"].theme.primary,
+        Color::Rgb(34, 221, 136)
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
 }

@@ -25,6 +25,7 @@ pub struct RenderContext<'a> {
     pub fps: f32,
     pub status_toast: Option<&'a str>,
     pub window_transparent: bool,
+    pub config_error_count: usize,
 }
 
 impl<'a> RenderContext<'a> {
@@ -213,6 +214,14 @@ fn render_header(frame: &mut Frame, area: Rect, ctx: &RenderContext) {
             left_spans.push(Span::styled(
                 format!(" {:.0}fps", ctx.fps),
                 Style::default().fg(ctx.theme.muted),
+            ));
+        }
+        if ctx.config_error_count > 0 {
+            left_spans.push(Span::styled(
+                format!(" [{} err • :errors]", ctx.config_error_count),
+                Style::default()
+                    .fg(ctx.theme.danger)
+                    .add_modifier(Modifier::BOLD),
             ));
         }
     }

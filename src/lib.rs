@@ -2,6 +2,7 @@ pub mod animation;
 pub mod app;
 pub mod command;
 pub mod config;
+pub mod runtime;
 pub mod system;
 pub mod terminal;
 pub mod ui;

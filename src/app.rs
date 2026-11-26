@@ -7,9 +7,12 @@ use crate::command::{
     LayoutSelection, ParsedCommand, WindowCommand, WriteTarget, parse_command,
 };
 use crate::config::{
-    Config, EffectKind, StartupMode, StartupTrigger, ThemeEntry, ViewMode, load_all_themes,
-    load_from_path, load_layout_names, load_or_create_window_config, save_config_to_path,
-    save_window_config,
+    Config, EffectKind, StartupMode, StartupTrigger, ThemeEntry, ViewMode, load_or_create_window_config,
+    save_config_to_path, save_window_config,
+};
+use crate::runtime::{
+    ConfigurationRuntime, LayoutPreset, ManagedAppTarget, RuntimeCommit, RuntimePaths,
+    RuntimeResourceManager,
 };
 use crate::system::{SystemCollector, SystemSnapshot};
 use crate::terminal::TerminalGuard;
@@ -18,8 +21,9 @@ use crate::terminal::renderer::{CursorStartupState, draw_frame};
 use crate::ui::RevealState;
 use crate::ui::borders::parse_border_style;
 use crate::ui::customizer::{
-    CustomizerState, CustomizerTab, cycle_anchor, cycle_border_style, cycle_layout_mode,
-    layout_items_summary, toggle_widget_enabled, window_items_summary,
+    CustomizerState, CustomizerTab, DiagnosticsOverlayState, DiagnosticsViewMode, cycle_anchor,
+    cycle_border_style, cycle_layout_mode, layout_items_summary, render_diagnostics_overlay,
+    toggle_widget_enabled, window_items_summary,
 };
 use crate::ui::theme::Theme;
 use crate::ui::widgets::{RenderContext, window_config_button_rect, window_help_button_rect};
@@ -40,6 +44,7 @@ pub struct App {
     theme: Theme,
     animations: AnimationCatalog,
     layout_names: Vec<String>,
+    layouts_map: BTreeMap<String, LayoutPreset>,
     transition: TransitionPlayer,
     startup_cursor: CursorStartupState,
     registry: CommandRegistry,
@@ -49,6 +54,8 @@ pub struct App {
     reveal: RevealState,
     command_line: CommandLineState,
     customizer: CustomizerState,
+    diagnostics_ui: DiagnosticsOverlayState,
+    runtime: ConfigurationRuntime,
     active_page: u8,
     view_mode: ViewMode,
     paused: bool,
@@ -66,16 +73,25 @@ impl App {
         width: u16,
         height: u16,
     ) -> Self {
-        let themes_map = load_all_themes();
+        let win_cfg = load_or_create_window_config();
+        let runtime = ConfigurationRuntime::start(
+            RuntimePaths::default_with_config(config_path.clone()),
+            config,
+            win_cfg,
+            true,
+        );
+        let lkg = runtime.state().clone();
+        let config = lkg.config;
+        let themes_map = lkg.themes;
         let theme = resolve_active_theme(&config, &themes_map);
         let theme_list: Vec<ThemeEntry> = themes_map.values().cloned().collect();
 
-        let win_cfg = load_or_create_window_config();
-        let mut windows = WindowManager::new(win_cfg);
+        let mut windows = WindowManager::new(lkg.window);
         windows.resolve_all(Rect::new(0, 0, width, height));
 
-        let animations = AnimationCatalog::load();
-        let layout_names = load_layout_names();
+        let animations = lkg.animations;
+        let layouts_map = lkg.layouts;
+        let layout_names: Vec<String> = layouts_map.keys().cloned().collect();
 
         let is_cursor_startup = config.startup.mode == StartupMode::Cursor;
         let transition = if is_cursor_startup {
@@ -104,6 +120,7 @@ impl App {
             theme,
             animations,
             layout_names,
+            layouts_map,
             transition,
             startup_cursor: CursorStartupState::new(is_cursor_startup),
             registry: CommandRegistry::new(),
@@ -117,6 +134,8 @@ impl App {
             },
             command_line: CommandLineState::default(),
             customizer: CustomizerState::default(),
+            diagnostics_ui: DiagnosticsOverlayState::default(),
+            runtime,
             active_page,
             view_mode,
             paused: false,
@@ -167,6 +186,10 @@ impl App {
             last_frame = now;
             self.fps = (self.fps * 0.85) + ((1.0 / dt) * 0.15);
 
+            if let Some(commit) = self.runtime.poll() {
+                self.apply_runtime_commit(&commit, &guard)?;
+            }
+
             if self.startup_cursor.pending {
                 self.startup_cursor.update_blink(
                     dt_ms,
@@ -194,6 +217,7 @@ impl App {
                 fps: self.fps,
                 status_toast: toast_text,
                 window_transparent,
+                config_error_count: self.runtime.diagnostics().error_count(),
             };
 
             let config_ref = &self.config;
@@ -201,6 +225,8 @@ impl App {
             let transition_ref = &self.transition;
             let windows_ref = &mut self.windows;
             let customizer_ref = &mut self.customizer;
+            let diagnostics_ui_ref = &mut self.diagnostics_ui;
+            let diagnostics_ref = self.runtime.diagnostics();
             let cmd_ref = &self.command_line;
             let startup_ref = &self.startup_cursor;
             let themes_ref = &self.theme_list;
@@ -220,6 +246,15 @@ impl App {
                     anim_ref,
                     &ctx,
                 );
+                if diagnostics_ui_ref.open {
+                    render_diagnostics_overlay(
+                        frame,
+                        frame.area(),
+                        diagnostics_ui_ref,
+                        diagnostics_ref,
+                        ctx.theme,
+                    );
+                }
             })?;
 
             let elapsed = Instant::now().duration_since(now);
@@ -316,6 +351,8 @@ impl App {
             InputEvent::Key(key) => {
                 if self.command_line.active {
                     self.handle_command_key(key, guard, viewport)?;
+                } else if self.diagnostics_ui.open {
+                    self.handle_diagnostics_key(key);
                 } else if self.customizer.open {
                     self.handle_customizer_key(key, guard, viewport)?;
                 } else {
@@ -446,6 +483,18 @@ impl App {
             self.execute_command_str(&cmd, guard, viewport)?;
         }
         Ok(())
+    }
+
+    fn handle_diagnostics_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q') => self.diagnostics_ui.close(),
+            KeyCode::Tab | KeyCode::BackTab | KeyCode::Left | KeyCode::Right => {
+                self.diagnostics_ui.toggle_mode();
+            }
+            KeyCode::Up | KeyCode::Char('k') => self.diagnostics_ui.scroll_up(),
+            KeyCode::Down | KeyCode::Char('j') => self.diagnostics_ui.scroll_down(),
+            _ => {}
+        }
     }
 
     fn handle_customizer_key(
@@ -756,6 +805,16 @@ impl App {
             ParsedCommand::Quit => self.should_quit = true,
             ParsedCommand::Help => self.show_help = true,
             ParsedCommand::Reload => self.reload_all(guard)?,
+            ParsedCommand::Messages => {
+                self.customizer.close();
+                self.show_help = false;
+                self.diagnostics_ui.open_mode(DiagnosticsViewMode::Messages);
+            }
+            ParsedCommand::Errors => {
+                self.customizer.close();
+                self.show_help = false;
+                self.diagnostics_ui.open_mode(DiagnosticsViewMode::Errors);
+            }
             ParsedCommand::Write(target) => self.execute_write(target),
             ParsedCommand::Colorscheme(None) => {
                 self.customizer.open_tab(CustomizerTab::Themes);
@@ -878,6 +937,23 @@ impl App {
                 LayoutSelection::View(view) => {
                     self.view_mode = view;
                     self.set_toast(format!("View mode: {}", view.label()));
+                }
+                LayoutSelection::Preset(name) => {
+                    let key = name.trim().to_ascii_lowercase();
+                    if let Some(preset) = self.layouts_map.get(&key).cloned() {
+                        self.config.layout = preset.layout;
+                        if let Some(vm) = preset.view_mode {
+                            self.view_mode = vm;
+                        }
+                        if !preset.widgets.is_empty() {
+                            self.config.widgets = preset.widgets;
+                        }
+                        self.set_toast(format!("Applied layout preset '{}'", preset.name));
+                    } else {
+                        self.set_toast(format!(
+                            "Layout preset '{name}' not found in ~/.config/egotop/layouts/"
+                        ));
+                    }
                 }
             },
             ParsedCommand::Window(wcmd) => {
@@ -1032,31 +1108,38 @@ impl App {
     }
 
     fn reload_all(&mut self, guard: &TerminalGuard) -> Result<()> {
-        self.themes_map = load_all_themes();
-        self.theme_list = self.themes_map.values().cloned().collect();
-        self.animations = AnimationCatalog::load();
-        self.layout_names = load_layout_names();
+        let commit = self.runtime.reload_all();
+        self.apply_runtime_commit(&commit, guard)
+    }
 
-        match load_from_path(&self.config_path) {
-            Ok(new_cfg) => {
-                let sz = guard.terminal.size()?;
-                self.theme = resolve_active_theme(&new_cfg, &self.themes_map);
-                self.effect =
-                    BackgroundPipeline::from_config(&new_cfg.background, sz.width, sz.height);
-                self.transition.restart(
-                    &new_cfg.general.startup_animation,
-                    &self.animations,
-                    new_cfg.general.startup_duration_ms,
-                );
-                let win_cfg = load_or_create_window_config();
-                *self.windows.main_window_mut() = crate::window::WindowState::new(win_cfg);
-                self.windows.resolve_all(Rect::new(0, 0, sz.width, sz.height));
-                self.config = new_cfg;
-                self.set_toast("Reloaded configuration, themes, and animations");
-            }
-            Err(err) => {
-                self.set_toast(format!("Invalid configuration: {err}"));
-            }
+    fn apply_runtime_commit(&mut self, commit: &RuntimeCommit, guard: &TerminalGuard) -> Result<()> {
+        if commit.had_errors {
+            self.set_toast(commit.summary.clone());
+            return Ok(());
+        }
+        let sz = guard.terminal.size()?;
+        let viewport = Rect::new(0, 0, sz.width, sz.height);
+        let mut target = ManagedAppTarget {
+            config: &mut self.config,
+            theme: &mut self.theme,
+            themes_map: &mut self.themes_map,
+            theme_list: &mut self.theme_list,
+            animations: &mut self.animations,
+            layout_names: &mut self.layout_names,
+            layouts_map: &mut self.layouts_map,
+            windows: &mut self.windows,
+            background: &mut self.effect,
+            transition: &mut self.transition,
+            viewport,
+        };
+        RuntimeResourceManager::apply_commit(commit, self.runtime.state(), &mut target);
+        if commit.config_updated
+            || commit.themes_updated
+            || commit.animations_updated
+            || commit.layouts_updated
+            || commit.window_updated
+        {
+            self.set_toast(commit.summary.clone());
         }
         Ok(())
     }

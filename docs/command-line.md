@@ -174,9 +174,23 @@ All commands are registered in `CommandRegistry` (`src/command/registry.rs`), pa
 ### `:reload`
 
 - **Aliases:** `:r`
-- **Description:** Reload configuration, themes, community animations, layout list, and window settings from disk.
+- **Description:** Manually trigger `ConfigurationRuntime::reload_all()` to scan, parse, validate, and apply changes across `egotop.toml`, `window.toml`, themes, animations, layouts, and fonts.
 - **Syntax:** `:reload`
-- **Expected behavior:** Re-reads `~/.config/egotop/` files. On invalid TOML, reports the parse/validation error in English and keeps the running UI intact.
+- **Expected behavior:** Shares the exact same pipeline as automatic file watching. Invalid edits are rejected atomically, preserving `LastKnownGood` state and recording structured diagnostics.
+
+### `:errors`
+
+- **Aliases:** `:err`
+- **Description:** Open the interactive Diagnostics overlay filtered to active configuration errors and warnings (with error code, file path, line, column, field, expected/actual values, and hints).
+- **Syntax:** `:errors`
+- **Controls:** `↑/↓` scroll, `Tab` switch between Errors and Messages, `Esc` / `q` close.
+
+### `:messages`
+
+- **Aliases:** `:msg`
+- **Description:** Open the interactive Diagnostics overlay showing `[Config]` lifecycle logs and chronological diagnostic history.
+- **Syntax:** `:messages`
+- **Controls:** `↑/↓` scroll, `Tab` switch between Messages and Errors, `Esc` / `q` close.
 
 ### `:help`
 

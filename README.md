@@ -117,6 +117,7 @@ Full technical documentation is available in [`docs/`](docs/):
 - [Keybindings](docs/keybindings.md) — Normal, command-line, customizer, mouse, and cursor-startup controls
 - [Command-line & Autocomplete](docs/command-line.md) — Full command reference and shell-style Tab/Shift+Tab/Space behavior
 - [Animations](docs/animations.md) — Native transitions, community declarative TOML schema, and background effects
+- [Configuration Runtime](docs/configuration-runtime.md) — Live file watching (`notify`), debouncing, 3-stage validation pipeline, `DiagnosticEngine`, `LastKnownGood`, and dependency management
 - [Architecture](docs/architecture.md) — Module layout and extension guide
 
 ---
