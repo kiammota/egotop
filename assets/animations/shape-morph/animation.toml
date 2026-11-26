@@ -1,0 +1,172 @@
+[animation]
+name = "shape-morph"
+display_name = "Shape Morph Showcase"
+author = "egotop"
+description = "Braille circle-square-triangle-hexagon contour morph with rotating core and particle aura."
+version = 2
+duration_ms = 3200
+fps = 30
+speed = 1.0
+mode = "scene"
+target = "screen"
+
+[animation.loop]
+mode = "ping_pong"
+
+[[layers]]
+id = "aura"
+z_index = 5
+visible = true
+opacity = 0.85
+
+[[layers]]
+id = "geometry"
+z_index = 12
+visible = true
+opacity = 1.0
+
+[[layers]]
+id = "hud"
+z_index = 25
+visible = true
+opacity = 1.0
+
+[[backgrounds]]
+effect = "starfield"
+z_index = 0
+density = 0.45
+speed = 0.7
+opacity = 0.65
+color = "#1F7A4C"
+secondary_color = "#00D9FF"
+
+[[tracks]]
+id = "outer-morph"
+type = "shape"
+layer = "geometry"
+primitive = "circle"
+renderer = "braille"
+position = ["center", "center"]
+size = [26, 14]
+stroke = true
+fill = false
+color = "#39FF88"
+
+[[tracks.keyframes]]
+at_ms = 0
+shape = "circle"
+color = "#39FF88"
+rotation = 0.0
+scale = 0.85
+easing = "ease_in_out"
+
+[[tracks.keyframes]]
+at_ms = 800
+shape = "square"
+color = "#00D9FF"
+rotation = 45.0
+scale = 1.05
+transition = "morph"
+easing = "ease_in_out"
+
+[[tracks.keyframes]]
+at_ms = 1600
+shape = "triangle"
+color = "#FFC857"
+rotation = 180.0
+scale = 1.1
+transition = "morph"
+easing = "cubic_bezier(0.25, 0.1, 0.25, 1.0)"
+
+[[tracks.keyframes]]
+at_ms = 2400
+shape = "polygon"
+sides = 6
+color = "#FF5E7E"
+rotation = 300.0
+scale = 1.0
+transition = "morph"
+easing = "ease_in_out"
+
+[[tracks.keyframes]]
+at_ms = 3200
+shape = "circle"
+color = "#39FF88"
+rotation = 360.0
+scale = 0.9
+transition = "morph"
+easing = "ease_in_out"
+
+[[tracks]]
+id = "inner-core"
+type = "shape"
+layer = "aura"
+primitive = "polygon"
+sides = 4
+renderer = "quadrant"
+position = ["center", "center"]
+size = [10, 6]
+fill = true
+stroke = true
+color = "#00D9FF"
+fill_color = "#114433"
+
+[[tracks.keyframes]]
+at_ms = 0
+rotation = 0.0
+scale = 0.7
+color = "#00D9FF"
+
+[[tracks.keyframes]]
+at_ms = 1600
+rotation = -180.0
+scale = 1.15
+color = "#FFC857"
+easing = "ease_in_out"
+
+[[tracks.keyframes]]
+at_ms = 3200
+rotation = -360.0
+scale = 0.7
+color = "#39FF88"
+
+[[tracks]]
+id = "spark-aura"
+type = "particles"
+layer = "aura"
+position = ["center", "center"]
+size = [34, 16]
+count = 28
+direction = "center"
+chars = "·✦∘+"
+color = "#39FF88"
+fill_color = "#00D9FF"
+speed = 0.8
+
+[[tracks]]
+id = "badge-sprite"
+type = "ascii"
+layer = "aura"
+asset = "assets/frame_ring.txt"
+position = ["center", "center"]
+color = "#1F7A4C"
+opacity = 0.75
+
+[[tracks]]
+id = "headline"
+type = "text"
+layer = "hud"
+text = "EGOTOP // SHAPE MORPH ENGINE"
+text_effect = "color_cycle"
+palette = ["#39FF88", "#00D9FF", "#FFC857"]
+position = ["center", "12%"]
+speed = 1.2
+
+[[tracks]]
+id = "caption"
+type = "text"
+layer = "hud"
+text = "circle -> square -> triangle -> hexagon"
+text_effect = "typewriter"
+position = ["center", "88%"]
+color = "#00D9FF"

@@ -1,7 +1,13 @@
+pub mod backgrounds;
+pub mod easing;
+pub mod geometry;
 pub mod matrix;
 pub mod none;
 pub mod particles;
 pub mod scanlines;
+pub mod scene;
+pub mod text_fx;
+pub mod timeline;
 pub mod transition;
 pub mod water;
 
@@ -10,12 +16,21 @@ use crate::ui::theme::Theme;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 
+pub use backgrounds::{BackgroundLayerKind, BackgroundLayerSpec, BackgroundPipeline};
+pub use easing::EasingCurve;
+pub use geometry::{
+    GeometryRenderer, MORPH_SAMPLE_COUNT, ShapeDrawParams, ShapePrimitive, ShapeSpec,
+    morph_contours, rasterize_contour,
+};
 pub use matrix::MatrixEffect;
 pub use none::NoneEffect;
 pub use particles::ParticlesEffect;
 pub use scanlines::ScanlinesEffect;
+pub use scene::{CoordAnchor, CoordValue, LayerSpec, SceneCell, SceneDrawItem};
+pub use text_fx::{TextDirection, TextEffectKind, TextRenderParams, evaluate_text_cells};
+pub use timeline::{LoopConfig, LoopMode, TimelineClock, evaluate_scene_tracks};
 pub use transition::{
-    AnimationCatalog, AnimationCatalogEntry, AnimationSource, NativeTransition, TransitionPlayer,
+    AnimationCatalog, AnimationCatalogEntry, NativeTransition, TransitionPlayer,
 };
 pub use water::WaterEffect;
 

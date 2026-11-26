@@ -1,0 +1,106 @@
+[animation]
+name = "neon-banner"
+display_name = "Neon Banner FX"
+author = "egotop"
+description = "Showcase of reveal, wave, glitch, color-cycle, pulse, and scroll text effects."
+version = 2
+duration_ms = 3600
+fps = 30
+speed = 1.0
+mode = "scene"
+target = "screen"
+
+[animation.loop]
+mode = "infinite"
+
+[[layers]]
+id = "backdrop"
+z_index = 4
+
+[[layers]]
+id = "banner"
+z_index = 18
+
+[[backgrounds]]
+effect = "gradient"
+z_index = 0
+intensity = 0.55
+speed = 0.9
+color = "#00D9FF"
+secondary_color = "#39FF88"
+
+[[backgrounds]]
+effect = "floating_chars"
+z_index = 1
+density = 0.65
+speed = 0.8
+chars = "·∘✦*+"
+color = "#00D9FF"
+secondary_color = "#FFC857"
+
+[[tracks]]
+id = "emblem"
+type = "ascii"
+layer = "backdrop"
+asset = "assets/emblem.txt"
+position = ["center", "30%"]
+color = "#39FF88"
+opacity = 0.95
+
+[[tracks.keyframes]]
+at_ms = 0
+opacity = 0.25
+scale = 0.9
+
+[[tracks.keyframes]]
+at_ms = 1800
+opacity = 1.0
+scale = 1.0
+easing = "ease_out"
+
+[[tracks.keyframes]]
+at_ms = 3600
+opacity = 0.35
+easing = "ease_in"
+
+[[tracks]]
+id = "fx-cycle"
+type = "text"
+layer = "banner"
+text = "EGOTOP UNIFIED ANIMATION ENGINE"
+text_effect = "color_cycle"
+palette = ["#39FF88", "#00D9FF", "#FFC857", "#FF5E7E"]
+position = ["center", "52%"]
+speed = 1.4
+
+[[tracks]]
+id = "fx-wave"
+type = "text"
+layer = "banner"
+text = "WAVE  •  GLITCH  •  REVEAL  •  PULSE"
+text_effect = "wave"
+palette = ["#00D9FF", "#FFC857"]
+position = ["center", "64%"]
+intensity = 1.0
+
+[[tracks]]
+id = "fx-glitch"
+type = "text"
+layer = "banner"
+text = "[ STATUS: DECLARATIVE TOML SCENE ACTIVE ]"
+text_effect = "glitch"
+chars = "01#$%@*"
+palette = ["#39FF88", "#FF5E7E", "#00D9FF"]
+position = ["center", "74%"]
+intensity = 0.45
+
+[[tracks]]
+id = "fx-scroll"
+type = "text"
+layer = "banner"
+text = ">>> Customize scenes, morphs, loops, and backgrounds purely via animation.toml <<<   "
+text_effect = "scroll"
+direction = "left"
+position = ["center", "88%"]
+color = "#FFC857"
+speed = 1.1

@@ -1,7 +1,10 @@
-use crate::animation::{AnimationCatalog, BackgroundEffect, TransitionPlayer, create_effect};
+use crate::animation::{
+    AnimationCatalog, BackgroundEffect, BackgroundLayerKind, BackgroundLayerSpec,
+    BackgroundPipeline, TransitionPlayer,
+};
 use crate::command::{
-    AnimationAction, CommandLineState, CommandRegistry, CompletionContext, LayoutSelection,
-    ParsedCommand, WindowCommand, WriteTarget, parse_command,
+    AnimationAction, BackgroundCommand, CommandLineState, CommandRegistry, CompletionContext,
+    LayoutSelection, ParsedCommand, WindowCommand, WriteTarget, parse_command,
 };
 use crate::config::{
     Config, EffectKind, StartupMode, StartupTrigger, ThemeEntry, ViewMode, load_all_themes,
@@ -42,7 +45,7 @@ pub struct App {
     registry: CommandRegistry,
     collector: SystemCollector,
     snapshot: SystemSnapshot,
-    effect: Box<dyn BackgroundEffect>,
+    effect: BackgroundPipeline,
     reveal: RevealState,
     command_line: CommandLineState,
     customizer: CustomizerState,
@@ -87,7 +90,7 @@ impl App {
 
         let mut collector = SystemCollector::new();
         let snapshot = collector.collect(width, height);
-        let effect = create_effect(config.background.effect, width, height, &config.background);
+        let effect = BackgroundPipeline::from_config(&config.background, width, height);
         let active_page = config.general.default_page.max(1);
         let view_mode = config.general.view_mode;
         let fps = config.general.animation_fps as f32;
@@ -194,7 +197,7 @@ impl App {
             };
 
             let config_ref = &self.config;
-            let effect_ref = self.effect.as_ref();
+            let effect_ref: &dyn BackgroundEffect = &self.effect;
             let transition_ref = &self.transition;
             let windows_ref = &mut self.windows;
             let customizer_ref = &mut self.customizer;
@@ -508,9 +511,19 @@ impl App {
                             &self.animations,
                             self.config.general.startup_duration_ms,
                         );
+                        if !self.transition.package_backgrounds().is_empty() {
+                            let sz = guard.terminal.size()?;
+                            self.effect.set_specs(
+                                self.transition.package_backgrounds(),
+                                sz.width,
+                                sz.height,
+                                &self.config.background,
+                                &self.transition.package.assets,
+                            );
+                        }
                         self.reveal = RevealState::new(0.65);
                         self.customizer.close();
-                        self.set_toast(format!("Previewing '{}'", entry.display_name));
+                        self.set_toast(format!("Playing '{}'", entry.display_name));
                     } else {
                         self.config.general.startup_animation = entry.id.clone();
                         self.transition.restart(
@@ -518,6 +531,16 @@ impl App {
                             &self.animations,
                             self.config.general.startup_duration_ms,
                         );
+                        if !self.transition.package_backgrounds().is_empty() {
+                            let sz = guard.terminal.size()?;
+                            self.effect.set_specs(
+                                self.transition.package_backgrounds(),
+                                sz.width,
+                                sz.height,
+                                &self.config.background,
+                                &self.transition.package.assets,
+                            );
+                        }
                         self.set_toast(format!(
                             "Startup animation set to '{}' (use :write to persist)",
                             entry.display_name
@@ -640,9 +663,19 @@ impl App {
                 cmd_state.open(&self.registry, &ctx);
                 self.command_line = cmd_state;
             }
-            KeyCode::Char('q') | KeyCode::Char('Q') | KeyCode::Esc => {
+            KeyCode::Char('q') | KeyCode::Char('Q') => {
                 if self.show_help {
                     self.show_help = false;
+                } else {
+                    self.should_quit = true;
+                }
+            }
+            KeyCode::Esc => {
+                if self.show_help {
+                    self.show_help = false;
+                } else if self.transition.has_scene_tracks() && !self.transition.finished {
+                    self.transition.stop();
+                    self.set_toast("Animation stopped");
                 } else {
                     self.should_quit = true;
                 }
@@ -755,8 +788,18 @@ impl App {
                             &self.animations,
                             self.config.general.startup_duration_ms,
                         );
+                        if !self.transition.package_backgrounds().is_empty() {
+                            let sz = guard.terminal.size()?;
+                            self.effect.set_specs(
+                                self.transition.package_backgrounds(),
+                                sz.width,
+                                sz.height,
+                                &self.config.background,
+                                &self.transition.package.assets,
+                            );
+                        }
                         self.reveal = RevealState::new(0.65);
-                        self.set_toast(format!("Playing animation '{anim_name}'"));
+                        self.set_toast(format!("Playing animation '{}'", self.transition.active_id));
                     }
                 }
                 AnimationAction::SetStartup => {
@@ -767,13 +810,54 @@ impl App {
                             &self.animations,
                             self.config.general.startup_duration_ms,
                         );
+                        if !self.transition.package_backgrounds().is_empty() {
+                            let sz = guard.terminal.size()?;
+                            self.effect.set_specs(
+                                self.transition.package_backgrounds(),
+                                sz.width,
+                                sz.height,
+                                &self.config.background,
+                                &self.transition.package.assets,
+                            );
+                        }
                         self.reveal = RevealState::new(0.65);
                         self.set_toast(format!(
-                            "Startup animation set to '{anim_name}' (use :write to persist)"
+                            "Startup animation set to '{}' (use :write to persist)",
+                            self.transition.active_id
+                        ));
+                    }
+                }
+                AnimationAction::Pause => {
+                    self.transition.pause();
+                    self.set_toast("Animation playback paused");
+                }
+                AnimationAction::Resume => {
+                    self.transition.resume();
+                    self.set_toast("Animation playback resumed");
+                }
+                AnimationAction::Stop => {
+                    self.transition.stop();
+                    self.set_toast("Animation playback stopped");
+                }
+                AnimationAction::Restart => {
+                    self.transition.replay_current();
+                    self.set_toast(format!("Restarted '{}'", self.transition.active_id));
+                }
+                AnimationAction::Speed => {
+                    if let Some(val_str) = name
+                        && let Ok(spd) = val_str.parse::<f32>()
+                    {
+                        self.transition.set_speed(spd);
+                        self.set_toast(format!(
+                            "Animation speed set to {:.2}x",
+                            self.transition.speed()
                         ));
                     }
                 }
             },
+            ParsedCommand::Background(bcmd) => {
+                self.execute_background_command(bcmd, guard)?;
+            }
             ParsedCommand::Effect(None) => {
                 let next = self.config.background.effect.next();
                 self.set_effect(next, guard)?;
@@ -957,12 +1041,8 @@ impl App {
             Ok(new_cfg) => {
                 let sz = guard.terminal.size()?;
                 self.theme = resolve_active_theme(&new_cfg, &self.themes_map);
-                self.effect = create_effect(
-                    new_cfg.background.effect,
-                    sz.width,
-                    sz.height,
-                    &new_cfg.background,
-                );
+                self.effect =
+                    BackgroundPipeline::from_config(&new_cfg.background, sz.width, sz.height);
                 self.transition.restart(
                     &new_cfg.general.startup_animation,
                     &self.animations,
@@ -1009,7 +1089,105 @@ impl App {
             EffectKind::None => {}
         }
         let sz = guard.terminal.size()?;
-        self.effect = create_effect(kind, sz.width, sz.height, &self.config.background);
+        self.effect = BackgroundPipeline::from_config(&self.config.background, sz.width, sz.height);
+        Ok(())
+    }
+
+    fn execute_background_command(
+        &mut self,
+        bcmd: BackgroundCommand,
+        guard: &TerminalGuard,
+    ) -> Result<()> {
+        let sz = guard.terminal.size()?;
+        match bcmd {
+            BackgroundCommand::Stop => {
+                self.effect.clear();
+                self.config.background.enabled = false;
+                self.config.background.effect = EffectKind::None;
+                self.set_toast("Background stopped");
+            }
+            BackgroundCommand::Pause => {
+                self.effect.pause();
+                self.set_toast("Background paused");
+            }
+            BackgroundCommand::Resume => {
+                self.effect.resume();
+                self.set_toast("Background resumed");
+            }
+            BackgroundCommand::Speed(val_str) => {
+                if let Ok(spd) = val_str.parse::<f32>() {
+                    self.effect.set_speed(spd);
+                    self.set_toast(format!("Background speed set to {:.2}x", self.effect.speed));
+                }
+            }
+            BackgroundCommand::List => {
+                self.set_toast(format!(
+                    "Background layers active: {} (matrix_rain, starfield, particles, waves, noise, gradient, floating_chars, scanlines)",
+                    self.effect.layer_count()
+                ));
+            }
+            BackgroundCommand::Set(name) => {
+                if let Some(kind) = BackgroundLayerKind::parse(&name) {
+                    let spec = BackgroundLayerSpec {
+                        effect: kind,
+                        ..BackgroundLayerSpec::default()
+                    };
+                    self.config.background.enabled = kind != BackgroundLayerKind::None;
+                    self.effect.set_single(
+                        spec,
+                        sz.width,
+                        sz.height,
+                        &self.config.background,
+                        &BTreeMap::new(),
+                    );
+                    self.config.background.effect = self.effect.primary_effect_kind();
+                    self.set_toast(format!("Background set to '{}'", kind.label()));
+                } else {
+                    let pkg = self.animations.resolve_package(&name);
+                    if !pkg.definition.backgrounds.is_empty() {
+                        self.config.background.enabled = true;
+                        self.effect.set_specs(
+                            &pkg.definition.backgrounds,
+                            sz.width,
+                            sz.height,
+                            &self.config.background,
+                            &pkg.assets,
+                        );
+                        self.set_toast(format!(
+                            "Applied {} background layer(s) from '{}'",
+                            self.effect.layer_count(),
+                            pkg.definition.name
+                        ));
+                    } else {
+                        self.set_toast(format!("Unknown background '{name}'"));
+                    }
+                }
+            }
+            BackgroundCommand::Add(name) => {
+                if let Some(kind) = BackgroundLayerKind::parse(&name) {
+                    let spec = BackgroundLayerSpec {
+                        effect: kind,
+                        z_index: self.effect.layer_count() as i32,
+                        ..BackgroundLayerSpec::default()
+                    };
+                    self.config.background.enabled = true;
+                    self.effect.add_layer(
+                        spec,
+                        sz.width,
+                        sz.height,
+                        &self.config.background,
+                        &BTreeMap::new(),
+                    );
+                    self.set_toast(format!(
+                        "Added background layer '{}' ({} active)",
+                        kind.label(),
+                        self.effect.layer_count()
+                    ));
+                } else {
+                    self.set_toast(format!("Unknown background layer '{name}'"));
+                }
+            }
+        }
         Ok(())
     }
 

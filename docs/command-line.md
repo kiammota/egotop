@@ -62,19 +62,47 @@ All commands are registered in `CommandRegistry` (`src/command/registry.rs`), pa
 ### `:animation`
 
 - **Aliases:** `:anim`
-- **Description:** Open the animation picker, preview an animation live, or set the startup animation.
-- **Syntax:** `:animation [play|set|list] [name]`
+- **Description:** Play, pause, resume, stop, restart, speed-scale, or select bundled and community animations.
+- **Syntax:** `:animation [play|set|pause|resume|stop|restart|speed|list] [arg]`
 - **Arguments:**
   - `list` or omitted: opens the **Animations** tab in the visual customizer.
-  - `play <name>`: plays the specified native or community animation immediately.
+  - `play <name>`: plays the specified transition or scene animation immediately (also applies declared `[[backgrounds]]`).
   - `set <name>` or `<name>`: sets `general.startup_animation` in runtime and plays it.
+  - `pause` / `resume` / `stop` / `restart`: non-blocking playback controls for the active timeline.
+  - `speed <factor>`: scales playback speed (`0.05..=10.0`).
 - **Examples:**
   ```text
-  :animation
-  :animation play crt_power_on
+  :animation play shape-morph
+  :animation pause
+  :animation resume
+  :animation speed 1.5
+  :animation stop
   :animation set cyber_boot
   ```
-- **Expected behavior:** Plays the selected transition over the main window (use `:write` to persist `startup_animation`).
+- **Expected behavior:** Runs the selected transition or multi-layer scene without blocking TUI input (press `Esc` or `:animation stop` to dismiss an active foreground loop; use `:write` to persist `startup_animation`).
+
+### `:background`
+
+- **Aliases:** `:bg`
+- **Description:** Replace, stack, pause, resume, speed-scale, or stop animated background layers while keeping the dashboard interactive.
+- **Syntax:** `:background <set|add|stop|pause|resume|speed|list> [arg]`
+- **Arguments:**
+  - `set <name>`: replaces the active background stack with a preset (`matrix_rain`, `starfield`, `particles`, `waves`, `noise`, `gradient`, `floating_chars`, `custom_ascii`, `scanlines`, `none`) or the `[[backgrounds]]` stack of an animation package (e.g. `aurora-horizon`).
+  - `add <name>`: stacks an additional animated background layer on top of existing layers.
+  - `stop`: stops and clears all active background layers.
+  - `pause` / `resume`: pauses or resumes background updates.
+  - `speed <factor>`: scales background speed (`0.05..=10.0`).
+  - `list`: shows active background layer count and available effect presets.
+- **Examples:**
+  ```text
+  :background set starfield
+  :background add noise
+  :background speed 1.5
+  :background pause
+  :background resume
+  :background stop
+  ```
+- **Expected behavior:** Updates `BackgroundPipeline` live behind all windows and foreground scenes without restarting Egotop.
 
 ### `:layout`
 

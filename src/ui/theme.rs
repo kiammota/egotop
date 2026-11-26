@@ -237,6 +237,99 @@ pub fn color_to_rgb(color: Color) -> Option<(u8, u8, u8)> {
         Color::LightMagenta => Some((214, 112, 214)),
         Color::LightCyan => Some((41, 184, 219)),
         Color::White => Some((255, 255, 255)),
+        Color::Indexed(idx) => Some(ansi256_to_rgb(idx)),
         _ => None,
+    }
+}
+
+/// Converts a 24-bit RGB color to the closest 8-bit xterm-256 palette index.
+pub fn rgb_to_ansi256(r: u8, g: u8, b: u8) -> u8 {
+    if r == g && g == b {
+        if r < 8 {
+            return 16;
+        }
+        if r > 248 {
+            return 231;
+        }
+        return (((r as f32 - 8.0) / 247.0) * 24.0).round() as u8 + 232;
+    }
+    let ri = ((r as f32 / 255.0) * 5.0).round() as u8;
+    let gi = ((g as f32 / 255.0) * 5.0).round() as u8;
+    let bi = ((b as f32 / 255.0) * 5.0).round() as u8;
+    16 + 36 * ri + 6 * gi + bi
+}
+
+/// Maps an xterm-256 color index back into approximate RGB components for blending.
+pub fn ansi256_to_rgb(idx: u8) -> (u8, u8, u8) {
+    const ANSI16: [(u8, u8, u8); 16] = [
+        (0, 0, 0),
+        (128, 0, 0),
+        (0, 128, 0),
+        (128, 128, 0),
+        (0, 0, 128),
+        (128, 0, 128),
+        (0, 128, 128),
+        (192, 192, 192),
+        (128, 128, 128),
+        (255, 0, 0),
+        (0, 255, 0),
+        (255, 255, 0),
+        (0, 0, 255),
+        (255, 0, 255),
+        (0, 255, 255),
+        (255, 255, 255),
+    ];
+    if idx < 16 {
+        return ANSI16[idx as usize];
+    }
+    if idx >= 232 {
+        let v = 8 + (idx - 232) * 10;
+        return (v, v, v);
+    }
+    let c = idx - 16;
+    let r = c / 36;
+    let g = (c % 36) / 6;
+    let b = c % 6;
+    let lvl = |n: u8| if n == 0 { 0 } else { 55 + n * 40 };
+    (lvl(r), lvl(g), lvl(b))
+}
+
+/// Detects whether the current terminal advertises 24-bit truecolor support.
+pub fn terminal_supports_truecolor() -> bool {
+    if let Ok(ct) = std::env::var("COLORTERM") {
+        let low = ct.to_ascii_lowercase();
+        if low.contains("truecolor") || low.contains("24bit") {
+            return true;
+        }
+        if low.contains("256color") || low.contains("ansi") {
+            return false;
+        }
+    }
+    if let Ok(term) = std::env::var("TERM") {
+        let low = term.to_ascii_lowercase();
+        if low.contains("kitty")
+            || low.contains("wezterm")
+            || low.contains("alacritty")
+            || low.contains("foot")
+            || low.contains("ghostty")
+            || low.contains("direct")
+        {
+            return true;
+        }
+        if low == "linux" || low == "vt100" {
+            return false;
+        }
+    }
+    true
+}
+
+/// Converts `color` to `Color::Indexed` when `truecolor` is `false`.
+pub fn adapt_color(color: Color, truecolor: bool) -> Color {
+    if truecolor {
+        return color;
+    }
+    match color {
+        Color::Rgb(r, g, b) => Color::Indexed(rgb_to_ansi256(r, g, b)),
+        other => other,
     }
 }

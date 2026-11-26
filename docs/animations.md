@@ -1,96 +1,195 @@
-# Animations
+# Animations, Scenes & Backgrounds
 
-Egotop has two complementary animation systems inside `src/animation/`:
+Egotop uses a **single unified declarative Animation Engine** (`src/animation/`) across every bundled animation and community package. Bundled presets and external community packages use the exact same TOML schema, parser, validator, scene graph, geometry morphing engine, timeline evaluator, text engine, and multi-layer background pipeline—only their package origin differs (`Bundled` vs. `Community`).
 
-1. **Startup & Transition Animations** (`src/animation/transition.rs`): reveal/transition effects played over the main window (`TransitionPlayer`).
-2. **Ambient Background Effects** (`src/animation/{matrix,water,particles,scanlines,none}.rs`): continuous effects rendered behind windows (`BackgroundEffect`).
+---
 
-## Native Startup & Transition Animations
+## Architecture Overview
 
-| ID | Display Name | Description |
+| Module | Path | Responsibility |
 |---|---|---|
-| `crt_power_on` | CRT Power On | Horizontal CRT beam expanding vertically into the full window |
-| `curtains` | Curtains | Symmetric curtains opening from center outward |
-| `fade` | Fade | Smooth gradual fade-in to final theme colors |
-| `slide` | Slide | Smooth lateral slide-in from the left |
-| `matrix_boot` | Matrix Boot | Retro terminal boot sequence resolving scrambled glyphs |
-| `cursor-expand` | Cursor Expand | Radial expansion originating from the cursor startup coordinates |
-| `none` | None | Instant display with no startup transition |
+| **Unified Engine & Catalog** | [`src/animation/transition.rs`](../src/animation/transition.rs) | `AnimationCatalog` (bundled + community packages) and `TransitionPlayer` (`TimelineClock`, transition effects, scene rendering) |
+| **Scene System & Layers** | [`src/animation/scene.rs`](../src/animation/scene.rs) | Z-ordered `LayerSpec` composition, coordinate anchors (`center`, `%`, `cells`, `cursor`), ASCII sprites, truecolor + ANSI-256 adaptation |
+| **Geometry Engine** | [`src/animation/geometry.rs`](../src/animation/geometry.rs) | Primitives (`circle`, `square`, `rectangle`, `triangle`, `polygon`, `line`, `path`), 64-point arc-length contour morphing, `braille` / `quadrant` / `ascii` subcell rasterizers |
+| **Timeline & Loop System** | [`src/animation/timeline.rs`](../src/animation/timeline.rs) | Multi-track keyframe interpolation (`position`, `size`, `color`, `rotation`, `scale`, `opacity`, `visibility`, `shape`, `text`) and `once` / `infinite` / `repeat` / `ping_pong` loops |
+| **Easing Curves** | [`src/animation/easing.rs`](../src/animation/easing.rs) | `linear`, `ease_in`, `ease_out`, `ease_in_out`, and `cubic_bezier(x1, y1, x2, y2)` |
+| **Text Animation Engine** | [`src/animation/text_fx.rs`](../src/animation/text_fx.rs) | `typewriter`, `fade`, `reveal`, `wave`, `glitch`, `color_cycle`, `char_by_char`, `scroll`, `pulse` |
+| **Background Pipeline** | [`src/animation/backgrounds.rs`](../src/animation/backgrounds.rs) | Multi-layer composable backgrounds (`matrix_rain`, `starfield`, `particles`, `waves`, `noise`, `gradient`, `floating_chars`, `custom_ascii`, `scanlines`) |
+| **Schema & Sandbox Loader** | [`src/config/animation_loader.rs`](../src/config/animation_loader.rs) | v1/v2 TOML parsing, schema & resource limit validation, sandboxed package asset resolution |
 
-Preview or select any animation live:
+---
+
+## Bundled Animations & Showcases
+
+Every bundled animation ships as a declarative TOML manifest (or package folder) inside [`assets/animations/`](../assets/animations/):
+
+### Startup & Window Transitions
+- `crt_power_on` — Horizontal CRT beam expanding vertically into the full window.
+- `curtains` — Symmetric curtains opening from the center outward.
+- `fade` — Smooth fade-in to active theme colors.
+- `slide` — Lateral window slide reveal.
+- `matrix_boot` — Scrambled glyph column reveal.
+- `cursor-expand` — Radial reveal expanding from the cursor startup position.
+- `none` — Instant display.
+- `cyber_boot` & `neon_curtains` — Multi-step v1 declarative boot sequences.
+
+### Full Scene, Geometry & Multi-Layer Showcases
+- `shape-morph` — Ping-pong Braille contour morph (`circle -> square -> triangle -> hexagon -> circle`) with inner rotating core, ASCII frame asset, particle aura, `color_cycle` title, `typewriter` caption, and starfield background.
+- `orbital-prism` — Counter-rotating nested polygons, keyframed orbiting beacon, `wave` title, and deep-space starfield.
+- `neon-banner` — Demonstrates `color_cycle`, `wave`, `glitch`, and `scroll` text effects with keyframed ASCII emblem over `gradient` + `floating_chars` layers.
+- `aurora-horizon` — Multi-layer `gradient` + `noise` + `waves` background with morphing custom `path` aurora curve and `pulse` heading.
+- `matrix-overload` — Layered `matrix_rain` + `scanlines` background with rotating octagonal Braille reticle, `core.txt` ASCII reactor, and `reveal` telemetry.
+- `starlight-warp` — `starfield` + `floating_chars` with diamond-to-octagon `cubic_bezier` portal morph, radial particles, and `char_by_char` title.
+- `pulse-scanner` — `line` morphing to `rectangle` over 4 `repeat` cycles (`interval_ms = 250`) with multi-frame ASCII LED status sprites.
+
+Preview any animation live:
 ```text
-:animation play crt_power_on
-:animation set curtains
+:animation play shape-morph
+:animation pause
+:animation resume
+:animation speed 1.5
+:animation stop
 ```
-Or open the interactive picker via `:animation` (or `F2` → **Animations**), press `p` to preview, and `Enter` to set as default.
+Or press `F2` → **Animations**, `p` to play, `Enter` to set startup default, or `Esc` to dismiss an active foreground scene.
 
-## Community Declarative TOML Animations
+---
 
-Custom animations live in `~/.config/egotop/animations/*.toml` and are loaded at runtime on startup and `:reload` (`src/config/animation_loader.rs`) without recompiling Egotop.
+## Declarative TOML Schema (`version = 2`)
 
-### Schema (`schema_version = 1`)
-
-| Field | Type | Required | Description |
-|---|---|---|---|
-| `schema_version` | integer (`>= 1`) | Yes | Schema version (`1`) |
-| `name` | string | Yes | Unique animation identifier used by `:animation` |
-| `display_name` | string | No | Friendly name shown in the picker |
-| `author` | string | No | Author metadata |
-| `description` | string | No | Short description shown in picker & autocomplete |
-| `[[steps]]` | array of tables | Yes (`>= 1`) | Ordered sequence of transition steps |
-
-Each `[[steps]]` entry supports:
-
-| Key | Type | Default | Allowed Values |
-|---|---|---|---|
-| `effect` | string | `"fade"` | `"crt_line"`, `"curtains"`, `"fade"`, `"slide"`, `"matrix_scramble"`, `"flash"`, `"pause"` (unknown future effects deserialize safely as no-op) |
-| `duration_ms` | integer | `400` | Step duration in milliseconds |
-| `easing` | string | `"ease_in_out"` | `"linear"`, `"ease_in"`, `"ease_out"`, `"ease_in_out"` |
-| `target` | string | `"window"` | `"screen"`, `"window"`, `"content"` |
-| `direction` | string | `"center"` | `"left"`, `"right"`, `"top"`, `"bottom"`, `"center"` |
-| `color` | string (optional) | theme accent | `#RRGGBB` or named color |
-| `chars` | string (optional) | `"01ｱｶｻﾀﾅﾊ#$"` | Character set for `matrix_scramble` |
-| `intensity` | float | `1.0` | Step intensity multiplier |
-
-### Complete Example (`~/.config/egotop/animations/cyber_boot.toml`)
+Schema `version = 1` (`[[steps]]`) remains 100% backwards-compatible and compiles cleanly into the unified timeline engine. Schema `version = 2` unlocks full scenes, layers, geometry morphing, text effects, particles, loops, and multi-layer backgrounds:
 
 ```toml
-schema_version = 1
-name = "cyber_boot"
-display_name = "Cyber Boot (Community)"
+[animation]
+name = "shape-morph"
+display_name = "Shape Morph Showcase"
 author = "egotop"
-description = "Initial CRT flash followed by Matrix scramble and smooth reveal."
+description = "Braille circle-to-square-to-triangle morph."
+version = 2
+duration_ms = 2400
+fps = 30
+speed = 1.0
+mode = "scene"          # "scene" | "transition" | "composite"
+target = "screen"       # "screen" | "window" | "content" | "overlay" | "background"
 
-[[steps]]
-effect = "crt_line"
-duration_ms = 320
-easing = "ease_out"
-target = "window"
+[animation.loop]
+mode = "ping_pong"      # "once" | "infinite" | "repeat" | "ping_pong"
+count = 0               # cycle limit for "repeat" or finite "ping_pong"
+interval_ms = 0         # optional pause between repetitions
+
+[[layers]]
+id = "geometry"
+z_index = 10
+visible = true
+opacity = 1.0
+
+[[backgrounds]]
+effect = "starfield"    # matrix_rain | starfield | particles | waves | noise | gradient | floating_chars | custom_ascii | scanlines | none
+z_index = 0
+density = 0.7
+speed = 1.0
+color = "#1F7A4C"
+secondary_color = "#00D9FF"
+
+[[tracks]]
+id = "main-shape"
+type = "shape"          # shape | text | ascii | particles | transition | background
+layer = "geometry"
+primitive = "circle"    # circle | square | rectangle | triangle | polygon | line | path
+renderer = "braille"    # braille | block | quadrant | ascii
+position = ["center", "center"]   # cells, "50%", "center", "left", "right", "top", "bottom", "cursor"
+size = [24, 14]
+stroke = true
+fill = false
 color = "#39FF88"
 
-[[steps]]
-effect = "matrix_scramble"
-duration_ms = 550
+[[tracks.keyframes]]
+at_ms = 0
+shape = "circle"
+color = "#39FF88"
+rotation = 0.0
+scale = 0.9
 easing = "ease_in_out"
-target = "content"
-chars = "01ｱｶｻﾀﾅﾊ#$"
 
-[[steps]]
-effect = "fade"
-duration_ms = 350
-easing = "ease_out"
-target = "content"
+[[tracks.keyframes]]
+at_ms = 1200
+shape = "square"
+color = "#00D9FF"
+rotation = 45.0
+scale = 1.1
+transition = "morph"    # "morph" | "snap" | "fade"
+easing = "cubic_bezier(0.25, 0.1, 0.25, 1.0)"
 ```
 
-To use it on startup, set `startup_animation = "cyber_boot"` under `[general]` in `~/.config/egotop/egotop.toml`, or run `:animation set cyber_boot` followed by `:write`.
+### Geometry & Subcell Renderers
+- **Shapes:** `circle`, `square`, `rectangle`, `triangle`, `polygon` (with `sides = 3..32`), `line`, and `path` (normalized coordinates in `[-1.0, 1.0]`).
+- **Morphing:** Every contour is resampled uniformly by arc length to 64 vertices so any primitive smoothly interpolates into any other without jagged character jumping.
+- **Renderers:** `braille` (`2×4` Unicode Braille dots per cell, `U+2800..U+28FF`), `quadrant` / `block` (`2×2` subcell blocks), and `ascii` (`stroke_char` / `fill_char`).
 
-## Ambient Background Effects
+### Easing Curves
+- `"linear"`
+- `"ease_in"`
+- `"ease_out"`
+- `"ease_in_out"`
+- `"cubic_bezier(x1, y1, x2, y2)"` (or table `{ type = "cubic_bezier", points = [x1, y1, x2, y2] }`)
 
-Configured under `[background]` in `egotop.toml` (or cycled live via `e` or `:effect <name>`):
-- `matrix`: vertical falling glyphs (`katakana`, `hex`, `ascii`, `binary`) with configurable `speed`, `density`, `min_length`, `max_length`, `color`, and `head_color`.
-- `water`: dual-wave interference surface (`~`, `≈`, `∼`, `·`) with `speed`, `amplitude`, `density`, `color`, and `crest_color`.
-- `particles`: independent floating characters (`count`, `speed`, `density`, `color`, `chars`).
-- `scanlines`: CRT horizontal scanline bands with moving sweep line (`speed`, `spacing`, `intensity`, `color`).
-- `none`: static background.
+### Text Effects (`type = "text"`)
+Supported `text_effect` values: `none`, `typewriter`, `fade`, `reveal`, `wave`, `glitch`, `color_cycle`, `char_by_char`, `scroll`, `pulse`. Configure `direction` (`left`, `right`, `up`, `down`, `center`), `speed`, `intensity`, `palette`, `chars`, and `color`.
 
-All background effects support optional `region = { x = 0, y = 0, width = 50, height = 100, unit = "percent" }` to restrict rendering to a screen region.
+---
+
+## Community Package Format & Sandboxing
+
+Place custom animations under `~/.config/egotop/animations/` either as:
+1. **A directory bundle** (recommended when bundling ASCII art assets):
+   ```text
+   ~/.config/egotop/animations/my-scene/
+   ├── animation.toml
+   ├── assets/
+   │   ├── emblem.txt
+   │   └── frame.txt
+   └── preview.png      # optional preview metadata
+   ```
+2. **A single `.toml` file** (e.g. `~/.config/egotop/animations/my_anim.toml`), which must be self-contained without external asset paths.
+
+### Validation & Security Limits
+Community packages run inside a strict declarative sandbox (no code execution and no arbitrary file access):
+- Asset references (`asset = "assets/emblem.txt"`) must be relative, must not contain `..`, `\`, URL schemes, or absolute paths, and are canonicalized and verified to stay inside their package directory (blocking symlink escapes).
+- Standalone `.toml` manifests outside a package folder cannot reference external `asset` files.
+- Resource bounds enforced at load time:
+  - `schema_version` / `version`: `1..=2`
+  - `fps`: `1..=120`
+  - `duration_ms`: `<= 300_000`
+  - `layers`: `<= 16`
+  - `tracks`: `<= 32`
+  - `backgrounds`: `<= 8`
+  - `keyframes` per track: `<= 64`
+  - `count` (particles per track): `<= 500`
+  - `path` points: `<= 128`
+  - Asset file size: `<= 64 KiB` UTF-8 text (`animation.toml` `<= 128 KiB`)
+
+Run `:reload` inside Egotop after editing or installing a package to hot-reload without restarting.
+
+---
+
+## Composable Multi-Layer Backgrounds
+
+Stack or replace ambient backgrounds at runtime using `:background`:
+```text
+:background set starfield
+:background add noise
+:background speed 1.4
+:background pause
+:background resume
+:background stop
+```
+Available background layer algorithms:
+- `matrix_rain` (alias `matrix`)
+- `starfield`
+- `particles`
+- `waves` (alias `water`)
+- `noise`
+- `gradient`
+- `floating_chars`
+- `custom_ascii` (renders ASCII asset/sprite with gentle drift or scroll)
+- `scanlines`
+- `none`

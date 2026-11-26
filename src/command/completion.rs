@@ -80,6 +80,9 @@ impl CompletionEngine {
                 CompletionProviderKind::Animation => {
                     complete_animation(&prev_args, &current_token, ctx.animations)
                 }
+                CompletionProviderKind::Background => {
+                    complete_background(&prev_args, &current_token, ctx.animations)
+                }
                 CompletionProviderKind::Layout => {
                     complete_layout(&prev_args, &current_token, ctx.layouts)
                 }
@@ -259,11 +262,16 @@ fn complete_animation(
         let mut items = complete_from_pairs(
             &p,
             &[
-                ("play", "Preview an animation on the main window"),
+                ("play", "Play an animation or scene"),
                 ("set", "Set the startup animation"),
+                ("pause", "Pause active animation playback"),
+                ("resume", "Resume paused animation playback"),
+                ("stop", "Stop active animation playback"),
+                ("restart", "Restart active animation from t=0"),
+                ("speed", "Set playback speed multiplier (0.1..10.0)"),
                 ("list", "Open the interactive animation picker"),
             ],
-            Some("<name>"),
+            Some("<arg>"),
         );
         for entry in &catalog.entries {
             if entry.id.to_ascii_lowercase().starts_with(&p) {
@@ -278,26 +286,109 @@ fn complete_animation(
         return items;
     }
 
-    if prev_args.len() == 1
-        && matches!(
-            prev_args[0].to_ascii_lowercase().as_str(),
-            "play" | "set"
-        )
-    {
-        return catalog
-            .entries
-            .iter()
-            .filter(|e| {
-                let id_l = e.id.to_ascii_lowercase();
-                id_l.starts_with(&p) || (!p.is_empty() && id_l.contains(&p))
-            })
-            .map(|e| CompletionItem {
-                insert_text: e.id.clone(),
-                label: e.id.clone(),
-                description: e.description.clone(),
-                expected_arg: None,
-            })
-            .collect();
+    if prev_args.len() == 1 {
+        let sub = prev_args[0].to_ascii_lowercase();
+        if matches!(sub.as_str(), "play" | "set") {
+            return catalog
+                .entries
+                .iter()
+                .filter(|e| {
+                    let id_l = e.id.to_ascii_lowercase();
+                    id_l.starts_with(&p) || (!p.is_empty() && id_l.contains(&p))
+                })
+                .map(|e| CompletionItem {
+                    insert_text: e.id.clone(),
+                    label: e.id.clone(),
+                    description: e.description.clone(),
+                    expected_arg: None,
+                })
+                .collect();
+        }
+        if sub == "speed" {
+            return complete_from_pairs(
+                &p,
+                &[
+                    ("0.5", "Half playback speed"),
+                    ("1.0", "Normal playback speed"),
+                    ("1.5", "1.5x faster playback"),
+                    ("2.0", "Double playback speed"),
+                ],
+                None,
+            );
+        }
+    }
+
+    Vec::new()
+}
+
+fn complete_background(
+    prev_args: &[String],
+    current: &str,
+    catalog: &AnimationCatalog,
+) -> Vec<CompletionItem> {
+    let p = current.to_ascii_lowercase();
+    let presets = [
+        ("matrix_rain", "Matrix falling glyphs rain"),
+        ("starfield", "Parallax starfield drifting across space"),
+        ("particles", "Floating glowing character particles"),
+        ("waves", "Multi-wave harmonic interference surface"),
+        ("noise", "Animated procedural noise field"),
+        ("gradient", "Smooth animated aurora gradient bands"),
+        ("floating_chars", "Gently swaying floating glyphs"),
+        ("custom_ascii", "Animated ASCII art layer"),
+        ("scanlines", "CRT horizontal sweep scanlines"),
+        ("none", "Disable background layers"),
+    ];
+
+    if prev_args.is_empty() {
+        let mut items = complete_from_pairs(
+            &p,
+            &[
+                ("set", "Replace background with a layer or scene background"),
+                ("add", "Stack an extra background layer"),
+                ("stop", "Stop and clear background layers"),
+                ("pause", "Pause background updates"),
+                ("resume", "Resume background updates"),
+                ("speed", "Adjust background speed multiplier"),
+                ("list", "Show active layers and available backgrounds"),
+            ],
+            Some("<arg>"),
+        );
+        items.extend(complete_from_pairs(&p, &presets, None));
+        return items;
+    }
+
+    if prev_args.len() == 1 {
+        let sub = prev_args[0].to_ascii_lowercase();
+        if matches!(sub.as_str(), "set" | "add" | "layer") {
+            let mut items = complete_from_pairs(&p, &presets, None);
+            for entry in &catalog.entries {
+                if !entry.package.definition.backgrounds.is_empty()
+                    && (entry.id.to_ascii_lowercase().starts_with(&p)
+                        || (!p.is_empty() && entry.id.to_ascii_lowercase().contains(&p)))
+                {
+                    items.push(CompletionItem {
+                        insert_text: entry.id.clone(),
+                        label: entry.id.clone(),
+                        description: format!("Scene background layers ({})", entry.display_name),
+                        expected_arg: None,
+                    });
+                }
+            }
+            return items;
+        }
+        if sub == "speed" {
+            return complete_from_pairs(
+                &p,
+                &[
+                    ("0.5", "Slow ambient motion"),
+                    ("1.0", "Default background speed"),
+                    ("1.5", "Energetic ambient motion"),
+                    ("2.0", "Fast ambient motion"),
+                ],
+                None,
+            );
+        }
     }
 
     Vec::new()

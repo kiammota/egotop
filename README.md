@@ -20,7 +20,7 @@ An interactive, animated terminal welcome dashboard for Linux and Hyprland writt
 - **Window Engine**: Independent main window (`~/.config/egotop/window.toml`) with relative anchors, absolute coordinates, mouse drag (top border), bottom-right resize handle (`◢`), z-index ordering, configurable borders, padding, and solid or terminal-cell transparent (`Color::Reset`) backgrounds.
 - **Command-line & Contextual Autocomplete (`:`)**: Hidden until `:` is pressed; shell-style `Tab` / `Shift+Tab` cycling immediately updates the active token without requiring `Enter`, `Space` advances to argument completions, and `Enter` executes.
 - **Runtime Border & Theme Customization**: Switch colorschemes (`:colorscheme <name>`) or customize border styles and individual characters (`:set border.horizontal ━`, `:set border.style double`) immediately in runtime, then persist explicitly with `:write` (`:w`).
-- **Startup & Background Animations**: Native startup transitions (`crt_power_on`, `curtains`, `fade`, `slide`, `matrix_boot`, `cursor-expand`), interactive cursor startup mode (`--startup cursor`), declarative community TOML animations (`~/.config/egotop/animations/*.toml`), and ambient background effects (`matrix`, `water`, `particles`, `scanlines`, `none`).
+- **Unified Animation, Scene & Background Engine**: One declarative engine powers both bundled presets and external community packages (`~/.config/egotop/animations/<name>/animation.toml` + `assets/`): multi-layer scenes, Unicode Braille/Quadrant/ASCII geometry with smooth 64-point contour morphing (`circle -> square -> triangle -> polygon -> path`), keyframe timelines (`linear`, `ease_in`, `ease_out`, `ease_in_out`, `cubic_bezier`), `once`/`infinite`/`repeat`/`ping_pong` loops, 9 text animation effects (`typewriter`, `fade`, `reveal`, `wave`, `glitch`, `color_cycle`, `char_by_char`, `scroll`, `pulse`), and composable multi-layer backgrounds (`matrix_rain`, `starfield`, `particles`, `waves`, `noise`, `gradient`, `floating_chars`, `custom_ascii`, `scanlines`). Includes rich showcases such as `shape-morph`, `orbital-prism`, `neon-banner`, `aurora-horizon`, `matrix-overload`, `starlight-warp`, and `pulse-scanner`.
 - **ASCII Typography & Logos**: Built-in fonts (`ANSI Shadow`, `Standard`, `Big`, `Slant`, `Small`, `Block`, `Doom`), custom `.flf` FIGlet font loader with horizontal kerning/smushing, built-in and custom ASCII logos, and Nerd Font / pure ASCII fallback support.
 
 ---
@@ -84,7 +84,10 @@ Try commands inside Egotop by pressing `:`:
 :colorscheme nord
 :set border.style double
 :set border.horizontal ━
-:animation play crt_power_on
+:animation play shape-morph
+:animation speed 1.5
+:background set starfield
+:background add noise
 :window bg transparent
 :write
 :quit
@@ -99,7 +102,7 @@ All configuration files are stored under `~/.config/egotop/`:
 - `~/.config/egotop/egotop.toml` — Main settings, startup mode, theme, borders, typography, background effects, layout, and widgets
 - `~/.config/egotop/window.toml` — Main window geometry, anchor, border behavior, and background mode
 - `~/.config/egotop/themes/*.toml` — Custom and shared colorschemes
-- `~/.config/egotop/animations/*.toml` — Declarative community animations
+- `~/.config/egotop/animations/` — Declarative community animations (`*.toml` or `<package>/animation.toml` + `assets/`)
 - `~/.config/egotop/fonts/*.flf` — Custom FIGlet fonts
 
 ---

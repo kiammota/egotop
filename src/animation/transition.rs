@@ -1,13 +1,17 @@
+use crate::animation::backgrounds::BackgroundLayerSpec;
+use crate::animation::scene::composite_scene_items;
+use crate::animation::timeline::{LoopMode, TimelineClock, evaluate_scene_tracks};
 use crate::config::{
-    CommunityAnimationEntry, DeclarativeAnimation, DeclarativeStep, DeclarativeStepEffect,
-    EasingKind, StepDirection, load_community_animations,
+    AnimationDefinition, AnimationPackage, AnimationRenderMode, DeclarativeStepEffect,
+    PackageOrigin, StepDirection, StepTarget, TrackKind, TrackSpec, load_community_packages,
 };
-use crate::ui::theme::{Theme, blend_color, parse_color};
+use crate::ui::theme::{Theme, adapt_color, blend_color, parse_color, terminal_supports_truecolor};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
 use std::collections::BTreeMap;
 
+/// Built-in preset identifiers preserved for backwards compatibility with existing API callers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NativeTransition {
     CrtPowerOn,
@@ -45,30 +49,6 @@ impl NativeTransition {
         }
     }
 
-    pub fn display_name(self) -> &'static str {
-        match self {
-            Self::CrtPowerOn => "CRT Power On",
-            Self::Curtains => "Curtains",
-            Self::Fade => "Fade",
-            Self::Slide => "Slide",
-            Self::MatrixBoot => "Matrix Boot",
-            Self::CursorExpand => "Cursor Expand",
-            Self::None => "None",
-        }
-    }
-
-    pub fn description(self) -> &'static str {
-        match self {
-            Self::CrtPowerOn => "Classic CRT beam expanding vertically into the full screen.",
-            Self::Curtains => "Symmetric curtains opening to reveal the interface.",
-            Self::Fade => "Smooth gradual fade-in to final theme colors.",
-            Self::Slide => "Smooth lateral slide-in for the main window.",
-            Self::MatrixBoot => "Retro terminal boot sequence resolving scrambled glyphs.",
-            Self::CursorExpand => "Radial expansion starting from the startup cursor position.",
-            Self::None => "Instant display without startup transition.",
-        }
-    }
-
     pub fn all() -> &'static [Self] {
         &[
             Self::CrtPowerOn,
@@ -83,18 +63,12 @@ impl NativeTransition {
 }
 
 #[derive(Debug, Clone)]
-pub enum AnimationSource {
-    Native(NativeTransition),
-    Community(DeclarativeAnimation),
-}
-
-#[derive(Debug, Clone)]
 pub struct AnimationCatalogEntry {
     pub id: String,
     pub display_name: String,
     pub description: String,
     pub is_community: bool,
-    pub source: AnimationSource,
+    pub package: AnimationPackage,
 }
 
 #[derive(Debug, Clone)]
@@ -103,91 +77,231 @@ pub struct AnimationCatalog {
 }
 
 impl AnimationCatalog {
+    /// Loads all bundled and community animation packages through the single unified parser.
     pub fn load() -> Self {
-        let mut entries = Vec::new();
-        for &native in NativeTransition::all() {
-            entries.push(AnimationCatalogEntry {
-                id: native.id().to_string(),
-                display_name: native.display_name().to_string(),
-                description: native.description().to_string(),
-                is_community: false,
-                source: AnimationSource::Native(native),
-            });
+        let mut by_id: BTreeMap<String, AnimationCatalogEntry> = BTreeMap::new();
+
+        for pkg in bundled_animation_packages() {
+            let entry = catalog_entry_from_package(pkg, false);
+            by_id.insert(entry.id.to_ascii_lowercase(), entry);
         }
 
-        let community: BTreeMap<String, CommunityAnimationEntry> = load_community_animations();
-        for (_key, item) in community {
-            let spec = item.spec;
-            let display_name = spec
-                .display_name
-                .clone()
-                .unwrap_or_else(|| spec.name.clone());
-            let description = spec.description.clone().unwrap_or_else(|| {
-                format!(
-                    "Community animation ({} steps, {:.1}s)",
-                    spec.steps.len(),
-                    spec.total_duration_secs()
-                )
-            });
-            entries.push(AnimationCatalogEntry {
-                id: spec.name.clone(),
-                display_name,
-                description,
-                is_community: true,
-                source: AnimationSource::Community(spec),
-            });
+        for (_key, pkg) in load_community_packages() {
+            let entry = catalog_entry_from_package(pkg, true);
+            by_id.insert(entry.id.to_ascii_lowercase(), entry);
         }
 
-        Self { entries }
+        Self {
+            entries: by_id.into_values().collect(),
+        }
     }
 
-    pub fn resolve(&self, name: &str) -> AnimationSource {
+    pub fn resolve_package(&self, name: &str) -> AnimationPackage {
         let needle = name.trim().to_ascii_lowercase();
+        let canonical = NativeTransition::from_name(name)
+            .map(|n| n.id().to_ascii_lowercase())
+            .unwrap_or_else(|| needle.clone());
+
         if let Some(found) = self
             .entries
             .iter()
-            .find(|e| e.id.to_ascii_lowercase() == needle)
+            .find(|e| e.id.eq_ignore_ascii_case(&needle) || e.id.eq_ignore_ascii_case(&canonical))
         {
-            return found.source.clone();
+            return found.package.clone();
         }
-        if let Some(native) = NativeTransition::from_name(name) {
-            return AnimationSource::Native(native);
+        if let Some(fallback) = self
+            .entries
+            .iter()
+            .find(|e| e.id.eq_ignore_ascii_case("matrix_boot"))
+        {
+            return fallback.package.clone();
         }
-        AnimationSource::Native(NativeTransition::MatrixBoot)
+        bundled_animation_packages()
+            .into_iter()
+            .next()
+            .expect("at least one bundled animation exists")
     }
 }
 
+fn catalog_entry_from_package(pkg: AnimationPackage, is_community: bool) -> AnimationCatalogEntry {
+    let def = &pkg.definition;
+    let display_name = def.display_name.clone().unwrap_or_else(|| def.name.clone());
+    let description = def.description.clone().unwrap_or_else(|| {
+        format!(
+            "Declarative animation ({} tracks, {:.1}s)",
+            def.tracks.len(),
+            def.duration_ms as f32 / 1000.0
+        )
+    });
+    AnimationCatalogEntry {
+        id: def.name.clone(),
+        display_name,
+        description,
+        is_community,
+        package: pkg,
+    }
+}
+
+fn bundled_animation_packages() -> Vec<AnimationPackage> {
+    struct BundledSpec {
+        manifest: &'static str,
+        assets: &'static [(&'static str, &'static str)],
+    }
+
+    const SPECS: &[BundledSpec] = &[
+        BundledSpec {
+            manifest: include_str!("../../assets/animations/crt_power_on.toml"),
+            assets: &[],
+        },
+        BundledSpec {
+            manifest: include_str!("../../assets/animations/curtains.toml"),
+            assets: &[],
+        },
+        BundledSpec {
+            manifest: include_str!("../../assets/animations/fade.toml"),
+            assets: &[],
+        },
+        BundledSpec {
+            manifest: include_str!("../../assets/animations/slide.toml"),
+            assets: &[],
+        },
+        BundledSpec {
+            manifest: include_str!("../../assets/animations/matrix_boot.toml"),
+            assets: &[],
+        },
+        BundledSpec {
+            manifest: include_str!("../../assets/animations/cursor_expand.toml"),
+            assets: &[],
+        },
+        BundledSpec {
+            manifest: include_str!("../../assets/animations/none.toml"),
+            assets: &[],
+        },
+        BundledSpec {
+            manifest: include_str!("../../assets/animations/cyber_boot.toml"),
+            assets: &[],
+        },
+        BundledSpec {
+            manifest: include_str!("../../assets/animations/neon_curtains.toml"),
+            assets: &[],
+        },
+        BundledSpec {
+            manifest: include_str!("../../assets/animations/shape-morph/animation.toml"),
+            assets: &[(
+                "assets/frame_ring.txt",
+                include_str!("../../assets/animations/shape-morph/assets/frame_ring.txt"),
+            )],
+        },
+        BundledSpec {
+            manifest: include_str!("../../assets/animations/orbital-prism/animation.toml"),
+            assets: &[],
+        },
+        BundledSpec {
+            manifest: include_str!("../../assets/animations/neon-banner/animation.toml"),
+            assets: &[(
+                "assets/emblem.txt",
+                include_str!("../../assets/animations/neon-banner/assets/emblem.txt"),
+            )],
+        },
+        BundledSpec {
+            manifest: include_str!("../../assets/animations/aurora-horizon/animation.toml"),
+            assets: &[],
+        },
+        BundledSpec {
+            manifest: include_str!("../../assets/animations/matrix-overload/animation.toml"),
+            assets: &[(
+                "assets/core.txt",
+                include_str!("../../assets/animations/matrix-overload/assets/core.txt"),
+            )],
+        },
+        BundledSpec {
+            manifest: include_str!("../../assets/animations/starlight-warp/animation.toml"),
+            assets: &[],
+        },
+        BundledSpec {
+            manifest: include_str!("../../assets/animations/pulse-scanner/animation.toml"),
+            assets: &[],
+        },
+    ];
+
+    SPECS
+        .iter()
+        .filter_map(|spec| {
+            let def = AnimationDefinition::parse_toml(spec.manifest).ok()?;
+            let mut assets = BTreeMap::new();
+            for &(k, v) in spec.assets {
+                assets.insert(k.to_string(), v.to_string());
+            }
+            Some(AnimationPackage {
+                definition: def,
+                origin: PackageOrigin::Bundled,
+                assets,
+                has_preview: false,
+            })
+        })
+        .collect()
+}
+
+/// Unified Animation & Scene Player used identically for startup transitions and full scenes.
 #[derive(Debug, Clone)]
 pub struct TransitionPlayer {
     pub active_id: String,
-    pub source: AnimationSource,
+    pub package: AnimationPackage,
+    pub clock: TimelineClock,
     pub elapsed_secs: f32,
     pub duration_secs: f32,
     pub finished: bool,
+    pub paused: bool,
     pub origin: Option<(u16, u16)>,
+    pub truecolor: bool,
 }
 
 impl TransitionPlayer {
     pub fn new(id: &str, catalog: &AnimationCatalog, default_duration_ms: u64) -> Self {
-        let source = catalog.resolve(id);
-        let duration_secs = match &source {
-            AnimationSource::Native(NativeTransition::None) => 0.0,
-            AnimationSource::Native(_) => (default_duration_ms.max(200) as f32) / 1000.0,
-            AnimationSource::Community(spec) => spec.total_duration_secs(),
+        let mut package = catalog.resolve_package(id);
+        let def = &mut package.definition;
+        let is_single_transition = def.mode == AnimationRenderMode::Transition
+            && def.tracks.len() == 1
+            && def.tracks[0].kind == TrackKind::Transition
+            && def.loop_cfg.mode == LoopMode::Once;
+
+        let effective_duration_ms = if def.name.eq_ignore_ascii_case("none") {
+            0
+        } else if is_single_transition && default_duration_ms > 0 {
+            let d = default_duration_ms.max(200);
+            def.duration_ms = d;
+            def.tracks[0].duration_ms = Some(d);
+            d
+        } else {
+            def.duration_ms
         };
-        let finished = duration_secs <= 0.0;
+
+        let clock = TimelineClock::new(
+            effective_duration_ms,
+            def.loop_cfg.clone(),
+            def.speed,
+            def.fps,
+        );
+        let duration_secs = clock.duration_secs;
+        let finished = clock.finished;
+
         Self {
-            active_id: id.to_string(),
-            source,
+            active_id: def.name.clone(),
+            package,
+            clock,
             elapsed_secs: 0.0,
             duration_secs,
             finished,
+            paused: false,
             origin: None,
+            truecolor: terminal_supports_truecolor(),
         }
     }
 
     pub fn restart(&mut self, id: &str, catalog: &AnimationCatalog, default_duration_ms: u64) {
+        let prev_origin = self.origin;
         *self = Self::new(id, catalog, default_duration_ms);
+        self.origin = prev_origin;
     }
 
     pub fn restart_from_origin(
@@ -201,93 +315,154 @@ impl TransitionPlayer {
         self.origin = Some(origin);
     }
 
+    pub fn pause(&mut self) {
+        self.paused = true;
+        self.clock.pause();
+    }
+
+    pub fn resume(&mut self) {
+        self.paused = false;
+        self.clock.resume();
+    }
+
+    pub fn stop(&mut self) {
+        self.paused = false;
+        self.clock.stop();
+        self.finished = true;
+    }
+
+    pub fn replay_current(&mut self) {
+        self.paused = false;
+        self.clock.restart();
+        self.elapsed_secs = 0.0;
+        self.finished = self.clock.finished;
+    }
+
+    pub fn set_speed(&mut self, speed: f32) {
+        self.clock.set_speed(speed);
+    }
+
+    pub fn speed(&self) -> f32 {
+        self.clock.speed
+    }
+
     pub fn update(&mut self, dt_secs: f32) {
-        if self.finished {
+        if self.paused || self.finished {
             return;
         }
-        self.elapsed_secs += dt_secs.max(0.0);
-        if self.elapsed_secs >= self.duration_secs {
-            self.elapsed_secs = self.duration_secs;
-            self.finished = true;
-        }
+        self.clock.advance(dt_secs);
+        self.elapsed_secs = self.clock.total_elapsed_secs;
+        self.finished = self.clock.finished;
     }
 
     pub fn progress(&self) -> f32 {
         if self.finished || self.duration_secs <= 0.0 {
             1.0
         } else {
-            (self.elapsed_secs / self.duration_secs).clamp(0.0, 1.0)
+            self.clock.normalized_time()
         }
     }
 
-    /// Post-processes the rendered Ratatui buffer inside `window_area` to apply
-    /// the active startup/transition animation cleanly at frame level.
+    pub fn has_scene_tracks(&self) -> bool {
+        !self.finished
+            && self
+                .package
+                .definition
+                .tracks
+                .iter()
+                .any(|t| !matches!(t.kind, TrackKind::Transition | TrackKind::Background))
+    }
+
+    pub fn package_backgrounds(&self) -> &[BackgroundLayerSpec] {
+        &self.package.definition.backgrounds
+    }
+
+    pub fn render_scene(&self, buf: &mut Buffer, area: Rect, theme: &Theme) {
+        if self.finished || area.width == 0 || area.height == 0 || !self.has_scene_tracks() {
+            return;
+        }
+        let items = evaluate_scene_tracks(
+            &self.package.definition,
+            &self.package.assets,
+            &self.clock,
+            area,
+            self.origin,
+            theme,
+            self.truecolor,
+        );
+        composite_scene_items(items, area, buf, self.truecolor);
+    }
+
+    /// Applies transition-step post-processing onto `window_area` (for startup & wipe effects).
     pub fn apply_to_buffer(&self, buf: &mut Buffer, window_area: Rect, theme: &Theme) {
         if self.finished || window_area.width == 0 || window_area.height == 0 {
             return;
         }
+        let time_ms = self.clock.playhead_ms();
+        let def = &self.package.definition;
 
-        match &self.source {
-            AnimationSource::Native(native) => {
-                let t = self.progress();
-                match native {
-                    NativeTransition::None => {}
-                    NativeTransition::CrtPowerOn => apply_crt_power_on(buf, window_area, t, theme, None),
-                    NativeTransition::Curtains => apply_curtains(buf, window_area, t, StepDirection::Center, theme, None),
-                    NativeTransition::Fade => apply_fade(buf, window_area, EasingKind::EaseOut.apply(t), theme),
-                    NativeTransition::Slide => apply_slide(buf, window_area, EasingKind::EaseOut.apply(t), StepDirection::Left, theme),
-                    NativeTransition::MatrixBoot => {
-                        apply_matrix_scramble(buf, window_area, t, "01ｱｶｻﾀﾅﾊ#$", theme)
-                    }
-                    NativeTransition::CursorExpand => {
-                        apply_cursor_expand(buf, window_area, self.origin, t, theme)
-                    }
+        let active_tracks: Vec<(&TrackSpec, f32)> = def
+            .tracks
+            .iter()
+            .filter(|t| t.kind == TrackKind::Transition && t.visible)
+            .filter_map(|t| {
+                let dur = t.duration_ms.unwrap_or(def.duration_ms);
+                if dur == 0 {
+                    return None;
                 }
-            }
-            AnimationSource::Community(spec) => {
-                if let Some((step, local_t)) = self.active_declarative_step(spec) {
-                    let eased = step.easing.apply(local_t);
-                    let accent = step.color.as_deref();
-                    match step.effect {
-                        DeclarativeStepEffect::CrtLine => {
-                            apply_crt_power_on(buf, window_area, eased, theme, accent);
-                        }
-                        DeclarativeStepEffect::Curtains => {
-                            apply_curtains(buf, window_area, eased, step.direction, theme, accent);
-                        }
-                        DeclarativeStepEffect::Fade => {
-                            apply_fade(buf, window_area, eased, theme);
-                        }
-                        DeclarativeStepEffect::Slide => {
-                            apply_slide(buf, window_area, eased, step.direction, theme);
-                        }
-                        DeclarativeStepEffect::MatrixScramble => {
-                            let chars = step.chars.as_deref().unwrap_or("01ｱｶｻﾀﾅﾊ#$");
-                            apply_matrix_scramble(buf, window_area, eased, chars, theme);
-                        }
-                        DeclarativeStepEffect::Flash => {
-                            apply_flash(buf, window_area, eased, theme, accent);
-                        }
-                        DeclarativeStepEffect::Pause | DeclarativeStepEffect::Unknown => {}
-                    }
+                let start = t.start_ms as f32;
+                let end = start + dur as f32;
+                if time_ms >= start && time_ms <= end {
+                    let local = ((time_ms - start) / dur as f32).clamp(0.0, 1.0);
+                    Some((t, local))
+                } else {
+                    None
                 }
+            })
+            .collect();
+
+        for (track, local_t) in active_tracks {
+            let eased = track.transition_easing.apply(local_t);
+            let accent = track.color.as_deref();
+            let area = if track.target == StepTarget::Screen {
+                *buf.area()
+            } else {
+                window_area
+            };
+            match track.effect.unwrap_or(DeclarativeStepEffect::Fade) {
+                DeclarativeStepEffect::CrtLine => {
+                    apply_crt_power_on(buf, area, eased, theme, accent, self.truecolor);
+                }
+                DeclarativeStepEffect::Curtains => {
+                    apply_curtains(
+                        buf,
+                        area,
+                        eased,
+                        track.transition_direction,
+                        theme,
+                        accent,
+                        self.truecolor,
+                    );
+                }
+                DeclarativeStepEffect::Fade => {
+                    apply_fade(buf, area, eased, theme, self.truecolor);
+                }
+                DeclarativeStepEffect::Slide => {
+                    apply_slide(buf, area, eased, track.transition_direction, theme);
+                }
+                DeclarativeStepEffect::MatrixScramble => {
+                    let chars = track.chars.as_deref().unwrap_or("01ｱｶｻﾀﾅﾊ#$");
+                    apply_matrix_scramble(buf, area, eased, chars, theme, self.truecolor);
+                }
+                DeclarativeStepEffect::Flash => {
+                    apply_flash(buf, area, eased, theme, accent, track.intensity, self.truecolor);
+                }
+                DeclarativeStepEffect::CursorExpand => {
+                    apply_cursor_expand(buf, area, self.origin, eased, theme, self.truecolor);
+                }
+                DeclarativeStepEffect::Pause | DeclarativeStepEffect::Unknown => {}
             }
         }
-    }
-
-    fn active_declarative_step<'a>(
-        &self,
-        spec: &'a DeclarativeAnimation,
-    ) -> Option<(&'a DeclarativeStep, f32)> {
-        let mut cursor_ms = self.elapsed_secs * 1000.0;
-        for step in &spec.steps {
-            let dur = step.duration_ms.max(1) as f32;
-            if cursor_ms <= dur {
-                return Some((step, (cursor_ms / dur).clamp(0.0, 1.0)));
-            }
-            cursor_ms -= dur;
-        }
-        None
     }
 }
 
@@ -297,15 +472,19 @@ fn apply_crt_power_on(
     t: f32,
     theme: &Theme,
     color_override: Option<&str>,
+    truecolor: bool,
 ) {
-    let beam_color = color_override
-        .map(|c| parse_color(c, theme.primary))
-        .unwrap_or(theme.primary);
+    let beam_color = adapt_color(
+        color_override
+            .map(|c| parse_color(c, theme.primary))
+            .unwrap_or(theme.primary),
+        truecolor,
+    );
     let cy = area.y + area.height / 2;
     let cx = area.x + area.width / 2;
 
     if t < 0.35 {
-        let h_prog = EasingKind::EaseOut.apply(t / 0.35);
+        let h_prog = crate::config::EasingKind::EaseOut.apply(t / 0.35);
         let half_w = ((area.width as f32 * 0.5) * h_prog).round() as u16;
         for y in area.top()..area.bottom() {
             for x in area.left()..area.right() {
@@ -320,7 +499,7 @@ fn apply_crt_power_on(
             }
         }
     } else {
-        let v_prog = EasingKind::EaseInOut.apply((t - 0.35) / 0.65);
+        let v_prog = crate::config::EasingKind::EaseInOut.apply((t - 0.35) / 0.65);
         let half_h = ((area.height as f32 * 0.5) * v_prog).ceil() as u16;
         let top_vis = cy.saturating_sub(half_h);
         let bot_vis = cy.saturating_add(half_h);
@@ -347,11 +526,15 @@ fn apply_curtains(
     direction: StepDirection,
     theme: &Theme,
     color_override: Option<&str>,
+    truecolor: bool,
 ) {
-    let eased = EasingKind::EaseInOut.apply(t);
-    let edge_color = color_override
-        .map(|c| parse_color(c, theme.secondary))
-        .unwrap_or(theme.secondary);
+    let eased = crate::config::EasingKind::EaseInOut.apply(t);
+    let edge_color = adapt_color(
+        color_override
+            .map(|c| parse_color(c, theme.secondary))
+            .unwrap_or(theme.secondary),
+        truecolor,
+    );
     let half_w = area.width / 2;
     let open_cols = ((half_w as f32) * eased).round() as u16;
     let cx = area.x + half_w;
@@ -360,7 +543,9 @@ fn apply_curtains(
         for x in area.left()..area.right() {
             let visible = match direction {
                 StepDirection::Left => (x - area.x) < ((area.width as f32) * eased).round() as u16,
-                StepDirection::Right => (area.right() - 1 - x) < ((area.width as f32) * eased).round() as u16,
+                StepDirection::Right => {
+                    (area.right() - 1 - x) < ((area.width as f32) * eased).round() as u16
+                }
                 _ => {
                     let dist = x.abs_diff(cx);
                     dist <= open_cols
@@ -382,12 +567,12 @@ fn apply_curtains(
     }
 }
 
-fn apply_fade(buf: &mut Buffer, area: Rect, alpha: f32, theme: &Theme) {
+fn apply_fade(buf: &mut Buffer, area: Rect, alpha: f32, theme: &Theme, truecolor: bool) {
     for y in area.top()..area.bottom() {
         for x in area.left()..area.right() {
             if let Some(cell) = buf.cell_mut((x, y)) {
-                let fg = blend_color(cell.fg, theme.background, alpha);
-                let bg = blend_color(cell.bg, theme.background, alpha);
+                let fg = adapt_color(blend_color(cell.fg, theme.background, alpha), truecolor);
+                let bg = adapt_color(blend_color(cell.bg, theme.background, alpha), truecolor);
                 cell.set_fg(fg).set_bg(bg);
             }
         }
@@ -404,12 +589,10 @@ fn apply_slide(
     let shift_x = ((area.width as f32) * (1.0 - eased)).round() as u16;
     let shift_y = ((area.height as f32) * (1.0 - eased)).round() as u16;
 
-    // Snapshot original area cells to shift cleanly
     let mut snapshot = Vec::with_capacity((area.width as usize) * (area.height as usize));
     for y in area.top()..area.bottom() {
         for x in area.left()..area.right() {
-            let c = buf.cell((x, y)).cloned();
-            snapshot.push(c);
+            snapshot.push(buf.cell((x, y)).cloned());
         }
     }
 
@@ -451,6 +634,7 @@ fn apply_matrix_scramble(
     t: f32,
     charset_str: &str,
     theme: &Theme,
+    truecolor: bool,
 ) {
     let glyphs: Vec<char> = if charset_str.is_empty() {
         vec!['0', '1', '#', '$']
@@ -458,7 +642,8 @@ fn apply_matrix_scramble(
         charset_str.chars().collect()
     };
     let total_rows = area.height.max(1) as f32;
-    let reveal_rows = total_rows * EasingKind::EaseInOut.apply(t);
+    let reveal_rows = total_rows * crate::config::EasingKind::EaseInOut.apply(t);
+    let color = adapt_color(theme.primary, truecolor);
 
     for y in area.top()..area.bottom() {
         let rel_y = (y - area.y) as f32;
@@ -472,9 +657,9 @@ fn apply_matrix_scramble(
                     continue;
                 }
                 if rel_y < reveal_rows + 2.0 {
-                    let hash = ((x as usize) * 31 + (y as usize) * 17 + (t * 97.0) as usize)
-                        % glyphs.len();
-                    cell.set_char(glyphs[hash]).set_fg(theme.primary);
+                    let hash =
+                        ((x as usize) * 31 + (y as usize) * 17 + (t * 97.0) as usize) % glyphs.len();
+                    cell.set_char(glyphs[hash]).set_fg(color);
                 } else {
                     cell.set_char(' ');
                 }
@@ -489,15 +674,18 @@ fn apply_cursor_expand(
     origin: Option<(u16, u16)>,
     t: f32,
     theme: &Theme,
+    truecolor: bool,
 ) {
-    let eased = EasingKind::EaseOut.apply(t);
+    let eased = crate::config::EasingKind::EaseOut.apply(t);
     let (ox, oy) = origin.unwrap_or((area.x + area.width / 2, area.y + area.height / 2));
 
     let max_dx = ox.abs_diff(area.x).max(ox.abs_diff(area.right().saturating_sub(1))) as f32;
     let max_dy = oy.abs_diff(area.y).max(oy.abs_diff(area.bottom().saturating_sub(1))) as f32;
-    // Scale y by 2.0 to keep terminal cell aspect ratio circular
-    let max_radius = (max_dx * max_dx + (max_dy * 2.0) * (max_dy * 2.0)).sqrt().max(1.0);
+    let max_radius = (max_dx * max_dx + (max_dy * 2.0) * (max_dy * 2.0))
+        .sqrt()
+        .max(1.0);
     let cur_radius = max_radius * eased;
+    let ring_color = adapt_color(theme.primary, truecolor);
 
     for y in area.top()..area.bottom() {
         for x in area.left()..area.right() {
@@ -511,7 +699,7 @@ fn apply_cursor_expand(
             } else if dist > (cur_radius - 2.2).max(0.0)
                 && let Some(cell) = buf.cell_mut((x, y))
             {
-                cell.set_fg(theme.primary);
+                cell.set_fg(ring_color);
             }
         }
     }
@@ -523,15 +711,18 @@ fn apply_flash(
     t: f32,
     theme: &Theme,
     color_override: Option<&str>,
+    intensity: f32,
+    truecolor: bool,
 ) {
     let flash_color = color_override
         .map(|c| parse_color(c, theme.primary))
         .unwrap_or(theme.primary);
-    let strength = (1.0 - (t * 2.0 - 1.0).abs()).clamp(0.0, 1.0) * 0.65;
+    let strength = ((1.0 - (t * 2.0 - 1.0).abs()).clamp(0.0, 1.0) * 0.65 * intensity).clamp(0.0, 1.0);
     for y in area.top()..area.bottom() {
         for x in area.left()..area.right() {
             if let Some(cell) = buf.cell_mut((x, y)) {
-                cell.set_fg(blend_color(flash_color, cell.fg, strength));
+                let c = adapt_color(blend_color(flash_color, cell.fg, strength), truecolor);
+                cell.set_fg(c);
             }
         }
     }

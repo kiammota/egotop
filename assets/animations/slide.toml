@@ -1,0 +1,21 @@
+[animation]
+name = "slide"
+display_name = "Slide"
+author = "egotop"
+description = "Smooth lateral slide-in for the main window."
+version = 2
+duration_ms = 600
+mode = "transition"
+target = "window"
+
+[animation.loop]
+mode = "once"
+
+[[tracks]]
+id = "slide"
+type = "transition"
+effect = "slide"
+duration_ms = 600
+easing = "ease_out"
+transition_direction = "left"
+target = "window"

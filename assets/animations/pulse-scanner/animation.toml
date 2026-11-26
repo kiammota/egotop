@@ -1,0 +1,90 @@
+[animation]
+name = "pulse-scanner"
+display_name = "Pulse Scanner"
+author = "egotop"
+description = "Sweep line morphing into framing rectangle with repeat count and multi-frame ASCII LEDs."
+version = 2
+duration_ms = 1800
+fps = 30
+speed = 1.0
+mode = "scene"
+target = "screen"
+
+[animation.loop]
+mode = "repeat"
+count = 4
+interval_ms = 250
+
+[[layers]]
+id = "scan"
+z_index = 10
+
+[[layers]]
+id = "leds"
+z_index = 20
+
+[[tracks]]
+id = "sweep-frame"
+type = "shape"
+layer = "scan"
+primitive = "line"
+renderer = "braille"
+position = ["center", "center"]
+size = [32, 12]
+stroke = true
+color = "#00D9FF"
+
+[[tracks.keyframes]]
+at_ms = 0
+shape = "line"
+color = "#00D9FF"
+scale = 0.7
+
+[[tracks.keyframes]]
+at_ms = 900
+shape = "rectangle"
+color = "#39FF88"
+scale = 1.05
+transition = "morph"
+easing = "ease_out"
+
+[[tracks.keyframes]]
+at_ms = 1800
+shape = "line"
+color = "#FFC857"
+rotation = 180.0
+transition = "morph"
+easing = "ease_in_out"
+
+[[tracks]]
+id = "led-frames"
+type = "ascii"
+layer = "leds"
+position = ["center", "24%"]
+color = "#39FF88"
+frames = [
+  "[ ● ○ ○ ] SCANNING",
+  "[ ○ ● ○ ] LOCKING ",
+  "[ ○ ○ ● ] VERIFIED",
+]
+
+[[tracks.keyframes]]
+at_ms = 0
+frame = 0
+
+[[tracks.keyframes]]
+at_ms = 900
+frame = 1
+
+[[tracks.keyframes]]
+at_ms = 1800
+frame = 2
+
+[[tracks]]
+id = "scan-title"
+type = "text"
+layer = "leds"
+text = "PULSE SCANNER READY"
+text_effect = "pulse"
+palette = ["#39FF88", "#00D9FF"]
+position = ["center", "76%"]

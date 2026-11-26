@@ -1,0 +1,99 @@
+[animation]
+name = "starlight-warp"
+display_name = "Starlight Warp"
+author = "egotop"
+description = "Warp starfield with expanding diamond-to-octagon Braille portal using cubic_bezier easing."
+version = 2
+duration_ms = 2200
+fps = 30
+speed = 1.0
+mode = "scene"
+target = "screen"
+
+[animation.loop]
+mode = "ping_pong"
+
+[[layers]]
+id = "portal"
+z_index = 12
+
+[[layers]]
+id = "text"
+z_index = 22
+
+[[backgrounds]]
+effect = "starfield"
+z_index = 0
+density = 1.1
+speed = 1.5
+color = "#00D9FF"
+secondary_color = "#FFFFFF"
+
+[[backgrounds]]
+effect = "floating_chars"
+z_index = 1
+density = 0.45
+chars = "✦✧·∘"
+color = "#FFC857"
+
+[[tracks]]
+id = "warp-portal"
+type = "shape"
+layer = "portal"
+primitive = "polygon"
+sides = 4
+renderer = "braille"
+position = ["center", "center"]
+size = [24, 14]
+stroke = true
+color = "#00D9FF"
+
+[[tracks.keyframes]]
+at_ms = 0
+shape = "polygon"
+sides = 4
+scale = 0.35
+rotation = 0.0
+color = "#00D9FF"
+
+[[tracks.keyframes]]
+at_ms = 1100
+shape = "polygon"
+sides = 8
+scale = 1.05
+rotation = 90.0
+color = "#39FF88"
+transition = "morph"
+easing = "cubic_bezier(0.16, 1.0, 0.3, 1.0)"
+
+[[tracks.keyframes]]
+at_ms = 2200
+shape = "circle"
+scale = 1.25
+rotation = 180.0
+color = "#FFC857"
+transition = "morph"
+easing = "ease_in_out"
+
+[[tracks]]
+id = "warp-particles"
+type = "particles"
+layer = "portal"
+position = ["center", "center"]
+size = [40, 20]
+count = 40
+direction = "center"
+chars = "·*✦∘"
+color = "#00D9FF"
+fill_color = "#FFC857"
+speed = 1.4
+
+[[tracks]]
+id = "warp-banner"
+type = "text"
+layer = "text"
+text = "STARLIGHT WARP"
+text_effect = "char_by_char"
+direction = "center"
+position = ["center", "16%"]
+color = "#FFC857"

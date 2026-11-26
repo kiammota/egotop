@@ -1,0 +1,21 @@
+[animation]
+name = "matrix_boot"
+display_name = "Matrix Boot"
+author = "egotop"
+description = "Retro terminal boot sequence resolving scrambled glyphs."
+version = 2
+duration_ms = 650
+mode = "transition"
+target = "window"
+
+[animation.loop]
+mode = "once"
+
+[[tracks]]
+id = "matrix-boot"
+type = "transition"
+effect = "matrix_scramble"
+duration_ms = 650
+easing = "ease_in_out"
+chars = "01ｱｶｻﾀﾅﾊ#$"
+target = "window"

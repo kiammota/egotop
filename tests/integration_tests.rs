@@ -1,15 +1,19 @@
 use egotop::animation::{
-    AnimationCatalog, AnimationCatalogEntry, AnimationSource, BackgroundEffect, NativeTransition,
-    TransitionPlayer, create_effect, resolve_region,
+    AnimationCatalog, AnimationCatalogEntry, BackgroundEffect, BackgroundLayerKind,
+    BackgroundLayerSpec, BackgroundPipeline, EasingCurve, GeometryRenderer, LoopConfig, LoopMode,
+    MORPH_SAMPLE_COUNT, NativeTransition, ShapeDrawParams, ShapePrimitive, ShapeSpec,
+    TextDirection, TextEffectKind, TextRenderParams, TimelineClock, TransitionPlayer,
+    create_effect, evaluate_text_cells, morph_contours, rasterize_contour, resolve_region,
 };
 use egotop::command::{
-    AnimationAction, CommandLineState, CommandRegistry, CompletionContext, CompletionEngine,
-    LayoutSelection, ParsedCommand, WindowCommand, WriteTarget, parse_command,
+    AnimationAction, BackgroundCommand, CommandLineState, CommandRegistry, CompletionContext,
+    CompletionEngine, LayoutSelection, ParsedCommand, WindowCommand, WriteTarget, parse_command,
 };
 use egotop::config::{
-    Anchor, BackgroundConfig, BorderStyle, Config, DeclarativeAnimation, EffectKind, LayoutMode,
-    RegionConfig, RegionUnit, SizeSpec, StartupMode, ThemeEntry, ViewMode, WidgetConfig, WidgetId,
-    load_from_path, load_or_create,
+    Anchor, AnimationDefinition, AnimationPackage, BackgroundConfig, BorderStyle, Config,
+    DeclarativeAnimation, EffectKind, LayoutMode, PackageOrigin, RegionConfig, RegionUnit,
+    SizeSpec, StartupMode, ThemeEntry, ViewMode, WidgetConfig, WidgetId, load_from_path,
+    load_or_create, load_packages_from_dir, validate_safe_asset_path,
 };
 use egotop::system::SystemCollector;
 use egotop::system::os::parse_os_release;
@@ -20,7 +24,7 @@ use egotop::ui::borders::{BorderChars, parse_border_style, validate_border_char}
 use egotop::ui::customizer::{CustomizerState, CustomizerTab, render_customizer};
 use egotop::ui::fonts::{FigletFont, available_fonts, load_font, normalize_ascii_text};
 use egotop::ui::layout::compute_layout;
-use egotop::ui::theme::{Theme, parse_color};
+use egotop::ui::theme::{Theme, adapt_color, parse_color, rgb_to_ansi256};
 use egotop::ui::typography::render_ascii_heading;
 use egotop::ui::widgets::{
     RenderContext, allocate_three_column_widths, pad_display_width, render_command_line,
@@ -818,6 +822,8 @@ fn popup_layout_prevents_overflow_handles_unicode_and_resizes_cleanly() {
             source_path: None,
         },
     ];
+    let bundled_sample = TransitionPlayer::new("crt_power_on", &AnimationCatalog::load(), 600).package;
+    let community_sample = TransitionPlayer::new("fade", &AnimationCatalog::load(), 600).package;
     let catalog = AnimationCatalog {
         entries: vec![
             AnimationCatalogEntry {
@@ -826,7 +832,7 @@ fn popup_layout_prevents_overflow_handles_unicode_and_resizes_cleanly() {
                 description: "中文説明文🔥 This extraordinarily long animation description previously overflowed the right popup border on standard and narrow terminals."
                     .to_string(),
                 is_community: false,
-                source: AnimationSource::Native(NativeTransition::CrtPowerOn),
+                package: bundled_sample,
             },
             AnimationCatalogEntry {
                 id: "community_wave".to_string(),
@@ -834,7 +840,7 @@ fn popup_layout_prevents_overflow_handles_unicode_and_resizes_cleanly() {
                 description: "Another long TOML preset description extending far past normal window bounds."
                     .to_string(),
                 is_community: true,
-                source: AnimationSource::Native(NativeTransition::Fade),
+                package: community_sample,
             },
         ],
     };
@@ -978,4 +984,365 @@ fn popup_layout_prevents_overflow_handles_unicode_and_resizes_cleanly() {
             "completion popup border missing at {term_w}x{term_h}:\n{dumped}"
         );
     }
+}
+
+#[test]
+fn geometry_morphing_easing_and_subcell_rasterizers() {
+    // Easing curve bounds & cubic_bezier solver
+    for curve in [
+        EasingCurve::Linear,
+        EasingCurve::EaseIn,
+        EasingCurve::EaseOut,
+        EasingCurve::EaseInOut,
+        EasingCurve::parse("cubic_bezier(0.25, 0.1, 0.25, 1.0)").unwrap(),
+    ] {
+        assert!((curve.apply(0.0) - 0.0).abs() < 1e-3);
+        assert!((curve.apply(1.0) - 1.0).abs() < 1e-3);
+        let mid = curve.apply(0.5);
+        assert!(mid > 0.0 && mid < 1.0, "curve {curve:?} mid={mid}");
+    }
+
+    // All primitives normalize cleanly to fixed MORPH_SAMPLE_COUNT and interpolate continuously
+    let circle = ShapeSpec::from_primitive(ShapePrimitive::Circle, 6, Vec::new()).normalized_contour();
+    let square = ShapeSpec::from_primitive(ShapePrimitive::Square, 6, Vec::new()).normalized_contour();
+    let triangle =
+        ShapeSpec::from_primitive(ShapePrimitive::Triangle, 6, Vec::new()).normalized_contour();
+    let hexagon = ShapeSpec::from_primitive(ShapePrimitive::Polygon, 6, Vec::new()).normalized_contour();
+    let rect = ShapeSpec::from_primitive(ShapePrimitive::Rectangle, 6, Vec::new()).normalized_contour();
+    let line = ShapeSpec::from_primitive(ShapePrimitive::Line, 6, Vec::new()).normalized_contour();
+    let path = ShapeSpec::from_primitive(
+        ShapePrimitive::Path,
+        6,
+        vec![(-0.8, -0.5), (0.0, 0.8), (0.8, -0.5)],
+    )
+    .normalized_contour();
+
+    for c in [&circle, &square, &triangle, &hexagon, &rect, &line, &path] {
+        assert_eq!(c.len(), MORPH_SAMPLE_COUNT);
+    }
+
+    let morphed = morph_contours(&circle, &square, 0.5);
+    assert_eq!(morphed.len(), MORPH_SAMPLE_COUNT);
+    // Mid-morph differs smoothly from both endpoints
+    assert!(morphed.iter().zip(&circle).any(|(m, c)| (m.0 - c.0).abs() > 0.02));
+    assert!(morphed.iter().zip(&square).any(|(m, s)| (m.0 - s.0).abs() > 0.02));
+
+    // Rasterize across Braille, Quadrant/Block, and ASCII inside clip bounds
+    let area = Rect::new(0, 0, 32, 16);
+    for renderer in [
+        GeometryRenderer::Braille,
+        GeometryRenderer::Quadrant,
+        GeometryRenderer::Block,
+        GeometryRenderer::Ascii,
+    ] {
+        let mut buf = Buffer::empty(area);
+        let params = ShapeDrawParams {
+            center_x: 16.0,
+            center_y: 8.0,
+            half_w: 10.0,
+            half_h: 6.0,
+            rotation_deg: 25.0,
+            scale: 1.0,
+            stroke: true,
+            fill: renderer == GeometryRenderer::Braille,
+            closed: true,
+            stroke_color: Color::Rgb(57, 255, 136),
+            fill_color: Color::Rgb(16, 60, 38),
+            opacity: 1.0,
+            renderer,
+            stroke_char: '*',
+            fill_char: '#',
+            truecolor: true,
+        };
+        rasterize_contour(&morphed, &params, area, &mut buf);
+        let drawn = buf
+            .content
+            .iter()
+            .filter(|cell| cell.symbol() != " ")
+            .count();
+        assert!(drawn > 5, "renderer {renderer:?} produced too few glyphs: {drawn}");
+    }
+
+    // ANSI-256 color fallback
+    let idx = rgb_to_ansi256(57, 255, 136);
+    assert!(idx >= 16);
+    assert!(matches!(
+        adapt_color(Color::Rgb(57, 255, 136), false),
+        Color::Indexed(_)
+    ));
+    assert_eq!(
+        adapt_color(Color::Rgb(57, 255, 136), true),
+        Color::Rgb(57, 255, 136)
+    );
+}
+
+#[test]
+fn timeline_loops_unified_showcases_text_fx_and_backgrounds() {
+    // 1. Loop controller modes: once, repeat, ping_pong, pause/resume/stop/speed
+    let mut ping = TimelineClock::new(
+        1000,
+        LoopConfig {
+            mode: LoopMode::PingPong,
+            count: 2,
+            interval_ms: 0,
+        },
+        1.0,
+        30,
+    );
+    ping.advance(0.5);
+    assert!((ping.normalized_time() - 0.5).abs() < 0.02);
+    ping.advance(0.6); // crossed cycle 0 -> reversed! (at 0.1s from end -> 0.9)
+    assert!(ping.reverse);
+    assert!((ping.normalized_time() - 0.9).abs() < 0.03);
+    ping.pause();
+    let frozen = ping.normalized_time();
+    ping.advance(0.5);
+    assert_eq!(ping.normalized_time(), frozen);
+    ping.resume();
+    ping.set_speed(2.0);
+    ping.advance(0.5); // 1.0s scaled -> reaches count limit 2 -> finished
+    assert!(ping.finished);
+
+    // 2. All bundled showcase animations load & validate through unified engine
+    let catalog = AnimationCatalog::load();
+    let expected_showcases = [
+        "shape-morph",
+        "orbital-prism",
+        "neon-banner",
+        "aurora-horizon",
+        "matrix-overload",
+        "starlight-warp",
+        "pulse-scanner",
+        "crt_power_on",
+        "curtains",
+        "fade",
+        "slide",
+        "matrix_boot",
+        "cursor-expand",
+        "cyber_boot",
+        "neon_curtains",
+    ];
+    let theme = Theme::from_config(&Config::default().theme);
+    let area = Rect::new(0, 0, 80, 24);
+
+    for id in expected_showcases {
+        assert!(
+            catalog.entries.iter().any(|e| e.id == id),
+            "missing bundled animation '{id}'"
+        );
+        let mut player = TransitionPlayer::new(id, &catalog, 600);
+        player.update(0.4);
+        let mut buf = Buffer::empty(area);
+        player.render_scene(&mut buf, area, &theme);
+        player.apply_to_buffer(&mut buf, area, &theme);
+        if player.has_scene_tracks() {
+            let cells = buf.content.iter().filter(|c| c.symbol() != " ").count();
+            assert!(cells > 0, "scene '{id}' rendered no cells at 0.4s");
+        }
+    }
+
+    // Verify shape-morph advances continuously across morph stages
+    let mut morph = TransitionPlayer::new("shape-morph", &catalog, 0);
+    let mut b0 = Buffer::empty(area);
+    morph.render_scene(&mut b0, area, &theme);
+    morph.update(1.6);
+    let mut b1 = Buffer::empty(area);
+    morph.render_scene(&mut b1, area, &theme);
+    assert_ne!(
+        b0.content.iter().map(|c| c.symbol().to_string()).collect::<Vec<_>>(),
+        b1.content.iter().map(|c| c.symbol().to_string()).collect::<Vec<_>>()
+    );
+
+    // 3. All 9 Text Animation Engine effects render cleanly inside clip bounds
+    let pal = vec![Color::Rgb(57, 255, 136), Color::Rgb(0, 217, 255)];
+    for eff in [
+        TextEffectKind::Typewriter,
+        TextEffectKind::Fade,
+        TextEffectKind::Reveal,
+        TextEffectKind::Wave,
+        TextEffectKind::Glitch,
+        TextEffectKind::ColorCycle,
+        TextEffectKind::CharByChar,
+        TextEffectKind::Scroll,
+        TextEffectKind::Pulse,
+    ] {
+        let cells = evaluate_text_cells(
+            &TextRenderParams {
+                text: "EGOTOP ENGINE",
+                effect: eff,
+                direction: TextDirection::Left,
+                center_x: 40.0,
+                center_y: 12.0,
+                progress: 0.65,
+                elapsed_secs: 0.75,
+                speed: 1.0,
+                intensity: 1.0,
+                opacity: 1.0,
+                base_color: Color::Rgb(57, 255, 136),
+                palette: &pal,
+                bg_fallback: Color::Rgb(5, 10, 7),
+                charset: "01#$",
+            },
+            area,
+        );
+        assert!(!cells.is_empty(), "text effect {eff:?} emitted zero cells");
+        assert!(cells.iter().all(|c| c.x < area.right() && c.y < area.bottom()));
+    }
+
+    // 4. Multi-layer BackgroundPipeline composition, resize, speed & pause
+    let cfg = Config::default();
+    let mut bg = BackgroundPipeline::from_config(&cfg.background, 80, 24);
+    for (idx, kind) in [
+        BackgroundLayerKind::Gradient,
+        BackgroundLayerKind::Starfield,
+        BackgroundLayerKind::Noise,
+        BackgroundLayerKind::FloatingChars,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        bg.add_layer(
+            BackgroundLayerSpec {
+                effect: kind,
+                z_index: idx as i32 + 1,
+                ..BackgroundLayerSpec::default()
+            },
+            80,
+            24,
+            &cfg.background,
+            &std::collections::BTreeMap::new(),
+        );
+    }
+    assert_eq!(bg.layer_count(), 5);
+    bg.set_speed(1.5);
+    bg.update(0.2, &cfg.background);
+    bg.resize(60, 18, &cfg.background);
+    let mut bg_buf = Buffer::empty(Rect::new(0, 0, 60, 18));
+    bg.render(&mut bg_buf, Rect::new(0, 0, 60, 18), &cfg.background, &theme);
+    assert!(bg_buf.content.iter().any(|c| c.symbol() != " "));
+    bg.pause();
+    bg.resume();
+    bg.clear();
+    assert_eq!(bg.layer_count(), 0);
+}
+
+#[test]
+fn community_package_sandbox_and_runtime_commands() {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!("egotop_anim_pkgs_{nanos}"));
+    let good_pkg = root.join("custom-galaxy");
+    std::fs::create_dir_all(good_pkg.join("assets")).unwrap();
+    std::fs::write(good_pkg.join("assets/logo.txt"), "  *\n * *\n*****\n").unwrap();
+    std::fs::write(
+        good_pkg.join("animation.toml"),
+        r##"
+[animation]
+name = "custom-galaxy"
+version = 2
+duration_ms = 2000
+fps = 30
+
+[animation.loop]
+mode = "infinite"
+
+[[tracks]]
+id = "logo"
+type = "ascii"
+asset = "assets/logo.txt"
+position = ["center", "center"]
+color = "#39FF88"
+"##,
+    )
+    .unwrap();
+
+    // Malicious path traversal package must be rejected cleanly
+    let bad_pkg = root.join("traversal-attack");
+    std::fs::create_dir_all(&bad_pkg).unwrap();
+    std::fs::write(
+        bad_pkg.join("animation.toml"),
+        r#"
+[animation]
+name = "traversal-attack"
+version = 2
+
+[[tracks]]
+id = "leak"
+type = "ascii"
+asset = "../../../etc/passwd"
+"#,
+    )
+    .unwrap();
+
+    // Excess resource limit manifest must fail validation
+    assert!(
+        AnimationDefinition::parse_toml(
+            r#"
+[animation]
+name = "too-many"
+version = 2
+[[tracks]]
+id = "p"
+type = "particles"
+count = 9999
+"#
+        )
+        .is_err()
+    );
+    assert!(validate_safe_asset_path("../secret.txt").is_err());
+    assert!(validate_safe_asset_path("/etc/passwd").is_err());
+    assert!(validate_safe_asset_path("assets/hero.txt").is_ok());
+
+    let loaded = load_packages_from_dir(&root);
+    assert!(loaded.contains_key("custom-galaxy"));
+    assert!(!loaded.contains_key("traversal-attack"));
+    let pkg: &AnimationPackage = &loaded["custom-galaxy"];
+    assert!(matches!(pkg.origin, PackageOrigin::Community { .. }));
+    assert!(pkg.assets["assets/logo.txt"].contains("*****"));
+    let _ = std::fs::remove_dir_all(&root);
+
+    // Runtime commands & completion for expanded :animation & :background
+    assert_eq!(
+        parse_command(":animation pause").unwrap(),
+        ParsedCommand::Animation {
+            action: AnimationAction::Pause,
+            name: None
+        }
+    );
+    assert_eq!(
+        parse_command(":animation speed 1.5").unwrap(),
+        ParsedCommand::Animation {
+            action: AnimationAction::Speed,
+            name: Some("1.5".to_string())
+        }
+    );
+    assert_eq!(
+        parse_command(":background set starfield").unwrap(),
+        ParsedCommand::Background(BackgroundCommand::Set("starfield".to_string()))
+    );
+    assert_eq!(
+        parse_command(":background add noise").unwrap(),
+        ParsedCommand::Background(BackgroundCommand::Add("noise".to_string()))
+    );
+    assert_eq!(
+        parse_command(":background stop").unwrap(),
+        ParsedCommand::Background(BackgroundCommand::Stop)
+    );
+
+    let registry = CommandRegistry::new();
+    let themes = Vec::new();
+    let animations = AnimationCatalog::load();
+    let layouts = Vec::new();
+    let cctx = CompletionContext {
+        themes: &themes,
+        animations: &animations,
+        layouts: &layouts,
+    };
+    let res = CompletionEngine::complete("background ", 11, &registry, &cctx);
+    assert!(res.items.iter().any(|i| i.insert_text == "starfield"));
+    assert!(res.items.iter().any(|i| i.insert_text == "add"));
+    let exact_bg = CompletionEngine::complete("background starfield", 20, &registry, &cctx);
+    assert!(!exact_bg.items.iter().any(|i| i.insert_text == "starfield"));
 }

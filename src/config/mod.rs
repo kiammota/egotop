@@ -5,8 +5,11 @@ pub mod schema;
 pub mod theme_loader;
 
 pub use animation_loader::{
-    CommunityAnimationEntry, DeclarativeAnimation, DeclarativeStep, DeclarativeStepEffect,
-    EasingKind, StepDirection, StepTarget, load_community_animations,
+    AnimationDefinition, AnimationPackage, AnimationRenderMode, CommunityAnimationEntry,
+    DeclarativeAnimation, DeclarativeStep, DeclarativeStepEffect, EasingKind, KeyframeSpec,
+    MorphTransitionMode, PackageOrigin, StepDirection, StepTarget, TrackKind, TrackSpec,
+    load_community_animations, load_community_packages, load_packages_from_dir,
+    validate_safe_asset_path,
 };
 pub use loader::{
     ConfigLoadResult, default_config_path, load_from_path, load_layout_names, load_or_create,

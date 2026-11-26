@@ -1,0 +1,143 @@
+[animation]
+name = "orbital-prism"
+display_name = "Orbital Prism"
+author = "egotop"
+description = "Counter-rotating nested polygons and orbiting beacon over a deep-space starfield."
+version = 2
+duration_ms = 4000
+fps = 30
+speed = 1.0
+mode = "scene"
+target = "screen"
+
+[animation.loop]
+mode = "infinite"
+
+[[layers]]
+id = "space"
+z_index = 2
+
+[[layers]]
+id = "orbit"
+z_index = 12
+
+[[layers]]
+id = "hud"
+z_index = 24
+
+[[backgrounds]]
+effect = "starfield"
+z_index = 0
+density = 0.9
+speed = 1.1
+color = "#39FF88"
+secondary_color = "#00D9FF"
+
+[[tracks]]
+id = "outer-heptagon"
+type = "shape"
+layer = "orbit"
+primitive = "polygon"
+sides = 7
+renderer = "braille"
+position = ["center", "center"]
+size = [28, 15]
+stroke = true
+color = "#00D9FF"
+
+[[tracks.keyframes]]
+at_ms = 0
+rotation = 0.0
+color = "#00D9FF"
+
+[[tracks.keyframes]]
+at_ms = 2000
+rotation = 180.0
+color = "#39FF88"
+easing = "linear"
+
+[[tracks.keyframes]]
+at_ms = 4000
+rotation = 360.0
+color = "#00D9FF"
+easing = "linear"
+
+[[tracks]]
+id = "inner-prism"
+type = "shape"
+layer = "orbit"
+primitive = "triangle"
+renderer = "braille"
+position = ["center", "center"]
+size = [16, 10]
+stroke = true
+color = "#FFC857"
+
+[[tracks.keyframes]]
+at_ms = 0
+rotation = 360.0
+shape = "triangle"
+scale = 0.9
+
+[[tracks.keyframes]]
+at_ms = 2000
+rotation = 180.0
+shape = "polygon"
+sides = 5
+scale = 1.15
+transition = "morph"
+easing = "ease_in_out"
+
+[[tracks.keyframes]]
+at_ms = 4000
+rotation = 0.0
+shape = "triangle"
+scale = 0.9
+transition = "morph"
+easing = "ease_in_out"
+
+[[tracks]]
+id = "orbit-beacon"
+type = "shape"
+layer = "orbit"
+primitive = "circle"
+renderer = "quadrant"
+size = [6, 3]
+fill = true
+color = "#FF5E7E"
+fill_color = "#FFC857"
+
+[[tracks.keyframes]]
+at_ms = 0
+position = ["24%", "50%"]
+easing = "linear"
+
+[[tracks.keyframes]]
+at_ms = 1000
+position = ["50%", "20%"]
+easing = "linear"
+
+[[tracks.keyframes]]
+at_ms = 2000
+position = ["76%", "50%"]
+easing = "linear"
+
+[[tracks.keyframes]]
+at_ms = 3000
+position = ["50%", "80%"]
+easing = "linear"
+
+[[tracks.keyframes]]
+at_ms = 4000
+position = ["24%", "50%"]
+easing = "linear"
+
+[[tracks]]
+id = "prism-title"
+type = "text"
+layer = "hud"
+text = "ORBITAL PRISM TELEMETRY"
+text_effect = "wave"
+palette = ["#00D9FF", "#39FF88"]
+position = ["center", "10%"]
+intensity = 0.9

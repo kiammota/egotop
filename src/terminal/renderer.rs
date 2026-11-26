@@ -1,6 +1,6 @@
 use crate::animation::{BackgroundEffect, TransitionPlayer};
 use crate::command::CommandLineState;
-use crate::config::{Config, ThemeEntry};
+use crate::config::{Config, StepTarget, ThemeEntry};
 use crate::ui::customizer::{CustomizerState, render_customizer, render_help_overlay};
 use crate::ui::layout::compute_layout;
 use crate::ui::theme::parse_color;
@@ -85,6 +85,11 @@ pub fn draw_frame(
     // Draw background animation directly onto the buffer
     effect.render(frame.buffer_mut(), area, &config.background, ctx.theme);
 
+    let scene_target = transition.package.definition.target;
+    if transition.has_scene_tracks() && scene_target == StepTarget::Background {
+        transition.render_scene(frame.buffer_mut(), area, ctx.theme);
+    }
+
     // Resolve and render windows in z-index order
     windows.resolve_all(area);
     for win in windows.windows_sorted() {
@@ -98,6 +103,21 @@ pub fn draw_frame(
             render_dashboard(frame, &layout, ctx);
         }
         transition.apply_to_buffer(frame.buffer_mut(), win.resolved_rect, ctx.theme);
+        if transition.has_scene_tracks()
+            && matches!(scene_target, StepTarget::Window | StepTarget::Content)
+        {
+            let scene_area = if scene_target == StepTarget::Content {
+                inner
+            } else {
+                win.resolved_rect
+            };
+            transition.render_scene(frame.buffer_mut(), scene_area, ctx.theme);
+        }
+    }
+
+    if transition.has_scene_tracks() && matches!(scene_target, StepTarget::Screen | StepTarget::Overlay)
+    {
+        transition.render_scene(frame.buffer_mut(), area, ctx.theme);
     }
 
     if customizer.open {

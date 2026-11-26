@@ -22,6 +22,22 @@ pub enum AnimationAction {
     OpenPicker,
     Play,
     SetStartup,
+    Pause,
+    Resume,
+    Stop,
+    Restart,
+    Speed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BackgroundCommand {
+    Set(String),
+    Add(String),
+    Stop,
+    Pause,
+    Resume,
+    Speed(String),
+    List,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -47,6 +63,7 @@ pub enum ParsedCommand {
         action: AnimationAction,
         name: Option<String>,
     },
+    Background(BackgroundCommand),
     Effect(Option<EffectKind>),
     Window(WindowCommand),
     Layout(Option<LayoutSelection>),
@@ -90,6 +107,7 @@ pub fn parse_command(raw: &str) -> Result<ParsedCommand, String> {
             rest.first().map(|s| (*s).to_string()),
         )),
         "animation" | "anim" => parse_animation_command(&rest),
+        "background" | "bg" => parse_background_command(&rest),
         "effect" | "fx" => {
             let Some(arg) = rest.first() else {
                 return Ok(ParsedCommand::Effect(None));
@@ -124,6 +142,37 @@ fn parse_animation_command(args: &[&str]) -> Result<ParsedCommand, String> {
             action: AnimationAction::OpenPicker,
             name: None,
         }),
+        "pause" => Ok(ParsedCommand::Animation {
+            action: AnimationAction::Pause,
+            name: None,
+        }),
+        "resume" => Ok(ParsedCommand::Animation {
+            action: AnimationAction::Resume,
+            name: None,
+        }),
+        "stop" => Ok(ParsedCommand::Animation {
+            action: AnimationAction::Stop,
+            name: None,
+        }),
+        "restart" | "replay" => Ok(ParsedCommand::Animation {
+            action: AnimationAction::Restart,
+            name: None,
+        }),
+        "speed" => {
+            let Some(val) = args.get(1) else {
+                return Err("Usage: :animation speed <0.1..10.0>".to_string());
+            };
+            let parsed: f32 = val
+                .parse()
+                .map_err(|_| format!("Invalid animation speed '{val}'"))?;
+            if !(0.05..=10.0).contains(&parsed) {
+                return Err("Animation speed must be between 0.05 and 10.0".to_string());
+            }
+            Ok(ParsedCommand::Animation {
+                action: AnimationAction::Speed,
+                name: Some((*val).to_string()),
+            })
+        }
         "play" => {
             let Some(name) = args.get(1) else {
                 return Err("Usage: :animation play <name>".to_string());
@@ -147,6 +196,44 @@ fn parse_animation_command(args: &[&str]) -> Result<ParsedCommand, String> {
             name: Some(name.to_string()),
         }),
     }
+}
+
+fn parse_background_command(args: &[&str]) -> Result<ParsedCommand, String> {
+    let Some(first) = args.first() else {
+        return Ok(ParsedCommand::Background(BackgroundCommand::List));
+    };
+    let cmd = match first.to_ascii_lowercase().as_str() {
+        "list" => BackgroundCommand::List,
+        "stop" | "clear" | "off" | "none" => BackgroundCommand::Stop,
+        "pause" => BackgroundCommand::Pause,
+        "resume" => BackgroundCommand::Resume,
+        "set" => {
+            let Some(name) = args.get(1) else {
+                return Err("Usage: :background set <name>".to_string());
+            };
+            BackgroundCommand::Set((*name).to_string())
+        }
+        "add" | "layer" => {
+            let Some(name) = args.get(1) else {
+                return Err("Usage: :background add <name>".to_string());
+            };
+            BackgroundCommand::Add((*name).to_string())
+        }
+        "speed" => {
+            let Some(val) = args.get(1) else {
+                return Err("Usage: :background speed <0.1..10.0>".to_string());
+            };
+            let parsed: f32 = val
+                .parse()
+                .map_err(|_| format!("Invalid background speed '{val}'"))?;
+            if !(0.05..=10.0).contains(&parsed) {
+                return Err("Background speed must be between 0.05 and 10.0".to_string());
+            }
+            BackgroundCommand::Speed((*val).to_string())
+        }
+        other => BackgroundCommand::Set(other.to_string()),
+    };
+    Ok(ParsedCommand::Background(cmd))
 }
 
 fn parse_layout_command(args: &[&str]) -> Result<ParsedCommand, String> {

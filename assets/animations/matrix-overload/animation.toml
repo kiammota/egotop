@@ -1,0 +1,90 @@
+[animation]
+name = "matrix-overload"
+display_name = "Matrix Overload"
+author = "egotop"
+description = "Dual Matrix rain + scanlines background with pulsing ASCII core and rotating Braille reticle."
+version = 2
+duration_ms = 2600
+fps = 30
+speed = 1.0
+mode = "scene"
+target = "screen"
+
+[animation.loop]
+mode = "infinite"
+
+[[layers]]
+id = "reticle"
+z_index = 10
+
+[[layers]]
+id = "core"
+z_index = 15
+
+[[layers]]
+id = "telemetry"
+z_index = 25
+
+[[backgrounds]]
+effect = "matrix_rain"
+z_index = 0
+density = 0.75
+speed = 1.15
+color = "#1F7A4C"
+secondary_color = "#39FF88"
+
+[[backgrounds]]
+effect = "scanlines"
+z_index = 1
+intensity = 0.4
+speed = 1.2
+color = "#164A2E"
+
+[[tracks]]
+id = "reticle-ring"
+type = "shape"
+layer = "reticle"
+primitive = "polygon"
+sides = 8
+renderer = "braille"
+position = ["center", "center"]
+size = [26, 14]
+stroke = true
+color = "#39FF88"
+
+[[tracks.keyframes]]
+at_ms = 0
+rotation = 0.0
+scale = 0.85
+
+[[tracks.keyframes]]
+at_ms = 1300
+rotation = 90.0
+scale = 1.12
+color = "#00D9FF"
+easing = "ease_in_out"
+
+[[tracks.keyframes]]
+at_ms = 2600
+rotation = 180.0
+scale = 0.85
+color = "#39FF88"
+
+[[tracks]]
+id = "reactor-core"
+type = "ascii"
+layer = "core"
+asset = "assets/core.txt"
+position = ["center", "center"]
+color = "#39FF88"
+
+[[tracks]]
+id = "alert-text"
+type = "text"
+layer = "telemetry"
+text = "NEURAL MATRIX STREAM :: ONLINE"
+text_effect = "reveal"
+chars = "01ｱｶｻﾀﾅﾊ#$"
+palette = ["#39FF88", "#00D9FF"]
+position = ["center", "85%"]
+color = "#39FF88"

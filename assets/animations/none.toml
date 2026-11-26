@@ -1,0 +1,19 @@
+[animation]
+name = "none"
+display_name = "None"
+author = "egotop"
+description = "Instant display without startup transition."
+version = 2
+duration_ms = 0
+mode = "transition"
+target = "window"
+
+[animation.loop]
+mode = "once"
+
+[[tracks]]
+id = "none"
+type = "transition"
+effect = "pause"
+duration_ms = 0
+target = "window"

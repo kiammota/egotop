@@ -3,6 +3,7 @@ pub enum CompletionProviderKind {
     None,
     Colorscheme,
     Animation,
+    Background,
     Layout,
     SetOption,
     Window,
@@ -70,14 +71,26 @@ impl CommandRegistry {
                 CommandDescriptor {
                     name: "animation",
                     aliases: &["anim"],
-                    description: "Preview, set startup animation, or open picker",
-                    usage: ":animation [play|set] [name]",
+                    description: "Play, pause, resume, stop, speed-scale, or pick animations",
+                    usage: ":animation [play|set|pause|resume|stop|restart|speed|list] [arg]",
                     args: &[CommandArgSpec {
-                        name: "[play|set] [name]",
+                        name: "[action] [arg]",
                         required: false,
-                        description: "Action or animation name",
+                        description: "Action (play, pause, resume, stop, speed, set) or name",
                     }],
                     provider: CompletionProviderKind::Animation,
+                },
+                CommandDescriptor {
+                    name: "background",
+                    aliases: &["bg"],
+                    description: "Configure, layer, pause, resume, or stop animated backgrounds",
+                    usage: ":background <set|add|stop|pause|resume|speed|list> [arg]",
+                    args: &[CommandArgSpec {
+                        name: "[action] [arg]",
+                        required: false,
+                        description: "set, add, stop, pause, resume, speed, or preset name",
+                    }],
+                    provider: CompletionProviderKind::Background,
                 },
                 CommandDescriptor {
                     name: "layout",

@@ -1,0 +1,88 @@
+[animation]
+name = "aurora-horizon"
+display_name = "Aurora Horizon"
+author = "egotop"
+description = "Layered gradient, waves, noise field, and morphing custom path aurora curves."
+version = 2
+duration_ms = 3000
+fps = 30
+speed = 1.0
+mode = "scene"
+target = "screen"
+
+[animation.loop]
+mode = "ping_pong"
+
+[[layers]]
+id = "aurora"
+z_index = 10
+
+[[layers]]
+id = "title"
+z_index = 20
+
+[[backgrounds]]
+effect = "gradient"
+z_index = 0
+intensity = 0.7
+speed = 0.8
+color = "#39FF88"
+secondary_color = "#00D9FF"
+
+[[backgrounds]]
+effect = "noise"
+z_index = 1
+intensity = 0.5
+speed = 0.7
+opacity = 0.65
+color = "#00D9FF"
+secondary_color = "#39FF88"
+
+[[backgrounds]]
+effect = "waves"
+z_index = 2
+intensity = 0.8
+density = 0.7
+speed = 1.0
+color = "#0088AA"
+secondary_color = "#39FF88"
+
+[[tracks]]
+id = "aurora-ribbon"
+type = "shape"
+layer = "aurora"
+primitive = "path"
+renderer = "braille"
+position = ["center", "42%"]
+size = [48, 12]
+stroke = true
+color = "#39FF88"
+path = [[-1.0, 0.3], [-0.5, -0.6], [0.0, 0.2], [0.5, -0.5], [1.0, 0.3]]
+
+[[tracks.keyframes]]
+at_ms = 0
+color = "#39FF88"
+path = [[-1.0, 0.4], [-0.5, -0.7], [0.0, 0.25], [0.5, -0.6], [1.0, 0.4]]
+
+[[tracks.keyframes]]
+at_ms = 1500
+color = "#00D9FF"
+path = [[-1.0, -0.3], [-0.5, 0.65], [0.0, -0.5], [0.5, 0.7], [1.0, -0.35]]
+transition = "morph"
+easing = "ease_in_out"
+
+[[tracks.keyframes]]
+at_ms = 3000
+color = "#FFC857"
+path = [[-1.0, 0.5], [-0.5, -0.4], [0.0, 0.6], [0.5, -0.7], [1.0, 0.2]]
+transition = "morph"
+easing = "ease_in_out"
+
+[[tracks]]
+id = "aurora-label"
+type = "text"
+layer = "title"
+text = "AURORA HORIZON"
+text_effect = "pulse"
+palette = ["#00D9FF", "#39FF88"]
+position = ["center", "20%"]
