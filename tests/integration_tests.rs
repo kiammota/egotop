@@ -4,7 +4,7 @@ use egotop::animation::{
 };
 use egotop::command::{
     AnimationAction, CommandLineState, CommandRegistry, CompletionContext, CompletionEngine,
-    LayoutSelection, ParsedCommand, SaveTarget, WindowCommand, parse_command,
+    LayoutSelection, ParsedCommand, WindowCommand, WriteTarget, parse_command,
 };
 use egotop::config::{
     Anchor, BackgroundConfig, BorderStyle, Config, DeclarativeAnimation, EffectKind, LayoutMode,
@@ -119,12 +119,22 @@ fn window_engine_anchors_drag_resize_and_clamping() {
 
 #[test]
 fn command_parser_and_contextual_completion_engine() {
+    // Scenarios 8 & 9: :w / :write and :q / :quit (and :save must NOT exist)
+    assert_eq!(parse_command(":w").unwrap(), ParsedCommand::Write(WriteTarget::All));
+    assert_eq!(parse_command(":write").unwrap(), ParsedCommand::Write(WriteTarget::All));
+    assert_eq!(
+        parse_command(":write window").unwrap(),
+        ParsedCommand::Write(WriteTarget::Window)
+    );
+    assert_eq!(parse_command(":q").unwrap(), ParsedCommand::Quit);
+    assert_eq!(parse_command(":quit").unwrap(), ParsedCommand::Quit);
+    assert!(parse_command(":save").is_err());
+
     assert_eq!(
         parse_command(":colorscheme bamboo").unwrap(),
         ParsedCommand::Colorscheme(Some("bamboo".to_string()))
     );
     assert_eq!(parse_command("reload").unwrap(), ParsedCommand::Reload);
-    assert_eq!(parse_command(":save window").unwrap(), ParsedCommand::Save(SaveTarget::Window));
     assert_eq!(
         parse_command(":set border.horizontal ━").unwrap(),
         ParsedCommand::Set {
@@ -151,9 +161,12 @@ fn command_parser_and_contextual_completion_engine() {
         parse_command(":layout load compact").unwrap(),
         ParsedCommand::Layout(Some(LayoutSelection::View(ViewMode::Compact)))
     );
-    assert_eq!(parse_command(":q").unwrap(), ParsedCommand::Quit);
 
     let registry = CommandRegistry::new();
+    assert!(registry.find("save").is_none());
+    assert_eq!(registry.find("w").unwrap().name, "write");
+    assert_eq!(registry.find("q").unwrap().name, "quit");
+
     let cfg = Config::default();
     let base_theme = Theme::from_config(&cfg.theme);
     let themes = vec![
@@ -164,6 +177,11 @@ fn command_parser_and_contextual_completion_engine() {
         },
         ThemeEntry {
             name: "bamboo".to_string(),
+            theme: base_theme.clone(),
+            source_path: None,
+        },
+        ThemeEntry {
+            name: "nord".to_string(),
             theme: base_theme,
             source_path: None,
         },
@@ -176,24 +194,33 @@ fn command_parser_and_contextual_completion_engine() {
         layouts: &layouts,
     };
 
-    // 1. Command prefix completion
-    let res = CompletionEngine::complete("col", 3, &registry, &ctx);
-    assert_eq!(res.items[0].insert_text, "colorscheme");
+    // No duplicate entries for command aliases (:w / :write, :q / :quit)
+    let all_cmds = CompletionEngine::complete("", 0, &registry, &ctx);
+    assert_eq!(
+        all_cmds
+            .items
+            .iter()
+            .filter(|i| i.insert_text == "write")
+            .count(),
+        1
+    );
+    assert_eq!(
+        all_cmds
+            .items
+            .iter()
+            .filter(|i| i.insert_text == "quit")
+            .count(),
+        1
+    );
+    assert!(!all_cmds.items.iter().any(|i| i.insert_text == "save"));
 
-    // 2. Dynamic theme completion from Theme Manager
-    let res = CompletionEngine::complete("colorscheme ba", 14, &registry, &ctx);
-    assert_eq!(res.items.len(), 1);
-    assert_eq!(res.items[0].insert_text, "bamboo");
-
-    // 3. Contextual animation play completion
+    // Contextual completions
     let res = CompletionEngine::complete("animation play crt", 18, &registry, &ctx);
     assert!(res.items.iter().any(|i| i.insert_text == "crt_power_on"));
 
-    // 4. Contextual layout load completion
     let res = CompletionEngine::complete("layout load my_", 15, &registry, &ctx);
     assert!(res.items.iter().any(|i| i.insert_text == "my_grid"));
 
-    // 5. Contextual border property & style completion
     let res = CompletionEngine::complete("set border.", 11, &registry, &ctx);
     assert!(res.items.iter().any(|i| i.insert_text == "border.horizontal"));
     assert!(res.items.iter().any(|i| i.insert_text == "border.style"));
@@ -204,36 +231,49 @@ fn command_parser_and_contextual_completion_engine() {
     let res = CompletionEngine::complete("set background ", 15, &registry, &ctx);
     assert_eq!(res.items.len(), 2);
 
-    // 6. Editing, cursor movement, completion acceptance, and history navigation
+    // Scenarios 1, 2, 3, 4, 5: Shell-style Tab / Shift+Tab / Space without Enter
     let mut cli = CommandLineState::default();
     cli.open(&registry, &ctx);
-    for ch in "col".chars() {
+    for ch in "color".chars() {
         cli.insert_char(ch, &registry, &ctx);
     }
-    cli.next_suggestion();
-    assert!(cli.accept_selected(&registry, &ctx));
+    // Scenario 1: Tab immediately completes `:color` -> `:colorscheme`
+    cli.next_suggestion(&registry, &ctx);
+    assert_eq!(cli.buffer, "colorscheme");
+
+    // Scenario 4: Space commits token and offers themes
+    cli.insert_char(' ', &registry, &ctx);
     assert_eq!(cli.buffer, "colorscheme ");
-    assert!(cli.suggestions.iter().any(|i| i.insert_text == "bamboo"));
+    assert_eq!(cli.suggestions.len(), 3);
+    assert_eq!(cli.suggestions[0].insert_text, "matrix");
 
-    cli.insert_char('b', &registry, &ctx);
-    cli.next_suggestion();
-    assert!(cli.accept_selected(&registry, &ctx));
+    // Scenarios 2, 3, 5: Cycle forward & backward through themes with Tab / Shift+Tab
+    cli.next_suggestion(&registry, &ctx);
+    assert_eq!(cli.buffer, "colorscheme matrix");
+    cli.next_suggestion(&registry, &ctx);
     assert_eq!(cli.buffer, "colorscheme bamboo");
+    cli.next_suggestion(&registry, &ctx);
+    assert_eq!(cli.buffer, "colorscheme nord");
+    cli.prev_suggestion(&registry, &ctx);
+    assert_eq!(cli.buffer, "colorscheme bamboo");
+    cli.prev_suggestion(&registry, &ctx);
+    assert_eq!(cli.buffer, "colorscheme matrix");
 
-    // Cursor left/right editing
+    // Scenario 6: Edit partially completed command manually
     cli.move_left(&registry, &ctx);
     cli.backspace(&registry, &ctx);
     cli.insert_char('x', &registry, &ctx);
-    assert_eq!(cli.buffer, "colorscheme bambxo");
+    assert_eq!(cli.buffer, "colorscheme matrxx");
 
+    // Scenario 7: Enter executes directly via submit()
     let submitted = cli.submit();
-    assert_eq!(submitted, "colorscheme bambxo");
+    assert_eq!(submitted, "colorscheme matrxx");
     assert!(!cli.active);
 
     // History recall when reopening with empty buffer
     cli.open(&registry, &ctx);
     cli.handle_up(&registry, &ctx);
-    assert_eq!(cli.buffer, "colorscheme bambxo");
+    assert_eq!(cli.buffer, "colorscheme matrxx");
 }
 
 #[test]
@@ -391,6 +431,52 @@ fn full_dashboard_and_cursor_startup_render_via_test_backend() {
     assert!(dumped.contains("Session & Uptime"));
     assert!(dumped.contains(":colorscheme"));
     assert!(dumped.contains("━"));
+
+    // Scenarios 10, 11, 12: Runtime theme change + border char change + terminal resize with popup open
+    let mut nord_theme = egotop::ui::theme::preset_theme("nord");
+    nord_theme.borders.set_property("top_left", "╔").unwrap();
+    nord_theme.borders.set_property("horizontal", "═").unwrap();
+    let nord_ctx = RenderContext {
+        theme: &nord_theme,
+        ..ctx
+    };
+
+    for (w, h) in [(100, 30), (50, 14), (28, 8)] {
+        let mut resized_term = Terminal::new(TestBackend::new(w, h)).unwrap();
+        resized_term
+            .draw(|frame| {
+                draw_frame(
+                    frame,
+                    &cfg,
+                    effect.as_ref(),
+                    &transition,
+                    &mut windows,
+                    &mut customizer,
+                    &cmd_line,
+                    &startup,
+                    &themes,
+                    &catalog,
+                    &nord_ctx,
+                );
+            })
+            .unwrap();
+        let r_buf = resized_term.backend().buffer();
+        let mut r_dump = String::new();
+        for y in 0..r_buf.area.height {
+            for x in 0..r_buf.area.width {
+                r_dump.push_str(r_buf[(x, y)].symbol());
+            }
+        }
+        assert!(r_dump.contains("╔"));
+        assert!(r_dump.contains("═"));
+        // Verify popup border uses Nord theme border color at bottom area
+        let popup_border_color_found = (0..r_buf.area.height).any(|y| {
+            (0..r_buf.area.width).any(|x| {
+                r_buf[(x, y)].symbol() == "╔" && r_buf[(x, y)].fg == nord_theme.border
+            })
+        });
+        assert!(popup_border_color_found);
+    }
 }
 
 #[test]

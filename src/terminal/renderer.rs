@@ -1,12 +1,10 @@
 use crate::animation::{BackgroundEffect, TransitionPlayer};
 use crate::command::CommandLineState;
 use crate::config::{Config, ThemeEntry};
-use crate::ui::customizer::{
-    CustomizerState, render_command_line, render_customizer, render_help_overlay,
-};
+use crate::ui::customizer::{CustomizerState, render_customizer, render_help_overlay};
 use crate::ui::layout::compute_layout;
 use crate::ui::theme::parse_color;
-use crate::ui::widgets::{RenderContext, render_dashboard, render_window_frame};
+use crate::ui::widgets::{RenderContext, render_command_line, render_dashboard, render_window_frame};
 use crate::window::WindowManager;
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -118,7 +116,13 @@ pub fn draw_frame(
         render_help_overlay(frame, area, ctx.theme);
     }
 
-    render_command_line(frame, area, command_line, ctx.status_toast, ctx.theme);
+    render_command_line(
+        frame,
+        area,
+        windows.main_window().resolved_rect,
+        command_line,
+        ctx,
+    );
 }
 
 fn render_cursor_startup(

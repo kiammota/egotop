@@ -1,7 +1,7 @@
 use crate::animation::{AnimationCatalog, BackgroundEffect, TransitionPlayer, create_effect};
 use crate::command::{
     AnimationAction, CommandLineState, CommandRegistry, CompletionContext, LayoutSelection,
-    ParsedCommand, SaveTarget, WindowCommand, parse_command,
+    ParsedCommand, WindowCommand, WriteTarget, parse_command,
 };
 use crate::config::{
     Config, EffectKind, StartupMode, StartupTrigger, ThemeEntry, ViewMode, load_all_themes,
@@ -413,19 +413,13 @@ impl App {
                 }
             }
             KeyCode::Enter => {
-                if cmd_state.selected_suggestion.is_some()
-                    && cmd_state.accept_selected(&self.registry, &ctx)
-                {
-                    // Accepted completion token into command buffer
-                } else {
-                    let cmd = cmd_state.submit();
-                    if !cmd.is_empty() {
-                        execute_str = Some(cmd);
-                    }
+                let cmd = cmd_state.submit();
+                if !cmd.is_empty() {
+                    execute_str = Some(cmd);
                 }
             }
-            KeyCode::Tab => cmd_state.next_suggestion(),
-            KeyCode::BackTab => cmd_state.prev_suggestion(),
+            KeyCode::Tab => cmd_state.next_suggestion(&self.registry, &ctx),
+            KeyCode::BackTab => cmd_state.prev_suggestion(&self.registry, &ctx),
             KeyCode::Up => cmd_state.handle_up(&self.registry, &ctx),
             KeyCode::Down => cmd_state.handle_down(&self.registry, &ctx),
             KeyCode::Left => cmd_state.move_left(&self.registry, &ctx),
@@ -525,7 +519,7 @@ impl App {
                             self.config.general.startup_duration_ms,
                         );
                         self.set_toast(format!(
-                            "Startup animation set to '{}' (use :save to persist)",
+                            "Startup animation set to '{}' (use :write to persist)",
                             entry.display_name
                         ));
                     }
@@ -729,7 +723,7 @@ impl App {
             ParsedCommand::Quit => self.should_quit = true,
             ParsedCommand::Help => self.show_help = true,
             ParsedCommand::Reload => self.reload_all(guard)?,
-            ParsedCommand::Save(target) => self.execute_save(target),
+            ParsedCommand::Write(target) => self.execute_write(target),
             ParsedCommand::Colorscheme(None) => {
                 self.customizer.open_tab(CustomizerTab::Themes);
             }
@@ -738,7 +732,7 @@ impl App {
                 if let Some(entry) = self.themes_map.get(&key).cloned() {
                     self.apply_theme_entry(&entry);
                     self.set_toast(format!(
-                        "Colorscheme '{}' applied (use :save to persist)",
+                        "Colorscheme '{}' applied (use :write to persist)",
                         entry.name
                     ));
                 } else {
@@ -775,7 +769,7 @@ impl App {
                         );
                         self.reveal = RevealState::new(0.65);
                         self.set_toast(format!(
-                            "Startup animation set to '{anim_name}' (use :save to persist)"
+                            "Startup animation set to '{anim_name}' (use :write to persist)"
                         ));
                     }
                 }
@@ -860,25 +854,25 @@ impl App {
         self.set_toast(format!("Unknown property '{key}'"));
     }
 
-    fn execute_save(&mut self, target: SaveTarget) {
+    fn execute_write(&mut self, target: WriteTarget) {
         match target {
-            SaveTarget::Config | SaveTarget::Theme => {
+            WriteTarget::Config | WriteTarget::Theme => {
                 self.save_main_config();
             }
-            SaveTarget::Window => match save_window_config(&self.windows.main_window().config) {
+            WriteTarget::Window => match save_window_config(&self.windows.main_window().config) {
                 Ok(()) => self.set_toast("Saved window settings to ~/.config/egotop/window.toml"),
                 Err(e) => self.set_toast(format!("Save error: {e}")),
             },
-            SaveTarget::All => {
+            WriteTarget::All => {
                 self.config.general.view_mode = self.view_mode;
                 self.config.theme.borders = self.theme.borders.to_config();
                 let res_main = save_config_to_path(&self.config_path, &self.config);
                 let res_win = save_window_config(&self.windows.main_window().config);
                 match (res_main, res_win) {
                     (Ok(()), Ok(())) => {
-                        self.set_toast("Saved all settings to ~/.config/egotop/");
+                        self.set_toast("Wrote all settings to ~/.config/egotop/");
                     }
-                    (Err(e), _) | (_, Err(e)) => self.set_toast(format!("Save error: {e}")),
+                    (Err(e), _) | (_, Err(e)) => self.set_toast(format!("Write error: {e}")),
                 }
             }
         }

@@ -1,5 +1,4 @@
 use crate::animation::{AnimationCatalog, BackgroundEffect};
-use crate::command::CommandLineState;
 use crate::config::{Anchor, BorderStyle, Config, EffectKind, LayoutMode, ThemeEntry, WidgetId};
 use crate::ui::theme::Theme;
 use crate::window::{WindowBackgroundMode, WindowConfig};
@@ -374,152 +373,6 @@ fn render_selectable_list(
     frame.render_stateful_widget(list, area, &mut list_state);
 }
 
-pub fn render_command_line(
-    frame: &mut Frame,
-    screen: Rect,
-    cmd_state: &CommandLineState,
-    toast: Option<&str>,
-    theme: &Theme,
-) {
-    if screen.height == 0 || screen.width == 0 {
-        return;
-    }
-    let bar = Rect::new(screen.x, screen.bottom() - 1, screen.width, 1);
-
-    if cmd_state.active {
-        if cmd_state.popup_open && !cmd_state.suggestions.is_empty() && screen.height >= 6 {
-            render_completion_popup(frame, screen, cmd_state, theme);
-        }
-
-        frame.render_widget(Clear, bar);
-        let cursor = cmd_state.cursor.min(cmd_state.buffer.len());
-        let before = &cmd_state.buffer[..cursor];
-        let (cursor_ch, after) = if cursor < cmd_state.buffer.len() {
-            let ch = cmd_state.buffer[cursor..].chars().next().unwrap_or(' ');
-            let next = cursor + ch.len_utf8();
-            (ch.to_string(), &cmd_state.buffer[next..])
-        } else {
-            (" ".to_string(), "")
-        };
-
-        let line = Line::from(vec![
-            Span::styled(
-                ":",
-                Style::default()
-                    .fg(theme.primary)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(before.to_string(), Style::default().fg(theme.text)),
-            Span::styled(
-                cursor_ch,
-                Style::default()
-                    .fg(theme.background)
-                    .bg(theme.primary)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(after.to_string(), Style::default().fg(theme.text)),
-        ]);
-        frame.render_widget(Paragraph::new(line).style(theme.panel_style()), bar);
-    } else if let Some(msg) = toast {
-        frame.render_widget(Clear, bar);
-        let line = Line::from(Span::styled(
-            format!(" ✦ {msg}"),
-            Style::default()
-                .fg(theme.accent)
-                .add_modifier(Modifier::BOLD),
-        ));
-        frame.render_widget(Paragraph::new(line).style(theme.panel_style()), bar);
-    }
-}
-
-fn render_completion_popup(
-    frame: &mut Frame,
-    screen: Rect,
-    cmd_state: &CommandLineState,
-    theme: &Theme,
-) {
-    let total = cmd_state.suggestions.len();
-    let max_visible = 7usize.min(screen.height.saturating_sub(4) as usize).max(1);
-    let shown_count = total.min(max_visible);
-    let popup_h = (shown_count as u16) + 2;
-    let popup_w = 70.min(screen.width.saturating_sub(2)).max(24);
-    let popup_x = screen.x + 1.min(screen.width.saturating_sub(popup_w));
-    let popup_y = screen.bottom().saturating_sub(1 + popup_h);
-    let popup = Rect::new(popup_x, popup_y, popup_w, popup_h);
-
-    frame.render_widget(Clear, popup);
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_set(theme.borders.as_ratatui_set())
-        .border_style(Style::default().fg(theme.border).bg(theme.panel_background))
-        .style(theme.panel_style());
-    let inner = block.inner(popup);
-    frame.render_widget(block, popup);
-
-    let sel = cmd_state.selected_suggestion;
-    let scroll_start = match sel {
-        Some(idx) if idx >= shown_count => idx + 1 - shown_count,
-        _ => 0,
-    };
-
-    let mut lines = Vec::with_capacity(shown_count);
-    for (rel_idx, item) in cmd_state
-        .suggestions
-        .iter()
-        .skip(scroll_start)
-        .take(shown_count)
-        .enumerate()
-    {
-        let abs_idx = scroll_start + rel_idx;
-        let is_selected = sel == Some(abs_idx);
-
-        let name_col = format!("{:<18}", item.label);
-        let arg_col = item
-            .expected_arg
-            .as_deref()
-            .map(|a| format!("{a:<14}"))
-            .unwrap_or_else(|| " ".repeat(14));
-
-        let row_bg = if is_selected {
-            theme.secondary
-        } else {
-            theme.panel_background
-        };
-        let prefix_fg = if is_selected { theme.background } else { theme.primary };
-        let name_fg = if is_selected { theme.background } else { theme.primary };
-        let arg_fg = if is_selected { theme.background } else { theme.accent };
-        let desc_fg = if is_selected { theme.background } else { theme.muted };
-
-        let used_cols = 2 + 18 + 14 + 1;
-        let max_desc = (inner.width as usize).saturating_sub(used_cols);
-        let desc: String = if item.description.chars().count() > max_desc && max_desc > 1 {
-            let mut s: String = item.description.chars().take(max_desc - 1).collect();
-            s.push('…');
-            s
-        } else {
-            item.description.chars().take(max_desc).collect()
-        };
-
-        lines.push(Line::from(vec![
-            Span::styled(
-                if is_selected { "▶ " } else { "  " },
-                Style::default().fg(prefix_fg).bg(row_bg),
-            ),
-            Span::styled(
-                name_col,
-                Style::default()
-                    .fg(name_fg)
-                    .bg(row_bg)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(arg_col, Style::default().fg(arg_fg).bg(row_bg)),
-            Span::styled(desc, Style::default().fg(desc_fg).bg(row_bg)),
-        ]));
-    }
-
-    frame.render_widget(Paragraph::new(lines), inner);
-}
-
 pub fn render_help_overlay(frame: &mut Frame, screen: Rect, theme: &Theme) {
     let w = 72.min(screen.width.saturating_sub(4));
     let h = 23.min(screen.height.saturating_sub(4));
@@ -565,9 +418,9 @@ pub fn render_help_overlay(frame: &mut Frame, screen: Rect, theme: &Theme) {
         kv(":animation [name]", "Open picker or run startup animation"),
         kv(":window [subcmd]", "Configure window (center, anchor, border, bg...)"),
         kv(":layout [mode]", "Switch layout (responsive, free, compact...)"),
-        kv(":save", "Persist runtime changes to ~/.config/egotop/"),
+        kv(":write [target] / :w", "Write runtime changes to ~/.config/egotop/"),
         kv(":reload", "Reload configs from ~/.config/egotop/"),
-        kv(":q", "Quit and restore terminal"),
+        kv(":quit / :q", "Quit and restore terminal"),
         Line::from(""),
         kv("Mouse (top border)", "Drag to move window"),
         kv("Mouse (bottom-right)", "Drag to resize window"),

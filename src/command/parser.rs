@@ -31,7 +31,7 @@ pub enum LayoutSelection {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SaveTarget {
+pub enum WriteTarget {
     All,
     Config,
     Window,
@@ -42,7 +42,7 @@ pub enum SaveTarget {
 pub enum ParsedCommand {
     Colorscheme(Option<String>),
     Reload,
-    Save(SaveTarget),
+    Write(WriteTarget),
     Animation {
         action: AnimationAction,
         name: Option<String>,
@@ -69,22 +69,22 @@ pub fn parse_command(raw: &str) -> Result<ParsedCommand, String> {
     let rest: Vec<&str> = tokens.collect();
 
     match head.as_str() {
-        "q" | "quit" | "exit" => Ok(ParsedCommand::Quit),
+        "q" | "quit" => Ok(ParsedCommand::Quit),
         "h" | "help" => Ok(ParsedCommand::Help),
         "r" | "reload" => Ok(ParsedCommand::Reload),
-        "save" | "write" => {
+        "w" | "write" => {
             let target = match rest.first().map(|s| s.to_ascii_lowercase()).as_deref() {
-                None | Some("all") => SaveTarget::All,
-                Some("config") => SaveTarget::Config,
-                Some("window") => SaveTarget::Window,
-                Some("theme") => SaveTarget::Theme,
+                None | Some("all") => WriteTarget::All,
+                Some("config") => WriteTarget::Config,
+                Some("window") => WriteTarget::Window,
+                Some("theme") => WriteTarget::Theme,
                 Some(other) => {
                     return Err(format!(
-                        "Unknown save target '{other}' (expected all, config, window, or theme)"
+                        "Unknown write target '{other}' (expected all, config, window, or theme)"
                     ));
                 }
             };
-            Ok(ParsedCommand::Save(target))
+            Ok(ParsedCommand::Write(target))
         }
         "colorscheme" | "theme" => Ok(ParsedCommand::Colorscheme(
             rest.first().map(|s| (*s).to_string()),

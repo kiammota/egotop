@@ -101,15 +101,15 @@ impl CompletionEngine {
                     Vec::new()
                 }
             }
-            CompletionProviderKind::SaveTarget => {
+            CompletionProviderKind::WriteTarget => {
                 if prev_args.is_empty() {
                     complete_from_pairs(
                         &current_token,
                         &[
-                            ("all", "Save egotop.toml and window.toml"),
-                            ("config", "Save ~/.config/egotop/egotop.toml"),
-                            ("window", "Save ~/.config/egotop/window.toml"),
-                            ("theme", "Save active theme colors and borders into egotop.toml"),
+                            ("all", "Write egotop.toml and window.toml"),
+                            ("config", "Write ~/.config/egotop/egotop.toml"),
+                            ("window", "Write ~/.config/egotop/window.toml"),
+                            ("theme", "Write active theme colors and borders into egotop.toml"),
                         ],
                         None,
                     )

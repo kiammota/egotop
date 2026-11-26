@@ -1,3 +1,4 @@
+use crate::command::CommandLineState;
 use crate::config::{Align, Config, GraphStyle, ViewMode, WidgetConfig, WidgetId};
 use crate::system::{SystemSnapshot, format_bytes, uptime::format_uptime};
 use crate::ui::layout::ComputedLayout;
@@ -973,4 +974,199 @@ fn truncate_str(s: &str, max_chars: usize) -> String {
         out.push('…');
         out
     }
+}
+
+/// Renders the Neovim-style command line and its discrete contextual completion popup
+/// using the central theme, border characters, and panel styling from `RenderContext`.
+pub fn render_command_line(
+    frame: &mut Frame,
+    screen: Rect,
+    anchor_window: Rect,
+    cmd_state: &CommandLineState,
+    ctx: &RenderContext,
+) {
+    if screen.height == 0 || screen.width == 0 {
+        return;
+    }
+    let bar = Rect::new(screen.x, screen.bottom() - 1, screen.width, 1);
+
+    if cmd_state.active {
+        if cmd_state.popup_open && !cmd_state.suggestions.is_empty() && screen.height >= 5 {
+            render_completion_popup(frame, screen, anchor_window, cmd_state, ctx);
+        }
+
+        if !ctx.window_transparent {
+            frame.render_widget(Clear, bar);
+        }
+        let cursor = cmd_state.cursor.min(cmd_state.buffer.len());
+        let before = &cmd_state.buffer[..cursor];
+        let (cursor_ch, after) = if cursor < cmd_state.buffer.len() {
+            let ch = cmd_state.buffer[cursor..].chars().next().unwrap_or(' ');
+            let next = cursor + ch.len_utf8();
+            (ch.to_string(), &cmd_state.buffer[next..])
+        } else {
+            (" ".to_string(), "")
+        };
+
+        let line = Line::from(vec![
+            Span::styled(
+                ":",
+                Style::default()
+                    .fg(ctx.theme.primary)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(before.to_string(), Style::default().fg(ctx.theme.text)),
+            Span::styled(
+                cursor_ch,
+                Style::default()
+                    .fg(ctx.theme.background)
+                    .bg(ctx.theme.primary)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(after.to_string(), Style::default().fg(ctx.theme.text)),
+        ]);
+        frame.render_widget(Paragraph::new(line).style(ctx.panel_style()), bar);
+    } else if let Some(msg) = ctx.status_toast {
+        if !ctx.window_transparent {
+            frame.render_widget(Clear, bar);
+        }
+        let line = Line::from(Span::styled(
+            format!(" ✦ {msg}"),
+            Style::default()
+                .fg(ctx.theme.accent)
+                .add_modifier(Modifier::BOLD),
+        ));
+        frame.render_widget(Paragraph::new(line).style(ctx.panel_style()), bar);
+    }
+}
+
+fn render_completion_popup(
+    frame: &mut Frame,
+    screen: Rect,
+    anchor_window: Rect,
+    cmd_state: &CommandLineState,
+    ctx: &RenderContext,
+) {
+    let total = cmd_state.suggestions.len();
+    let max_visible = 7usize.min(screen.height.saturating_sub(4) as usize).max(1);
+    let shown_count = total.min(max_visible);
+    let popup_h = (shown_count as u16) + 2;
+
+    let preferred_w = if anchor_window.width >= 30 {
+        anchor_window.width.min(74)
+    } else {
+        72
+    };
+    let popup_w = preferred_w
+        .min(screen.width.saturating_sub(2))
+        .max(20.min(screen.width));
+    if popup_w < 12 || popup_h < 3 || screen.height <= popup_h {
+        return;
+    }
+
+    let preferred_x = if anchor_window.width >= popup_w {
+        anchor_window.x
+    } else {
+        screen.x + 1.min(screen.width.saturating_sub(popup_w))
+    };
+    let max_x = screen.right().saturating_sub(popup_w);
+    let popup_x = preferred_x.clamp(screen.x, max_x.max(screen.x));
+    let popup_y = screen.bottom().saturating_sub(1 + popup_h);
+    let popup = Rect::new(popup_x, popup_y, popup_w, popup_h);
+
+    if !ctx.window_transparent {
+        frame.render_widget(Clear, popup);
+    }
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_set(ctx.theme.borders.as_ratatui_set())
+        .border_style(ctx.border_style(None))
+        .style(ctx.panel_style());
+    let inner_raw = block.inner(popup);
+    frame.render_widget(block, popup);
+
+    let inner = if inner_raw.width >= 4 {
+        Rect::new(
+            inner_raw.x + 1,
+            inner_raw.y,
+            inner_raw.width - 2,
+            inner_raw.height,
+        )
+    } else {
+        inner_raw
+    };
+
+    let sel = cmd_state.selected_suggestion;
+    let scroll_start = match sel {
+        Some(idx) if idx >= shown_count => idx + 1 - shown_count,
+        _ => 0,
+    };
+
+    let panel_bg = ctx.panel_bg();
+    let mut lines = Vec::with_capacity(shown_count);
+    for (rel_idx, item) in cmd_state
+        .suggestions
+        .iter()
+        .skip(scroll_start)
+        .take(shown_count)
+        .enumerate()
+    {
+        let abs_idx = scroll_start + rel_idx;
+        let is_selected = sel == Some(abs_idx);
+
+        let name_col = format!("{:<16}", truncate_str(&item.label, 16));
+        let arg_col = item
+            .expected_arg
+            .as_deref()
+            .map(|a| format!("{:<13}", truncate_str(a, 13)))
+            .unwrap_or_else(|| " ".repeat(13));
+
+        let row_bg = if is_selected {
+            ctx.theme.secondary
+        } else {
+            panel_bg
+        };
+        let prefix_fg = if is_selected {
+            ctx.theme.background
+        } else {
+            ctx.theme.primary
+        };
+        let name_fg = if is_selected {
+            ctx.theme.background
+        } else {
+            ctx.theme.primary
+        };
+        let arg_fg = if is_selected {
+            ctx.theme.background
+        } else {
+            ctx.theme.accent
+        };
+        let desc_fg = if is_selected {
+            ctx.theme.background
+        } else {
+            ctx.theme.muted
+        };
+
+        let used_cols = 2 + 16 + 13;
+        let max_desc = (inner.width as usize).saturating_sub(used_cols);
+        let desc = truncate_str(&item.description, max_desc);
+
+        lines.push(Line::from(vec![
+            Span::styled(
+                if is_selected { "▶ " } else { "  " },
+                Style::default().fg(prefix_fg).bg(row_bg),
+            ),
+            Span::styled(
+                name_col,
+                Style::default()
+                    .fg(name_fg)
+                    .bg(row_bg)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(arg_col, Style::default().fg(arg_fg).bg(row_bg)),
+            Span::styled(desc, Style::default().fg(desc_fg).bg(row_bg)),
+        ]));
+    }
+
+    frame.render_widget(Paragraph::new(lines), inner);
 }

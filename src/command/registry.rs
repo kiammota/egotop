@@ -7,7 +7,7 @@ pub enum CompletionProviderKind {
     SetOption,
     Window,
     Effect,
-    SaveTarget,
+    WriteTarget,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -124,16 +124,16 @@ impl CommandRegistry {
                     provider: CompletionProviderKind::None,
                 },
                 CommandDescriptor {
-                    name: "save",
-                    aliases: &["write"],
-                    description: "Persist current runtime changes to ~/.config/egotop/",
-                    usage: ":save [all|config|window|theme]",
+                    name: "write",
+                    aliases: &["w"],
+                    description: "Write runtime settings to ~/.config/egotop/",
+                    usage: ":write [all|config|window|theme]",
                     args: &[CommandArgSpec {
                         name: "[target]",
                         required: false,
-                        description: "Configuration file target to save",
+                        description: "Configuration target to write",
                     }],
-                    provider: CompletionProviderKind::SaveTarget,
+                    provider: CompletionProviderKind::WriteTarget,
                 },
                 CommandDescriptor {
                     name: "help",
@@ -144,10 +144,10 @@ impl CommandRegistry {
                     provider: CompletionProviderKind::None,
                 },
                 CommandDescriptor {
-                    name: "q",
-                    aliases: &["quit", "exit"],
+                    name: "quit",
+                    aliases: &["q"],
                     description: "Quit egotop and restore terminal state",
-                    usage: ":q",
+                    usage: ":quit",
                     args: &[],
                     provider: CompletionProviderKind::None,
                 },

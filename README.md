@@ -12,11 +12,11 @@ Run `egotop` with zero required arguments to launch a customizable terminal envi
 - **Command-line & Contextual Autocomplete (`:`)**:
   - Hidden until `:` is pressed.
   - Real-time popup powered by the central `CommandRegistry` and `CompletionEngine` (fetching themes, animations, layouts, and border properties dynamically from runtime managers with zero per-keystroke disk reads).
-  - Full cursor editing (`Left`, `Right`, `Home`, `End`, `Backspace`, `Delete`), navigation (`Tab`, `Shift+Tab`, `ArrowUp`, `ArrowDown`, `Enter`, `Esc`), and command history.
+  - Full cursor editing (`Left`, `Right`, `Home`, `End`, `Backspace`, `Delete`), shell-style completion (`Tab` / `Shift+Tab` immediately completes the active token, `Space` advances to argument suggestions, `Enter` executes, `Esc` closes popup or cancels), and command history.
 - **Runtime Border Customization**:
-  - Centralized `BorderChars` system governing every window, panel, header, and modal.
+  - Centralized `BorderChars` system governing every window, panel, header, modal, and completion popup.
   - Customize individual characters live (`:set border.horizontal ━`, `:set border.top_left ╔`) or presets (`:set border.style rounded|plain|double|thick`) with Unicode display-width validation (`width == 1`).
-  - Changes remain temporary in runtime until explicitly persisted with `:save`.
+  - Changes remain temporary in runtime until explicitly persisted with `:write` (or `:w`).
 - **Cursor Startup Mode (`--startup cursor`)**:
   - Displays only a blinking cursor on startup and reveals the dashboard via the Animation Engine (`cursor-expand`) originating from the exact mouse click or cursor coordinates.
 - **Window Engine**:
@@ -99,9 +99,9 @@ color = "#39FF88"
 - `:layout [load|mode] <name>` — Switch layout mode or load a preset
 - `:window [subcommand]` — Configure anchor, borders, background, drag, resize, padding, or reset
 - `:effect [name]` — Switch background ambient effect (`matrix`, `water`, `particles`, `scanlines`, `none`)
-- `:save [all|config|window|theme]` — Persist runtime changes to `~/.config/egotop/`
+- `:write [all|config|window|theme]` / `:w` — Persist runtime changes to `~/.config/egotop/`
 - `:reload` — Reload configuration, themes, animations, and window state from disk
-- `:help` / `:q` — Open help or quit
+- `:help` / `:quit` / `:q` — Open help or quit
 
 ---
 

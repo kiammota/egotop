@@ -4,9 +4,19 @@ pub mod registry;
 
 pub use completion::{CompletionContext, CompletionEngine, CompletionItem, CompletionResult};
 pub use parser::{
-    AnimationAction, LayoutSelection, ParsedCommand, SaveTarget, WindowCommand, parse_command,
+    AnimationAction, LayoutSelection, ParsedCommand, WindowCommand, WriteTarget, parse_command,
 };
 pub use registry::{CommandDescriptor, CommandRegistry, CompletionProviderKind};
+
+#[derive(Debug, Clone)]
+pub struct CompletionCycle {
+    pub original_buffer: String,
+    pub original_cursor: usize,
+    pub token_start: usize,
+    pub token_end: usize,
+    pub items: Vec<CompletionItem>,
+    pub selected: usize,
+}
 
 #[derive(Debug, Clone, Default)]
 pub struct CommandLineState {
@@ -20,6 +30,7 @@ pub struct CommandLineState {
     pub selected_suggestion: Option<usize>,
     pub replace_range: (usize, usize),
     pub popup_open: bool,
+    pub cycle: Option<CompletionCycle>,
 }
 
 impl CommandLineState {
@@ -30,6 +41,7 @@ impl CommandLineState {
         self.history_index = None;
         self.draft_before_history.clear();
         self.selected_suggestion = None;
+        self.cycle = None;
         self.refresh_completions(registry, ctx);
     }
 
@@ -42,11 +54,13 @@ impl CommandLineState {
         self.suggestions.clear();
         self.selected_suggestion = None;
         self.popup_open = false;
+        self.cycle = None;
     }
 
     pub fn close_popup(&mut self) {
         self.popup_open = false;
         self.selected_suggestion = None;
+        self.cycle = None;
     }
 
     pub fn insert_char(
@@ -55,15 +69,18 @@ impl CommandLineState {
         registry: &CommandRegistry,
         ctx: &CompletionContext<'_>,
     ) {
+        self.cycle = None;
+        self.selected_suggestion = None;
         let pos = self.cursor.min(self.buffer.len());
         self.buffer.insert(pos, c);
         self.cursor = pos + c.len_utf8();
         self.history_index = None;
-        self.selected_suggestion = None;
         self.refresh_completions(registry, ctx);
     }
 
     pub fn backspace(&mut self, registry: &CommandRegistry, ctx: &CompletionContext<'_>) {
+        self.cycle = None;
+        self.selected_suggestion = None;
         if self.cursor == 0 || self.buffer.is_empty() {
             return;
         }
@@ -74,21 +91,23 @@ impl CommandLineState {
         self.buffer.remove(prev);
         self.cursor = prev;
         self.history_index = None;
-        self.selected_suggestion = None;
         self.refresh_completions(registry, ctx);
     }
 
     pub fn delete(&mut self, registry: &CommandRegistry, ctx: &CompletionContext<'_>) {
+        self.cycle = None;
+        self.selected_suggestion = None;
         if self.cursor >= self.buffer.len() {
             return;
         }
         self.buffer.remove(self.cursor);
         self.history_index = None;
-        self.selected_suggestion = None;
         self.refresh_completions(registry, ctx);
     }
 
     pub fn move_left(&mut self, registry: &CommandRegistry, ctx: &CompletionContext<'_>) {
+        self.cycle = None;
+        self.selected_suggestion = None;
         if self.cursor == 0 {
             return;
         }
@@ -97,11 +116,12 @@ impl CommandLineState {
             prev -= 1;
         }
         self.cursor = prev;
-        self.selected_suggestion = None;
         self.refresh_completions(registry, ctx);
     }
 
     pub fn move_right(&mut self, registry: &CommandRegistry, ctx: &CompletionContext<'_>) {
+        self.cycle = None;
+        self.selected_suggestion = None;
         if self.cursor >= self.buffer.len() {
             return;
         }
@@ -110,19 +130,20 @@ impl CommandLineState {
             next += 1;
         }
         self.cursor = next;
-        self.selected_suggestion = None;
         self.refresh_completions(registry, ctx);
     }
 
     pub fn move_home(&mut self, registry: &CommandRegistry, ctx: &CompletionContext<'_>) {
-        self.cursor = 0;
+        self.cycle = None;
         self.selected_suggestion = None;
+        self.cursor = 0;
         self.refresh_completions(registry, ctx);
     }
 
     pub fn move_end(&mut self, registry: &CommandRegistry, ctx: &CompletionContext<'_>) {
-        self.cursor = self.buffer.len();
+        self.cycle = None;
         self.selected_suggestion = None;
+        self.cursor = self.buffer.len();
         self.refresh_completions(registry, ctx);
     }
 
@@ -138,77 +159,75 @@ impl CommandLineState {
         }
     }
 
-    pub fn next_suggestion(&mut self) {
-        if self.suggestions.is_empty() {
-            return;
-        }
-        self.popup_open = true;
-        self.selected_suggestion = Some(match self.selected_suggestion {
-            None => 0,
-            Some(i) => (i + 1) % self.suggestions.len(),
-        });
+    /// Shell-style Tab completion: immediately completes the current token and
+    /// advances through the preserved suggestion list without requiring Enter.
+    pub fn next_suggestion(&mut self, registry: &CommandRegistry, ctx: &CompletionContext<'_>) {
+        self.step_cycle(true, registry, ctx);
     }
 
-    pub fn prev_suggestion(&mut self) {
-        if self.suggestions.is_empty() {
-            return;
-        }
-        self.popup_open = true;
-        self.selected_suggestion = Some(match self.selected_suggestion {
-            None => self.suggestions.len() - 1,
-            Some(0) => self.suggestions.len() - 1,
-            Some(i) => i - 1,
-        });
+    /// Shell-style Shift+Tab completion: steps backward through suggestions
+    /// and immediately updates the active token in the command buffer.
+    pub fn prev_suggestion(&mut self, registry: &CommandRegistry, ctx: &CompletionContext<'_>) {
+        self.step_cycle(false, registry, ctx);
     }
 
-    /// Accepts the currently highlighted completion item into `buffer`, returning `true`
-    /// if the buffer changed (meaning the user accepted a suggestion rather than submitting).
-    pub fn accept_selected(
+    fn step_cycle(
         &mut self,
+        forward: bool,
         registry: &CommandRegistry,
         ctx: &CompletionContext<'_>,
-    ) -> bool {
-        let Some(sel) = self.selected_suggestion else {
-            return false;
-        };
-        let Some(item) = self.suggestions.get(sel).cloned() else {
-            return false;
-        };
-
-        let (start, end) = self.replace_range;
-        let current_slice = self.buffer.get(start..end).unwrap_or("");
-        let append_space = item.expected_arg.is_some()
-            && !self.buffer[end..].starts_with(' ');
-
-        let mut replacement = item.insert_text.clone();
-        if append_space {
-            replacement.push(' ');
+    ) {
+        if self.cycle.is_none() {
+            if self.suggestions.is_empty() {
+                self.refresh_completions(registry, ctx);
+            }
+            if self.suggestions.is_empty() {
+                return;
+            }
+            let (start, end) = self.replace_range;
+            let items = self.suggestions.clone();
+            let initial_sel = if forward { 0 } else { items.len() - 1 };
+            self.cycle = Some(CompletionCycle {
+                original_buffer: self.buffer.clone(),
+                original_cursor: self.cursor,
+                token_start: start,
+                token_end: end,
+                items,
+                selected: initial_sel,
+            });
+        } else if let Some(cycle) = &mut self.cycle {
+            let len = cycle.items.len();
+            if len == 0 {
+                return;
+            }
+            cycle.selected = if forward {
+                (cycle.selected + 1) % len
+            } else if cycle.selected == 0 {
+                len - 1
+            } else {
+                cycle.selected - 1
+            };
         }
 
-        if current_slice == item.insert_text && !append_space {
-            return false;
+        if let Some(cycle) = &mut self.cycle {
+            let item = &cycle.items[cycle.selected];
+            let start = cycle.token_start.min(self.buffer.len());
+            let end = cycle.token_end.min(self.buffer.len());
+            self.buffer.replace_range(start..end, &item.insert_text);
+            let new_end = start + item.insert_text.len();
+            cycle.token_end = new_end;
+            self.cursor = new_end;
+            self.replace_range = (start, new_end);
+            self.suggestions = cycle.items.clone();
+            self.selected_suggestion = Some(cycle.selected);
+            self.popup_open = true;
+            self.history_index = None;
         }
-
-        self.buffer.replace_range(start..end, &replacement);
-        self.cursor = start + replacement.len();
-        self.selected_suggestion = None;
-        self.refresh_completions(registry, ctx);
-        true
     }
 
     pub fn handle_up(&mut self, registry: &CommandRegistry, ctx: &CompletionContext<'_>) {
         if self.popup_open && !self.suggestions.is_empty() && !self.buffer.is_empty() {
-            match self.selected_suggestion {
-                Some(0) => {
-                    self.selected_suggestion = None;
-                }
-                Some(i) => {
-                    self.selected_suggestion = Some(i - 1);
-                }
-                None => {
-                    self.selected_suggestion = Some(self.suggestions.len() - 1);
-                }
-            }
+            self.prev_suggestion(registry, ctx);
             return;
         }
         self.history_prev(registry, ctx);
@@ -216,17 +235,7 @@ impl CommandLineState {
 
     pub fn handle_down(&mut self, registry: &CommandRegistry, ctx: &CompletionContext<'_>) {
         if self.popup_open && !self.suggestions.is_empty() && !self.buffer.is_empty() {
-            match self.selected_suggestion {
-                Some(i) if i + 1 >= self.suggestions.len() => {
-                    self.selected_suggestion = None;
-                }
-                Some(i) => {
-                    self.selected_suggestion = Some(i + 1);
-                }
-                None => {
-                    self.selected_suggestion = Some(0);
-                }
-            }
+            self.next_suggestion(registry, ctx);
             return;
         }
         self.history_next(registry, ctx);
@@ -236,6 +245,7 @@ impl CommandLineState {
         if self.history.is_empty() {
             return;
         }
+        self.cycle = None;
         if self.history_index.is_none() {
             self.draft_before_history = self.buffer.clone();
         }
@@ -255,6 +265,7 @@ impl CommandLineState {
         let Some(idx) = self.history_index else {
             return;
         };
+        self.cycle = None;
         if idx + 1 >= self.history.len() {
             self.history_index = None;
             self.buffer = self.draft_before_history.clone();
