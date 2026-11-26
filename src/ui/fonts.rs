@@ -1,18 +1,32 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
+use unicode_width::UnicodeWidthStr;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HorizontalLayout {
+    FullWidth,
+    Kerning,
+    Smushing { rules: u32 },
+}
 
 #[derive(Debug, Clone)]
 pub struct FigletFont {
     pub name: String,
     pub height: usize,
+    pub hardblank: char,
+    pub layout: HorizontalLayout,
     pub glyphs: HashMap<char, Vec<String>>,
 }
 
 impl FigletFont {
     pub fn render_lines(&self, text: &str) -> Vec<String> {
         let normalized = normalize_ascii_text(text);
-        let mut rows = vec![String::new(); self.height];
+        if normalized.is_empty() || self.height == 0 {
+            return Vec::new();
+        }
+
+        let mut canvas = vec![String::new(); self.height];
 
         for ch in normalized.chars() {
             let upper = ch.to_ascii_uppercase();
@@ -22,27 +36,21 @@ impl FigletFont {
                 .or_else(|| self.glyphs.get(&upper))
                 .or_else(|| self.glyphs.get(&' '));
 
-            if let Some(lines) = glyph {
-                for (r, row) in rows.iter_mut().enumerate() {
-                    if let Some(part) = lines.get(r) {
-                        row.push_str(part);
-                    }
-                }
-            }
+            let Some(raw_glyph) = glyph else {
+                continue;
+            };
+
+            let padded_glyph = pad_glyph_uniform(raw_glyph, self.height);
+            append_glyph_with_layout(&mut canvas, &padded_glyph, self.hardblank, self.layout);
         }
 
-        // Trim trailing spaces uniformly while keeping non-empty lines aligned
-        let max_len = rows
-            .iter()
-            .map(|r| r.trim_end().chars().count())
-            .max()
-            .unwrap_or(0);
-        if max_len == 0 {
-            return Vec::new();
-        }
-        rows.into_iter()
-            .map(|r| r.trim_end().to_string())
-            .collect()
+        // Convert hardblanks to normal spaces only after horizontal smushing/kerning
+        let finalized: Vec<String> = canvas
+            .into_iter()
+            .map(|row| row.replace(self.hardblank, " "))
+            .collect();
+
+        normalize_block_lines(finalized)
     }
 
     pub fn from_flf_str(name: &str, content: &str) -> Option<Self> {
@@ -57,25 +65,55 @@ impl FigletFont {
         }
         let hardblank = header_parts[0].chars().last().unwrap_or('$');
         let height: usize = header_parts[1].parse().ok()?;
+        if height == 0 {
+            return None;
+        }
+        let old_layout: i32 = header_parts[4].parse().unwrap_or(0);
         let comment_lines: usize = header_parts[5].parse().ok()?;
+        let full_layout: Option<u32> = header_parts.get(7).and_then(|s| s.parse().ok());
 
         for _ in 0..comment_lines {
             lines.next()?;
         }
 
+        let layout = decode_flf_layout(old_layout, full_layout);
+
         let mut glyphs = HashMap::new();
+        // Required ASCII 32..=126
         for code in 32u32..=126u32 {
-            let Some(ch) = char::from_u32(code) else { continue };
-            let mut glyph_lines = Vec::with_capacity(height);
-            for row_idx in 0..height {
-                let Some(raw) = lines.next() else {
-                    break;
-                };
-                let cleaned = clean_flf_row(raw, hardblank, row_idx + 1 == height);
-                glyph_lines.push(cleaned);
+            let Some(ch) = char::from_u32(code) else {
+                continue;
+            };
+            if let Some(glyph_lines) = read_flf_glyph(&mut lines, height) {
+                glyphs.insert(ch, pad_glyph_uniform(&glyph_lines, height));
+            } else {
+                break;
             }
-            if glyph_lines.len() == height {
-                glyphs.insert(ch, glyph_lines);
+        }
+
+        // Standard 7 German characters (196, 214, 220, 228, 246, 252, 223) if present,
+        // followed by optional code-tagged characters.
+        let german_codes = [196u32, 214, 220, 228, 246, 252, 223];
+        for code in german_codes {
+            let Some(glyph_lines) = read_flf_glyph(&mut lines, height) else {
+                break;
+            };
+            if let Some(ch) = char::from_u32(code) {
+                glyphs.insert(ch, pad_glyph_uniform(&glyph_lines, height));
+            }
+        }
+
+        while let Some(tag_line) = lines.next() {
+            let trimmed = tag_line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            let code_token = trimmed.split_whitespace().next().unwrap_or("");
+            if let Some(code) = parse_flf_codetag(code_token)
+                && let Some(glyph_lines) = read_flf_glyph(&mut lines, height)
+                && let Some(ch) = char::from_u32(code)
+            {
+                glyphs.insert(ch, pad_glyph_uniform(&glyph_lines, height));
             }
         }
 
@@ -85,13 +123,44 @@ impl FigletFont {
             Some(Self {
                 name: name.to_string(),
                 height,
+                hardblank,
+                layout,
                 glyphs,
             })
         }
     }
 }
 
-fn clean_flf_row(raw: &str, hardblank: char, is_last_row: bool) -> String {
+fn read_flf_glyph<'a>(
+    lines: &mut impl Iterator<Item = &'a str>,
+    height: usize,
+) -> Option<Vec<String>> {
+    let mut glyph_lines = Vec::with_capacity(height);
+    for row_idx in 0..height {
+        let raw = lines.next()?;
+        glyph_lines.push(clean_flf_row(raw, row_idx + 1 == height));
+    }
+    Some(glyph_lines)
+}
+
+fn parse_flf_codetag(token: &str) -> Option<u32> {
+    let t = token.trim();
+    if let Some(hex) = t.strip_prefix("0x").or_else(|| t.strip_prefix("0X")) {
+        u32::from_str_radix(hex, 16).ok()
+    } else if let Some(oct) = t.strip_prefix('0') {
+        if oct.is_empty() {
+            Some(0)
+        } else {
+            u32::from_str_radix(oct, 8).ok()
+        }
+    } else if let Ok(n) = t.parse::<i64>() {
+        u32::try_from(n).ok()
+    } else {
+        None
+    }
+}
+
+fn clean_flf_row(raw: &str, is_last_row: bool) -> String {
     let mut s = raw.trim_end_matches('\r').to_string();
     if let Some(end_marker) = s.chars().last() {
         s.pop();
@@ -99,7 +168,232 @@ fn clean_flf_row(raw: &str, hardblank: char, is_last_row: bool) -> String {
             s.pop();
         }
     }
-    s.replace(hardblank, " ")
+    s
+}
+
+fn decode_flf_layout(old_layout: i32, full_layout: Option<u32>) -> HorizontalLayout {
+    if let Some(full) = full_layout {
+        let smush = (full & 128) != 0;
+        let kern = (full & 64) != 0;
+        if smush {
+            HorizontalLayout::Smushing { rules: full & 63 }
+        } else if kern {
+            HorizontalLayout::Kerning
+        } else {
+            HorizontalLayout::FullWidth
+        }
+    } else if old_layout < 0 {
+        HorizontalLayout::FullWidth
+    } else if old_layout == 0 {
+        HorizontalLayout::Kerning
+    } else {
+        HorizontalLayout::Smushing {
+            rules: (old_layout as u32) & 63,
+        }
+    }
+}
+
+fn pad_glyph_uniform(rows: &[String], height: usize) -> Vec<String> {
+    let max_w = rows.iter().map(|r| r.width()).max().unwrap_or(0);
+    let mut out = Vec::with_capacity(height);
+    for r in 0..height {
+        let line = rows.get(r).map(String::as_str).unwrap_or("");
+        let w = line.width();
+        let mut padded = String::from(line);
+        if w < max_w {
+            padded.push_str(&" ".repeat(max_w - w));
+        }
+        out.push(padded);
+    }
+    out
+}
+
+pub fn normalize_block_lines(lines: Vec<String>) -> Vec<String> {
+    let max_w = lines.iter().map(|l| l.width()).max().unwrap_or(0);
+    if max_w == 0 {
+        return Vec::new();
+    }
+    lines
+        .into_iter()
+        .map(|mut l| {
+            let w = l.width();
+            if w < max_w {
+                l.push_str(&" ".repeat(max_w - w));
+            }
+            l
+        })
+        .collect()
+}
+
+fn append_glyph_with_layout(
+    canvas: &mut [String],
+    glyph: &[String],
+    hardblank: char,
+    layout: HorizontalLayout,
+) {
+    if canvas.is_empty() || glyph.is_empty() {
+        return;
+    }
+
+    if matches!(layout, HorizontalLayout::FullWidth) || canvas[0].is_empty() {
+        for (row, g_row) in canvas.iter_mut().zip(glyph.iter()) {
+            row.push_str(g_row);
+        }
+        return;
+    }
+
+    let allow_smush = matches!(layout, HorizontalLayout::Smushing { .. });
+    let rules = match layout {
+        HorizontalLayout::Smushing { rules } => rules,
+        _ => 0,
+    };
+
+    // Compute maximum horizontal overlap allowed across all rows without colliding
+    let mut max_overlap: Option<usize> = None;
+    for (c_row, g_row) in canvas.iter().zip(glyph.iter()) {
+        let c_chars: Vec<char> = c_row.chars().collect();
+        let g_chars: Vec<char> = g_row.chars().collect();
+
+        let trail_spaces = c_chars.iter().rev().take_while(|&&c| c == ' ').count();
+        let lead_spaces = g_chars.iter().take_while(|&&c| c == ' ').count();
+
+        let mut row_overlap = trail_spaces + lead_spaces;
+        if allow_smush && trail_spaces < c_chars.len() && lead_spaces < g_chars.len() {
+            let left_ch = c_chars[c_chars.len() - 1 - trail_spaces];
+            let right_ch = g_chars[lead_spaces];
+            if smush_chars(left_ch, right_ch, hardblank, rules).is_some() {
+                row_overlap += 1;
+            }
+        }
+        max_overlap = Some(match max_overlap {
+            Some(cur) => cur.min(row_overlap),
+            None => row_overlap,
+        });
+    }
+
+    let overlap = max_overlap.unwrap_or(0);
+    if overlap == 0 {
+        for (row, g_row) in canvas.iter_mut().zip(glyph.iter()) {
+            row.push_str(g_row);
+        }
+        return;
+    }
+
+    for (c_row, g_row) in canvas.iter_mut().zip(glyph.iter()) {
+        let mut c_chars: Vec<char> = c_row.chars().collect();
+        let g_chars: Vec<char> = g_row.chars().collect();
+
+        // Slide glyph left by `overlap` cells, merging overlapping boundary if smushing
+        let c_len = c_chars.len();
+        let g_take_start = overlap.min(g_chars.len());
+        let merge_start = c_len.saturating_sub(overlap);
+
+        for offset in 0..overlap {
+            let ci = merge_start + offset;
+            if ci >= c_chars.len() || offset >= g_chars.len() {
+                continue;
+            }
+            let left_ch = c_chars[ci];
+            let right_ch = g_chars[offset];
+            if left_ch == ' ' {
+                c_chars[ci] = right_ch;
+            } else if right_ch == ' ' {
+                // Keep left_ch
+            } else if allow_smush
+                && let Some(merged) = smush_chars(left_ch, right_ch, hardblank, rules)
+            {
+                c_chars[ci] = merged;
+            }
+        }
+
+        let mut new_row: String = c_chars.into_iter().collect();
+        for &ch in g_chars.iter().skip(g_take_start) {
+            new_row.push(ch);
+        }
+        *c_row = new_row;
+    }
+}
+
+fn smush_chars(left: char, right: char, hardblank: char, rules: u32) -> Option<char> {
+    if left == ' ' {
+        return Some(right);
+    }
+    if right == ' ' {
+        return Some(left);
+    }
+    // Universal smushing when no specific rule bits (0..=5) are set
+    if rules == 0 {
+        if left == hardblank {
+            return Some(right);
+        }
+        if right == hardblank {
+            return Some(left);
+        }
+        return Some(right);
+    }
+
+    // Rule 32 (bit 5): Hardblank smushing
+    if left == hardblank || right == hardblank {
+        return ((rules & 32) != 0 && left == hardblank && right == hardblank).then_some(hardblank);
+    }
+
+    // Rule 1 (bit 0): Equal character smushing
+    if (rules & 1) != 0 && left == right {
+        return Some(left);
+    }
+
+    // Rule 2 (bit 1): Underscore smushing
+    if (rules & 2) != 0 {
+        let replace_set = "|/\\[]{}()<>";
+        if left == '_' && replace_set.contains(right) {
+            return Some(right);
+        }
+        if right == '_' && replace_set.contains(left) {
+            return Some(left);
+        }
+    }
+
+    // Rule 4 (bit 2): Hierarchy smushing
+    if (rules & 4) != 0 {
+        let rank = |c: char| -> Option<u8> {
+            match c {
+                '|' => Some(0),
+                '/' | '\\' => Some(1),
+                '[' | ']' => Some(2),
+                '{' | '}' => Some(3),
+                '(' | ')' => Some(4),
+                '<' | '>' => Some(5),
+                _ => None,
+            }
+        };
+        if let (Some(r1), Some(r2)) = (rank(left), rank(right))
+            && r1 != r2
+        {
+            return Some(if r1 > r2 { left } else { right });
+        }
+    }
+
+    // Rule 8 (bit 3): Opposite pair smushing
+    if (rules & 8) != 0
+        && matches!(
+            (left, right),
+            ('[', ']') | (']', '[') | ('{', '}') | ('}', '{') | ('(', ')') | (')', '(')
+        )
+    {
+        return Some('|');
+    }
+
+    // Rule 16 (bit 4): Big X smushing
+    if (rules & 16) != 0 {
+        match (left, right) {
+            ('/', '\\') => return Some('|'),
+            ('\\', '/') => return Some('Y'),
+            ('>', '<') => return Some('X'),
+            _ => {}
+        }
+    }
+
+    None
 }
 
 pub fn normalize_ascii_text(input: &str) -> String {
@@ -120,6 +414,8 @@ pub fn normalize_ascii_text(input: &str) -> String {
             'Ç' => 'C',
             'ñ' => 'n',
             'Ñ' => 'N',
+            '’' | '‘' => '\'',
+            '“' | '”' => '"',
             other => other,
         })
         .collect()
@@ -164,7 +460,6 @@ impl BuiltinFont {
 }
 
 pub fn load_font(name: &str, ascii_fallback: bool) -> FigletFont {
-    // 1. Check user custom .flf fonts in ~/.config/egotop/fonts/
     if let Some(cfg_dir) = dirs::config_dir() {
         let slug = name.trim().to_ascii_lowercase().replace(' ', "_");
         for candidate in [
@@ -179,7 +474,6 @@ pub fn load_font(name: &str, ascii_fallback: bool) -> FigletFont {
         }
     }
 
-    // 2. Check explicit file path
     let path = Path::new(name);
     if path.is_file()
         && let Ok(raw) = fs::read_to_string(path)
@@ -188,7 +482,6 @@ pub fn load_font(name: &str, ascii_fallback: bool) -> FigletFont {
         return font;
     }
 
-    // 3. Built-in font
     let kind = BuiltinFont::from_name(name).unwrap_or(BuiltinFont::Standard);
     build_builtin_font(kind, ascii_fallback)
 }
@@ -205,359 +498,526 @@ pub fn available_fonts() -> &'static [&'static str] {
     ]
 }
 
-// 5-row canonical bitmap (each string row uses '#' for lit pixel, '.' for empty)
-fn glyph_bitmap_5x(ch: char) -> &'static [&'static str] {
+const SUPPORTED_CHARS: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!?.,:-_/+()@'\" ";
+
+fn build_builtin_font(kind: BuiltinFont, ascii_fallback: bool) -> FigletFont {
+    let mut glyphs = HashMap::new();
+    let effective = if ascii_fallback && matches!(kind, BuiltinFont::AnsiShadow | BuiltinFont::Block) {
+        if kind == BuiltinFont::Block {
+            BuiltinFont::Standard
+        } else {
+            BuiltinFont::Doom
+        }
+    } else {
+        kind
+    };
+
+    let height = match effective {
+        BuiltinFont::Small => 3,
+        BuiltinFont::Standard | BuiltinFont::Slant | BuiltinFont::Block => 5,
+        BuiltinFont::AnsiShadow | BuiltinFont::Big | BuiltinFont::Doom => 6,
+    };
+
+    for ch in SUPPORTED_CHARS.chars() {
+        let lines = match effective {
+            BuiltinFont::Small => glyph_small_3x(ch).iter().map(|r| format!("{r} ")).collect(),
+            BuiltinFont::Block => render_block_glyph(ch, !ascii_fallback),
+            BuiltinFont::Standard => render_outline_glyph(ch),
+            BuiltinFont::Slant => render_slant_glyph(ch),
+            BuiltinFont::Big => render_big_glyph(ch),
+            BuiltinFont::Doom => render_doom_glyph(ch),
+            BuiltinFont::AnsiShadow => ansi_shadow_glyph(ch)
+                .iter()
+                .map(|r| format!("{r} "))
+                .collect(),
+        };
+        glyphs.insert(ch, pad_glyph_uniform(&lines, height));
+    }
+
+    FigletFont {
+        name: effective.display_name().to_string(),
+        height,
+        hardblank: '$',
+        layout: HorizontalLayout::FullWidth,
+        glyphs,
+    }
+}
+
+/// Hand-crafted, non-overlapping 6-row ANSI Shadow glyphs with clean 1-cell drop shadows.
+fn ansi_shadow_glyph(ch: char) -> &'static [&'static str] {
     match ch {
         'A' => &[
-            ".###.",
-            "#...#",
-            "#####",
-            "#...#",
-            "#...#",
+            " █████╗ ",
+            "██╔══██╗",
+            "███████║",
+            "██╔══██║",
+            "██║  ██║",
+            "╚═╝  ╚═╝",
         ],
         'B' => &[
-            "####.",
-            "#...#",
-            "####.",
-            "#...#",
-            "####.",
+            "██████╗ ",
+            "██╔══██╗",
+            "██████╔╝",
+            "██╔══██╗",
+            "██████╔╝",
+            "╚═════╝ ",
         ],
         'C' => &[
-            ".####",
-            "#....",
-            "#....",
-            "#....",
-            ".####",
+            " ██████╗",
+            "██╔════╝",
+            "██║     ",
+            "██║     ",
+            "╚██████╗",
+            " ╚═════╝",
         ],
         'D' => &[
-            "####.",
-            "#...#",
-            "#...#",
-            "#...#",
-            "####.",
+            "██████╗ ",
+            "██╔══██╗",
+            "██║  ██║",
+            "██║  ██║",
+            "██████╔╝",
+            "╚═════╝ ",
         ],
         'E' => &[
-            "#####",
-            "#....",
-            "####.",
-            "#....",
-            "#####",
+            "███████╗",
+            "██╔════╝",
+            "█████╗  ",
+            "██╔══╝  ",
+            "███████╗",
+            "╚══════╝",
         ],
         'F' => &[
-            "#####",
-            "#....",
-            "####.",
-            "#....",
-            "#....",
+            "███████╗",
+            "██╔════╝",
+            "█████╗  ",
+            "██╔══╝  ",
+            "██║     ",
+            "╚═╝     ",
         ],
         'G' => &[
-            ".####",
-            "#....",
-            "#..##",
-            "#...#",
-            ".####",
+            " ██████╗ ",
+            "██╔════╝ ",
+            "██║  ███╗",
+            "██║   ██║",
+            "╚██████╔╝",
+            " ╚═════╝ ",
         ],
         'H' => &[
-            "#...#",
-            "#...#",
-            "#####",
-            "#...#",
-            "#...#",
+            "██╗  ██╗",
+            "██║  ██║",
+            "███████║",
+            "██╔══██║",
+            "██║  ██║",
+            "╚═╝  ╚═╝",
         ],
         'I' => &[
-            "###",
-            ".#.",
-            ".#.",
-            ".#.",
-            "###",
+            "██╗",
+            "██║",
+            "██║",
+            "██║",
+            "██║",
+            "╚═╝",
         ],
         'J' => &[
-            "..###",
-            "...#.",
-            "...#.",
-            "#..#.",
-            ".##..",
+            "     ██╗",
+            "     ██║",
+            "     ██║",
+            "██   ██║",
+            "╚█████╔╝",
+            " ╚════╝ ",
         ],
         'K' => &[
-            "#...#",
-            "#..#.",
-            "###..",
-            "#..#.",
-            "#...#",
+            "██╗  ██╗",
+            "██║ ██╔╝",
+            "█████╔╝ ",
+            "██╔═██╗ ",
+            "██║  ██╗",
+            "╚═╝  ╚═╝",
         ],
         'L' => &[
-            "#....",
-            "#....",
-            "#....",
-            "#....",
-            "#####",
+            "██╗     ",
+            "██║     ",
+            "██║     ",
+            "██║     ",
+            "███████╗",
+            "╚══════╝",
         ],
         'M' => &[
-            "#...#",
-            "##.##",
-            "#.#.#",
-            "#...#",
-            "#...#",
+            "███╗   ███╗",
+            "████╗ ████║",
+            "██╔████╔██║",
+            "██║╚██╔╝██║",
+            "██║ ╚═╝ ██║",
+            "╚═╝     ╚═╝",
         ],
         'N' => &[
-            "#...#",
-            "##..#",
-            "#.#.#",
-            "#..##",
-            "#...#",
+            "███╗   ██╗",
+            "████╗  ██║",
+            "██╔██╗ ██║",
+            "██║╚██╗██║",
+            "██║ ╚████║",
+            "╚═╝  ╚═══╝",
         ],
         'O' => &[
-            ".###.",
-            "#...#",
-            "#...#",
-            "#...#",
-            ".###.",
+            " ██████╗ ",
+            "██╔═══██╗",
+            "██║   ██║",
+            "██║   ██║",
+            "╚██████╔╝",
+            " ╚═════╝ ",
         ],
         'P' => &[
-            "####.",
-            "#...#",
-            "####.",
-            "#....",
-            "#....",
+            "██████╗ ",
+            "██╔══██╗",
+            "██████╔╝",
+            "██╔═══╝ ",
+            "██║     ",
+            "╚═╝     ",
         ],
         'Q' => &[
-            ".###.",
-            "#...#",
-            "#.#.#",
-            "#..#.",
-            ".##.#",
+            " ██████╗ ",
+            "██╔═══██╗",
+            "██║   ██║",
+            "██║▄▄ ██║",
+            "╚██████╔╝",
+            " ╚══▀▀═╝ ",
         ],
         'R' => &[
-            "####.",
-            "#...#",
-            "####.",
-            "#..#.",
-            "#...#",
+            "██████╗ ",
+            "██╔══██╗",
+            "██████╔╝",
+            "██╔══██╗",
+            "██║  ██║",
+            "╚═╝  ╚═╝",
         ],
         'S' => &[
-            ".####",
-            "#....",
-            ".###.",
-            "....#",
-            "####.",
+            "███████╗",
+            "██╔════╝",
+            "███████╗",
+            "╚════██║",
+            "███████║",
+            "╚══════╝",
         ],
         'T' => &[
-            "#####",
-            "..#..",
-            "..#..",
-            "..#..",
-            "..#..",
+            "████████╗",
+            "╚══██╔══╝",
+            "   ██║   ",
+            "   ██║   ",
+            "   ██║   ",
+            "   ╚═╝   ",
         ],
         'U' => &[
-            "#...#",
-            "#...#",
-            "#...#",
-            "#...#",
-            ".###.",
+            "██╗   ██╗",
+            "██║   ██║",
+            "██║   ██║",
+            "██║   ██║",
+            "╚██████╔╝",
+            " ╚═════╝ ",
         ],
         'V' => &[
-            "#...#",
-            "#...#",
-            "#...#",
-            ".#.#.",
-            "..#..",
+            "██╗   ██╗",
+            "██║   ██║",
+            "██║   ██║",
+            "╚██╗ ██╔╝",
+            " ╚████╔╝ ",
+            "  ╚═══╝  ",
         ],
         'W' => &[
-            "#...#",
-            "#...#",
-            "#.#.#",
-            "##.##",
-            "#...#",
+            "██╗    ██╗",
+            "██║    ██║",
+            "██║ █╗ ██║",
+            "██║███╗██║",
+            "╚███╔███╔╝",
+            " ╚══╝╚══╝ ",
         ],
         'X' => &[
-            "#...#",
-            ".#.#.",
-            "..#..",
-            ".#.#.",
-            "#...#",
+            "██╗  ██╗",
+            "╚██╗██╔╝",
+            " ╚███╔╝ ",
+            " ██╔██╗ ",
+            "██╔╝ ██╗",
+            "╚═╝  ╚═╝",
         ],
         'Y' => &[
-            "#...#",
-            ".#.#.",
-            "..#..",
-            "..#..",
-            "..#..",
+            "██╗   ██╗",
+            "╚██╗ ██╔╝",
+            " ╚████╔╝ ",
+            "  ╚██╔╝  ",
+            "   ██║   ",
+            "   ╚═╝   ",
         ],
         'Z' => &[
-            "#####",
-            "...#.",
-            "..#..",
-            ".#...",
-            "#####",
+            "███████╗",
+            "╚══███╔╝",
+            "  ███╔╝ ",
+            " ███╔╝  ",
+            "███████╗",
+            "╚══════╝",
         ],
         '0' => &[
-            ".###.",
-            "#..##",
-            "#.#.#",
-            "##..#",
-            ".###.",
+            " ██████╗ ",
+            "██╔═████╗",
+            "██║██╔██║",
+            "████╔╝██║",
+            "╚██████╔╝",
+            " ╚═════╝ ",
         ],
         '1' => &[
-            ".#.",
-            "##.",
-            ".#.",
-            ".#.",
-            "###",
+            " ██╗",
+            "███║",
+            "╚██║",
+            " ██║",
+            " ██║",
+            " ╚═╝",
         ],
         '2' => &[
-            "####.",
-            "....#",
-            ".###.",
-            "#....",
-            "#####",
+            "██████╗ ",
+            "╚════██╗",
+            " █████╔╝",
+            "██╔═══╝ ",
+            "███████╗",
+            "╚══════╝",
         ],
         '3' => &[
-            "####.",
-            "....#",
-            ".###.",
-            "....#",
-            "####.",
+            "██████╗ ",
+            "╚════██╗",
+            " █████╔╝",
+            " ╚═══██╗",
+            "██████╔╝",
+            "╚═════╝ ",
         ],
         '4' => &[
-            "#...#",
-            "#...#",
-            "#####",
-            "....#",
-            "....#",
+            "██╗  ██╗",
+            "██║  ██║",
+            "███████║",
+            "╚════██║",
+            "     ██║",
+            "     ╚═╝",
         ],
         '5' => &[
-            "#####",
-            "#....",
-            "####.",
-            "....#",
-            "####.",
+            "███████╗",
+            "██╔════╝",
+            "███████╗",
+            "╚════██║",
+            "███████║",
+            "╚══════╝",
         ],
         '6' => &[
-            ".###.",
-            "#....",
-            "####.",
-            "#...#",
-            ".###.",
+            " ██████╗ ",
+            "██╔════╝ ",
+            "███████╗ ",
+            "██╔═══██╗",
+            "╚██████╔╝",
+            " ╚═════╝ ",
         ],
         '7' => &[
-            "#####",
-            "...#.",
-            "..#..",
-            ".#...",
-            ".#...",
+            "███████╗",
+            "╚════██║",
+            "    ██╔╝",
+            "   ██╔╝ ",
+            "   ██║  ",
+            "   ╚═╝  ",
         ],
         '8' => &[
-            ".###.",
-            "#...#",
-            ".###.",
-            "#...#",
-            ".###.",
+            " █████╗ ",
+            "██╔══██╗",
+            "╚█████╔╝",
+            "██╔══██╗",
+            "╚█████╔╝",
+            " ╚════╝ ",
         ],
         '9' => &[
-            ".###.",
-            "#...#",
-            ".####",
-            "....#",
-            ".###.",
+            " █████╗ ",
+            "██╔══██╗",
+            "╚██████║",
+            " ╚═══██║",
+            " █████╔╝",
+            " ╚════╝ ",
         ],
         '!' => &[
-            "#",
-            "#",
-            "#",
-            ".",
-            "#",
+            "██╗",
+            "██║",
+            "██║",
+            "╚═╝",
+            "██╗",
+            "╚═╝",
         ],
         '?' => &[
-            ".###.",
-            "#...#",
-            "..##.",
-            ".....",
-            "..#..",
-        ],
-        ',' => &[
-            "..",
-            "..",
-            "..",
-            ".#",
-            "#.",
+            "██████╗ ",
+            "╚════██╗",
+            "  ███╔═╝",
+            "  ╚══╝  ",
+            "  ██╗   ",
+            "  ╚═╝   ",
         ],
         '.' => &[
-            "..",
-            "..",
-            "..",
-            "..",
-            "#.",
+            "   ",
+            "   ",
+            "   ",
+            "   ",
+            "██╗",
+            "╚═╝",
+        ],
+        ',' => &[
+            "   ",
+            "   ",
+            "   ",
+            "██╗",
+            "╚██╗",
+            " ╚═╝",
         ],
         ':' => &[
-            ".",
-            "#",
-            ".",
-            "#",
-            ".",
+            "   ",
+            "██╗",
+            "╚═╝",
+            "██╗",
+            "╚═╝",
+            "   ",
         ],
         '-' => &[
-            "...",
-            "...",
-            "###",
-            "...",
-            "...",
+            "      ",
+            "      ",
+            "█████╗",
+            "╚════╝",
+            "      ",
+            "      ",
         ],
         '_' => &[
-            "....",
-            "....",
-            "....",
-            "....",
-            "####",
+            "        ",
+            "        ",
+            "        ",
+            "        ",
+            "███████╗",
+            "╚══════╝",
+        ],
+        '\'' => &[
+            "██╗",
+            "╚██╗",
+            " ╚═╝",
+            "   ",
+            "   ",
+            "   ",
+        ],
+        '"' => &[
+            "██╗██╗",
+            "╚═╝╚═╝",
+            "      ",
+            "      ",
+            "      ",
+            "      ",
         ],
         '/' => &[
-            "...#",
-            "..#.",
-            ".#..",
-            "#...",
-            "....",
+            "   ██╗",
+            "  ██╔╝",
+            " ██╔╝ ",
+            "██╔╝  ",
+            "╚═╝   ",
+            "      ",
         ],
         '+' => &[
-            "...",
-            ".#.",
-            "###",
-            ".#.",
-            "...",
+            "      ",
+            "  ██╗ ",
+            "██████╗",
+            "╚═██╔═╝",
+            "  ╚═╝ ",
+            "      ",
         ],
         '(' => &[
-            ".#",
-            "#.",
-            "#.",
-            "#.",
-            ".#",
+            " ██╗",
+            "██╔╝",
+            "██║ ",
+            "██║ ",
+            "╚██╗",
+            " ╚═╝",
         ],
         ')' => &[
-            "#.",
-            ".#",
-            ".#",
-            ".#",
-            "#.",
+            "██╗ ",
+            "╚██╗",
+            " ██║",
+            " ██║",
+            "██╔╝",
+            "╚═╝ ",
         ],
         '@' => &[
-            ".###.",
-            "#.#.#",
-            "#.##.",
-            "#....",
-            ".####",
+            " ██████╗ ",
+            "██╔══███╗",
+            "██║██╔██║",
+            "██║╚═══╝ ",
+            "╚██████╗ ",
+            " ╚═════╝ ",
         ],
         ' ' => &[
-            "...",
-            "...",
-            "...",
-            "...",
-            "...",
+            "   ",
+            "   ",
+            "   ",
+            "   ",
+            "   ",
+            "   ",
         ],
         _ => &[
-            "...",
-            "...",
-            "...",
-            "...",
-            "...",
+            "   ",
+            "   ",
+            "   ",
+            "   ",
+            "   ",
+            "   ",
         ],
+    }
+}
+
+fn glyph_bitmap_5x(ch: char) -> &'static [&'static str] {
+    match ch {
+        'A' => &[".###.", "#...#", "#####", "#...#", "#...#"],
+        'B' => &["####.", "#...#", "####.", "#...#", "####."],
+        'C' => &[".####", "#....", "#....", "#....", ".####"],
+        'D' => &["####.", "#...#", "#...#", "#...#", "####."],
+        'E' => &["#####", "#....", "####.", "#....", "#####"],
+        'F' => &["#####", "#....", "####.", "#....", "#...."],
+        'G' => &[".####", "#....", "#..##", "#...#", ".####"],
+        'H' => &["#...#", "#...#", "#####", "#...#", "#...#"],
+        'I' => &["###", ".#.", ".#.", ".#.", "###"],
+        'J' => &["..###", "...#.", "...#.", "#..#.", ".##.."],
+        'K' => &["#...#", "#..#.", "###..", "#..#.", "#...#"],
+        'L' => &["#....", "#....", "#....", "#....", "#####"],
+        'M' => &["#...#", "##.##", "#.#.#", "#...#", "#...#"],
+        'N' => &["#...#", "##..#", "#.#.#", "#..##", "#...#"],
+        'O' => &[".###.", "#...#", "#...#", "#...#", ".###."],
+        'P' => &["####.", "#...#", "####.", "#....", "#...."],
+        'Q' => &[".###.", "#...#", "#.#.#", "#..#.", ".##.#"],
+        'R' => &["####.", "#...#", "####.", "#..#.", "#...#"],
+        'S' => &[".####", "#....", ".###.", "....#", "####."],
+        'T' => &["#####", "..#..", "..#..", "..#..", "..#.."],
+        'U' => &["#...#", "#...#", "#...#", "#...#", ".###."],
+        'V' => &["#...#", "#...#", "#...#", ".#.#.", "..#.."],
+        'W' => &["#...#", "#...#", "#.#.#", "##.##", "#...#"],
+        'X' => &["#...#", ".#.#.", "..#..", ".#.#.", "#...#"],
+        'Y' => &["#...#", ".#.#.", "..#..", "..#..", "..#.."],
+        'Z' => &["#####", "...#.", "..#..", ".#...", "#####"],
+        '0' => &[".###.", "#..##", "#.#.#", "##..#", ".###."],
+        '1' => &[".#.", "##.", ".#.", ".#.", "###"],
+        '2' => &["####.", "....#", ".###.", "#....", "#####"],
+        '3' => &["####.", "....#", ".###.", "....#", "####."],
+        '4' => &["#...#", "#...#", "#####", "....#", "....#"],
+        '5' => &["#####", "#....", "####.", "....#", "####."],
+        '6' => &[".###.", "#....", "####.", "#...#", ".###."],
+        '7' => &["#####", "...#.", "..#..", ".#...", ".#..."],
+        '8' => &[".###.", "#...#", ".###.", "#...#", ".###."],
+        '9' => &[".###.", "#...#", ".####", "....#", ".###."],
+        '!' => &["#", "#", "#", ".", "#"],
+        '?' => &[".###.", "#...#", "..##.", ".....", "..#.."],
+        ',' => &[".", ".", ".", "#", "#"],
+        '.' => &[".", ".", ".", ".", "#"],
+        ':' => &[".", "#", ".", "#", "."],
+        '-' => &["...", "...", "###", "...", "..."],
+        '_' => &["....", "....", "....", "....", "####"],
+        '\'' => &["#", "#", ".", ".", "."],
+        '"' => &["#.#", "#.#", "...", "...", "..."],
+        '/' => &["...#", "..#.", ".#..", "#...", "...."],
+        '+' => &["...", ".#.", "###", ".#.", "..."],
+        '(' => &[".#", "#.", "#.", "#.", ".#"],
+        ')' => &["#.", ".#", ".#", ".#", "#."],
+        '@' => &[".###.", "#.#.#", "#.##.", "#....", ".####"],
+        _ => &["...", "...", "...", "...", "..."],
     }
 }
 
@@ -606,51 +1066,10 @@ fn glyph_small_3x(ch: char) -> &'static [&'static str] {
         ':' => &[" ", ".", "."],
         '-' => &["  ", "--", "  "],
         '_' => &["  ", "  ", "__"],
+        '\'' => &["'", " ", " "],
+        '"' => &["\"", " ", " "],
         ' ' => &["  ", "  ", "  "],
         _ => &["  ", "  ", "  "],
-    }
-}
-
-const SUPPORTED_CHARS: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!?.,:-_/+()@ ";
-
-fn build_builtin_font(kind: BuiltinFont, ascii_fallback: bool) -> FigletFont {
-    let mut glyphs = HashMap::new();
-    let effective = if ascii_fallback && matches!(kind, BuiltinFont::AnsiShadow | BuiltinFont::Block) {
-        if kind == BuiltinFont::Block {
-            BuiltinFont::Standard
-        } else {
-            BuiltinFont::Doom
-        }
-    } else {
-        kind
-    };
-
-    let height = match effective {
-        BuiltinFont::Small => 3,
-        BuiltinFont::Standard | BuiltinFont::Slant | BuiltinFont::Block => 5,
-        BuiltinFont::AnsiShadow | BuiltinFont::Big | BuiltinFont::Doom => 6,
-    };
-
-    for ch in SUPPORTED_CHARS.chars() {
-        let lines = match effective {
-            BuiltinFont::Small => glyph_small_3x(ch)
-                .iter()
-                .map(|r| format!("{r} "))
-                .collect(),
-            BuiltinFont::Block => render_block_glyph(ch, !ascii_fallback),
-            BuiltinFont::Standard => render_outline_glyph(ch, false, false),
-            BuiltinFont::Slant => render_slant_glyph(ch),
-            BuiltinFont::Big => render_big_glyph(ch),
-            BuiltinFont::Doom => render_doom_glyph(ch),
-            BuiltinFont::AnsiShadow => render_ansi_shadow_glyph(ch),
-        };
-        glyphs.insert(ch, lines);
-    }
-
-    FigletFont {
-        name: effective.display_name().to_string(),
-        height,
-        glyphs,
     }
 }
 
@@ -673,7 +1092,7 @@ fn render_block_glyph(ch: char, unicode: bool) -> Vec<String> {
         .collect()
 }
 
-fn render_outline_glyph(ch: char, double_wide: bool, _bevel: bool) -> Vec<String> {
+fn render_outline_glyph(ch: char) -> Vec<String> {
     let bmp = glyph_bitmap_5x(ch);
     let h = bmp.len();
     let w = bmp[0].len();
@@ -699,18 +1118,11 @@ fn render_outline_glyph(ch: char, double_wide: bool, _bevel: bool) -> Vec<String
                     (true, false, true, false) => '/',
                     (true, true, _, _) => '|',
                     (false, false, _, _) => '_',
-                    (_, _, true, true) => '=',
                     _ => '#',
                 };
                 line.push(ch_out);
-                if double_wide {
-                    line.push(if ch_out == '|' { ' ' } else { ch_out });
-                }
             } else {
                 line.push(' ');
-                if double_wide {
-                    line.push(' ');
-                }
             }
         }
         line.push(' ');
@@ -720,7 +1132,7 @@ fn render_outline_glyph(ch: char, double_wide: bool, _bevel: bool) -> Vec<String
 }
 
 fn render_slant_glyph(ch: char) -> Vec<String> {
-    let base = render_outline_glyph(ch, false, false);
+    let base = render_outline_glyph(ch);
     let h = base.len();
     base.into_iter()
         .enumerate()
@@ -741,7 +1153,6 @@ fn render_big_glyph(ch: char) -> Vec<String> {
         .map(|r| r.chars().map(|c| c == '#').collect())
         .collect();
 
-    // 6-row tall wide ASCII style: top cap + 5 body rows
     let mut rows = Vec::with_capacity(6);
     let mut top = String::new();
     for &lit in grid[0].iter().take(w) {
@@ -819,68 +1230,6 @@ fn render_doom_glyph(ch: char) -> Vec<String> {
             }
         }
         line.push(' ');
-        rows.push(line);
-    }
-    rows
-}
-
-fn render_ansi_shadow_glyph(ch: char) -> Vec<String> {
-    let bmp = glyph_bitmap_5x(ch);
-    let h = bmp.len();
-    let w = bmp[0].len();
-    let grid: Vec<Vec<bool>> = bmp
-        .iter()
-        .map(|r| r.chars().map(|c| c == '#').collect())
-        .collect();
-
-    let on = |r: isize, c: isize| -> bool {
-        if r < 0 || c < 0 || r >= h as isize || c >= w as isize {
-            false
-        } else {
-            grid[r as usize][c as usize]
-        }
-    };
-
-    let mut rows = Vec::with_capacity(6);
-    for r in 0..=h {
-        let mut line = String::new();
-        for c in 0..=w {
-            let ri = r as isize;
-            let ci = c as isize;
-            if on(ri, ci) {
-                // Full solid pixel (2 cells wide for balanced aspect ratio, except last shadow col)
-                line.push_str(if c < w { "██" } else { "█" });
-            } else {
-                let left = on(ri, ci - 1);
-                let up = on(ri - 1, ci);
-                let upleft = on(ri - 1, ci - 1);
-
-                let shadow_left = match (left, up, upleft) {
-                    (true, true, true) => '╝',
-                    (true, true, false) => '╔',
-                    (true, false, true) => '║',
-                    (true, false, false) => '╗',
-                    (false, true, true) => '═',
-                    (false, true, false) => '╚',
-                    (false, false, true) => '╝',
-                    (false, false, false) => ' ',
-                };
-
-                if c < w {
-                    let shadow_right = if up { '═' } else { ' ' };
-                    line.push(shadow_left);
-                    line.push(if shadow_left == '╗' || shadow_left == '╝' || shadow_left == '║' {
-                        ' '
-                    } else if shadow_left == '╔' || shadow_left == '╚' || shadow_left == '═' {
-                        shadow_right
-                    } else {
-                        ' '
-                    });
-                } else {
-                    line.push(shadow_left);
-                }
-            }
-        }
         rows.push(line);
     }
     rows

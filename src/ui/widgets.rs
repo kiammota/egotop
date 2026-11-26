@@ -10,6 +10,7 @@ use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph, Sparkline, Wrap};
+use unicode_width::UnicodeWidthStr;
 
 pub struct RenderContext<'a> {
     pub config: &'a Config,
@@ -333,7 +334,26 @@ fn render_panel_frame(
     let (block, _) = panel_block(widget, ctx);
     let inner = block.inner(area);
     frame.render_widget(block, area);
-    inner
+    if inner.width >= 4 {
+        Rect::new(inner.x + 1, inner.y, inner.width - 2, inner.height)
+    } else {
+        inner
+    }
+}
+
+fn center_vertically(lines: Vec<Line<'static>>, available_height: u16) -> Vec<Line<'static>> {
+    let total = lines.len();
+    let avail = available_height as usize;
+    if total == 0 || total >= avail {
+        return lines;
+    }
+    let top_pad = (avail - total) / 2;
+    let mut padded = Vec::with_capacity(top_pad + total);
+    for _ in 0..top_pad {
+        padded.push(Line::from(""));
+    }
+    padded.extend(lines);
+    padded
 }
 
 fn render_greeting_widget(
@@ -377,34 +397,29 @@ fn render_greeting_widget(
     } else {
         Vec::new()
     };
-    let logo_width = logo_lines
-        .iter()
-        .map(|l| l.chars().count())
-        .max()
-        .unwrap_or(0) as u16;
+    let logo_width = logo_lines.iter().map(|l| l.width()).max().unwrap_or(0) as u16;
 
     let show_side_logo =
-        !logo_lines.is_empty() && inner.width > logo_width + 32 && inner.height >= 6;
+        !logo_lines.is_empty() && inner.width > logo_width + 28 && inner.height >= 5;
     let text_area = if show_side_logo {
         let cols = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([Constraint::Length(logo_width + 3), Constraint::Min(10)])
+            .constraints([Constraint::Length(logo_width + 4), Constraint::Min(10)])
             .split(inner);
 
-        let logo_para = Paragraph::new(
-            logo_lines
-                .iter()
-                .map(|l| {
-                    Line::from(Span::styled(
-                        l.clone(),
-                        Style::default()
-                            .fg(ctx.theme.secondary)
-                            .add_modifier(Modifier::BOLD),
-                    ))
-                })
-                .collect::<Vec<_>>(),
-        )
-        .alignment(Alignment::Center);
+        let logo_styled: Vec<Line<'static>> = logo_lines
+            .iter()
+            .map(|l| {
+                Line::from(Span::styled(
+                    l.clone(),
+                    Style::default()
+                        .fg(ctx.theme.secondary)
+                        .add_modifier(Modifier::BOLD),
+                ))
+            })
+            .collect();
+        let logo_para =
+            Paragraph::new(center_vertically(logo_styled, cols[0].height)).alignment(Alignment::Center);
         frame.render_widget(logo_para, cols[0]);
         cols[1]
     } else {
@@ -416,10 +431,17 @@ fn render_greeting_widget(
         .as_deref()
         .unwrap_or(&ctx.config.typography.font);
 
-    let figlet_lines = if text_area.height >= 7 {
+    let figlet_lines = if text_area.height >= 6 {
         render_ascii_heading(
             &greeting_text,
             font_name,
+            ctx.config.typography.ascii_fallback,
+            text_area.width.saturating_sub(2),
+        )
+    } else if text_area.height >= 4 {
+        render_ascii_heading(
+            &greeting_text,
+            "Small",
             ctx.config.typography.ascii_fallback,
             text_area.width.saturating_sub(2),
         )
@@ -434,7 +456,7 @@ fn render_greeting_widget(
         .map(|c| parse_color(c, ctx.theme.primary))
         .unwrap_or(ctx.theme.primary);
 
-    let mut lines: Vec<Line> = figlet_lines
+    let mut lines: Vec<Line<'static>> = figlet_lines
         .into_iter()
         .enumerate()
         .map(|(i, l)| {
@@ -453,6 +475,9 @@ fn render_greeting_widget(
         .collect();
 
     if !ctx.config.general.message.trim().is_empty() && lines.len() < text_area.height as usize {
+        if lines.len() + 2 <= text_area.height as usize {
+            lines.push(Line::from(""));
+        }
         let msg = if animate {
             ctx.reveal
                 .mask_line(&ctx.config.general.message, lines.len())
@@ -471,7 +496,7 @@ fn render_greeting_widget(
         Align::Right => Alignment::Right,
     };
 
-    let para = Paragraph::new(lines).alignment(align);
+    let para = Paragraph::new(center_vertically(lines, text_area.height)).alignment(align);
     frame.render_widget(para, text_area);
 }
 
@@ -581,7 +606,7 @@ fn render_hardware_widget(
     let icons = IconSet::from_config(&ctx.config.typography);
     let hw = &ctx.snapshot.hardware;
     let hide = ctx.config.general.hide_unavailable;
-    let bar_width = inner.width.saturating_sub(26).clamp(8, 22) as usize;
+    let bar_width = inner.width.saturating_sub(38).clamp(6, 18) as usize;
 
     let mut lines = Vec::new();
 
@@ -890,10 +915,20 @@ fn render_message_widget(
     );
 }
 
+fn pad_label(label: &str, target_width: usize) -> String {
+    let w = label.width();
+    if w >= target_width {
+        label.to_string()
+    } else {
+        format!("{label}{}", " ".repeat(target_width - w))
+    }
+}
+
 fn kv_line<'a>(label: &str, value: &str, theme: &Theme) -> Line<'a> {
+    let padded = pad_label(label, 14);
     Line::from(vec![
         Span::styled(
-            format!("{label}: "),
+            format!("{padded} "),
             Style::default()
                 .fg(theme.secondary)
                 .add_modifier(Modifier::BOLD),
@@ -903,6 +938,7 @@ fn kv_line<'a>(label: &str, value: &str, theme: &Theme) -> Line<'a> {
 }
 
 fn bar_line<'a>(label: &str, pct: f32, suffix: &str, bar_width: usize, theme: &Theme) -> Line<'a> {
+    let padded = pad_label(label, 14);
     let clamped = pct.clamp(0.0, 100.0);
     let filled = ((clamped / 100.0) * bar_width as f32).round() as usize;
     let empty = bar_width.saturating_sub(filled);
@@ -916,7 +952,7 @@ fn bar_line<'a>(label: &str, pct: f32, suffix: &str, bar_width: usize, theme: &T
 
     Line::from(vec![
         Span::styled(
-            format!("{label}: "),
+            format!("{padded} "),
             Style::default()
                 .fg(theme.secondary)
                 .add_modifier(Modifier::BOLD),

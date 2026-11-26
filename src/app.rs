@@ -89,7 +89,7 @@ impl App {
             collector,
             snapshot,
             effect,
-            reveal: RevealState::new(1.1),
+            reveal: RevealState::new(0.65),
             command_line: CommandLineState::default(),
             customizer: CustomizerState::default(),
             active_page,

@@ -376,7 +376,7 @@ fn allocate_band_heights(
         let base = if has_greeting {
             if compact {
                 6
-            } else if avail_h >= 28 {
+            } else if avail_h >= 20 {
                 10
             } else {
                 8

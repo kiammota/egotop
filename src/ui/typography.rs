@@ -1,6 +1,6 @@
 use crate::config::TypographyConfig;
 use crate::system::SystemSnapshot;
-use crate::ui::fonts::load_font;
+use crate::ui::fonts::{load_font, normalize_block_lines};
 use std::fs;
 use std::path::PathBuf;
 use unicode_width::UnicodeWidthStr;
@@ -97,6 +97,16 @@ pub fn render_ascii_heading(
         return rendered;
     }
 
+    // Try Standard before falling back to Small
+    if !font_name.eq_ignore_ascii_case("Standard") {
+        let std_font = load_font("Standard", ascii_fallback);
+        let std_lines = std_font.render_lines(text);
+        let std_widest = std_lines.iter().map(|l| l.width()).max().unwrap_or(0);
+        if std_widest <= max_width as usize {
+            return std_lines;
+        }
+    }
+
     // Responsive fallback to Small font if chosen font overflows available width
     let small = load_font("Small", ascii_fallback);
     let small_lines = small.render_lines(text);
@@ -113,7 +123,7 @@ pub fn resolve_logo_lines(cfg: &TypographyConfig, snapshot: &SystemSnapshot) -> 
     if let Some(custom) = &cfg.custom_logo {
         let lines: Vec<String> = custom.lines().map(ToString::to_string).collect();
         if !lines.is_empty() {
-            return lines;
+            return normalize_block_lines(lines);
         }
     }
 
@@ -122,7 +132,7 @@ pub fn resolve_logo_lines(cfg: &TypographyConfig, snapshot: &SystemSnapshot) -> 
         if let Ok(raw) = fs::read_to_string(expanded) {
             let lines: Vec<String> = raw.lines().map(ToString::to_string).collect();
             if !lines.is_empty() {
-                return lines;
+                return normalize_block_lines(lines);
             }
         }
     }
@@ -150,7 +160,7 @@ pub fn resolve_logo_lines(cfg: &TypographyConfig, snapshot: &SystemSnapshot) -> 
         }
     };
 
-    chosen.lines().map(ToString::to_string).collect()
+    normalize_block_lines(chosen.lines().map(ToString::to_string).collect())
 }
 
 fn expand_tilde(path_str: &str) -> PathBuf {

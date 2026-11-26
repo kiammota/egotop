@@ -369,17 +369,54 @@ fn typography_renders_all_builtin_fonts_and_flf_parser() {
 
     for font_name in available_fonts() {
         let font = load_font(font_name, false);
-        let lines = font.render_lines("Olá, Kiam!");
+        let lines = font.render_lines("I'm kimas.");
         assert!(!lines.is_empty(), "font {font_name} produced empty output");
         assert!(lines.len() >= 3);
+        let expected_w = lines[0].chars().count();
+        for l in &lines {
+            assert_eq!(
+                l.chars().count(),
+                expected_w,
+                "font {font_name} must pad every row uniformly"
+            );
+        }
     }
 
     let narrow = render_ascii_heading("Ola, Kiam!", "ANSI Shadow", false, 18);
     assert_eq!(narrow, vec!["Ola, Kiam!"]);
 
-    let mini_flf = "flf2a$ 2 2 5 0 1\ncomment\nA@\nA@@\nB@\nB@@\n";
-    let parsed = FigletFont::from_flf_str("mini", mini_flf);
-    assert!(parsed.is_some());
+    // Build a valid FLF font covering ASCII 32..=126 to test hardblanks, kerning, and smushing
+    let mut kern_flf = String::from("flf2a$ 2 2 5 0 1\ncomment\n");
+    for code in 32u32..=126u32 {
+        if code == 65 {
+            kern_flf.push_str("A$@\nA$@@\n");
+        } else if code == 66 {
+            kern_flf.push_str(" B@\n B@@\n");
+        } else {
+            kern_flf.push_str(" @\n @@\n");
+        }
+    }
+    let parsed = FigletFont::from_flf_str("kern", &kern_flf).expect("valid flf");
+    let rendered = parsed.render_lines("AB");
+    assert_eq!(rendered.len(), 2);
+    // Hardblank '$' prevents 'B' from collapsing onto 'A'
+    assert_eq!(rendered[0], "A B");
+
+    // FLF horizontal smushing rule 1 (equal char) + rule 2 (underscore)
+    let mut smush_flf = String::from("flf2a$ 2 2 5 3 1\ncomment\n");
+    for code in 32u32..=126u32 {
+        if code == 65 {
+            smush_flf.push_str("_@\n|@@\n");
+        } else if code == 66 {
+            smush_flf.push_str("/@\n|@@\n");
+        } else {
+            smush_flf.push_str(" @\n @@\n");
+        }
+    }
+    let smush_font = FigletFont::from_flf_str("smush", &smush_flf).expect("valid smush flf");
+    let smushed = smush_font.render_lines("AB");
+    assert_eq!(smushed[0], "/");
+    assert_eq!(smushed[1], "|");
 
     let mut reveal = RevealState::new(1.0);
     assert!(!reveal.is_done());
