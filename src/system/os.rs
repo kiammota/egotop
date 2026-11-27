@@ -5,23 +5,47 @@ use std::path::Path;
 use std::process::Command;
 
 #[derive(Debug, Clone)]
+pub struct DisplayInfo {
+    pub name: String,
+    pub resolution: Option<String>,
+    pub refresh_hz: Option<f32>,
+    pub size_inches: Option<f32>,
+    pub is_internal: bool,
+}
+
+#[derive(Debug, Clone)]
 pub struct OsInfo {
     pub distro_name: Option<String>,
     pub distro_id: Option<String>,
     pub kernel: Option<String>,
     pub arch: Option<String>,
     pub hostname: Option<String>,
+    pub host_model: Option<String>,
     pub username: Option<String>,
     pub shell: Option<String>,
     pub terminal: Option<String>,
+    pub terminal_font: Option<String>,
+    pub packages: Vec<(String, usize)>,
+    pub locale: Option<String>,
+    pub gtk_theme: Option<String>,
+    pub icons: Option<String>,
+    pub ui_font: Option<String>,
+    pub cursor_theme: Option<String>,
+    pub displays: Vec<DisplayInfo>,
 }
 
 pub fn collect_static_os_info() -> OsInfo {
     let (distro_name, distro_id) = read_os_release();
     let (kernel, arch, hostname) = read_uname();
+    let host_model = read_host_model();
     let username = detect_username();
     let shell = detect_shell();
     let terminal = detect_terminal();
+    let terminal_font = detect_terminal_font(terminal.as_deref());
+    let packages = collect_package_counts();
+    let locale = detect_locale();
+    let (gtk_theme, icons, ui_font, cursor_theme) = detect_gtk_settings();
+    let displays = collect_drm_displays();
 
     OsInfo {
         distro_name,
@@ -29,9 +53,18 @@ pub fn collect_static_os_info() -> OsInfo {
         kernel,
         arch,
         hostname,
+        host_model,
         username,
         shell,
         terminal,
+        terminal_font,
+        packages,
+        locale,
+        gtk_theme,
+        icons,
+        ui_font,
+        cursor_theme,
+        displays,
     }
 }
 
@@ -300,4 +333,209 @@ fn detect_terminal_from_proc_ancestors() -> Option<String> {
         pid = ppid;
     }
     None
+}
+
+fn read_host_model() -> Option<String> {
+    let read_clean = |file: &str| -> Option<String> {
+        let s = fs::read_to_string(format!("/sys/devices/virtual/dmi/id/{file}")).ok()?;
+        let t = s.trim();
+        if t.is_empty()
+            || t.eq_ignore_ascii_case("To Be Filled By O.E.M.")
+            || t.eq_ignore_ascii_case("Default string")
+            || t.eq_ignore_ascii_case("System Product Name")
+            || t.eq_ignore_ascii_case("Not Specified")
+        {
+            None
+        } else {
+            Some(t.to_string())
+        }
+    };
+    match (read_clean("board_vendor"), read_clean("board_name")) {
+        (Some(v), Some(n)) => Some(format!("{v} {n}")),
+        (None, Some(n)) => Some(n),
+        _ => read_clean("product_name"),
+    }
+}
+
+fn collect_package_counts() -> Vec<(String, usize)> {
+    let mut out = Vec::new();
+    if let Ok(entries) = fs::read_dir("/var/lib/pacman/local") {
+        let count = entries
+            .flatten()
+            .filter(|e| e.file_type().is_ok_and(|ft| ft.is_dir()))
+            .count();
+        if count > 0 {
+            out.push(("pacman".to_string(), count));
+        }
+    }
+    let mut flatpak_count = 0usize;
+    if let Ok(entries) = fs::read_dir("/var/lib/flatpak/app") {
+        flatpak_count += entries.flatten().count();
+    }
+    if let Some(home) = dirs::home_dir()
+        && let Ok(entries) = fs::read_dir(home.join(".local/share/flatpak/app"))
+    {
+        flatpak_count += entries.flatten().count();
+    }
+    if flatpak_count > 0 {
+        out.push(("flatpak".to_string(), flatpak_count));
+    }
+    if out.is_empty()
+        && let Ok(status) = fs::read_to_string("/var/lib/dpkg/status")
+    {
+        let count = status
+            .lines()
+            .filter(|l| l.starts_with("Package: "))
+            .count();
+        if count > 0 {
+            out.push(("dpkg".to_string(), count));
+        }
+    }
+    out
+}
+
+fn detect_locale() -> Option<String> {
+    for var in ["LC_ALL", "LC_MESSAGES", "LANG"] {
+        if let Ok(val) = env::var(var) {
+            let t = val.trim();
+            if !t.is_empty() {
+                return Some(t.to_string());
+            }
+        }
+    }
+    if let Ok(raw) = fs::read_to_string("/etc/locale.conf") {
+        for line in raw.lines() {
+            if let Some(val) = line.strip_prefix("LANG=") {
+                let clean = val.trim().trim_matches('"');
+                if !clean.is_empty() {
+                    return Some(clean.to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
+fn detect_gtk_settings() -> (Option<String>, Option<String>, Option<String>, Option<String>) {
+    let mut gtk_theme = env::var("GTK_THEME").ok().filter(|s| !s.trim().is_empty());
+    let mut icons = None;
+    let mut ui_font = None;
+    let mut cursor_theme = env::var("XCURSOR_THEME")
+        .ok()
+        .filter(|s| !s.trim().is_empty());
+    let cursor_size = env::var("XCURSOR_SIZE").ok().filter(|s| !s.trim().is_empty());
+
+    if let Some(cfg_dir) = dirs::config_dir() {
+        for sub in ["gtk-3.0/settings.ini", "gtk-4.0/settings.ini"] {
+            if let Ok(raw) = fs::read_to_string(cfg_dir.join(sub)) {
+                for line in raw.lines() {
+                    let Some((k, v)) = line.split_once('=') else {
+                        continue;
+                    };
+                    let val = v.trim();
+                    if val.is_empty() {
+                        continue;
+                    }
+                    match k.trim() {
+                        "gtk-theme-name" if gtk_theme.is_none() => {
+                            gtk_theme = Some(val.to_string());
+                        }
+                        "gtk-icon-theme-name" if icons.is_none() => {
+                            icons = Some(val.to_string());
+                        }
+                        "gtk-font-name" if ui_font.is_none() => {
+                            ui_font = Some(val.to_string());
+                        }
+                        "gtk-cursor-theme-name" if cursor_theme.is_none() => {
+                            cursor_theme = Some(val.to_string());
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+    if let (Some(ct), Some(sz)) = (&cursor_theme, &cursor_size)
+        && !ct.contains('(')
+    {
+        cursor_theme = Some(format!("{ct} ({sz}px)"));
+    }
+    (gtk_theme, icons, ui_font, cursor_theme)
+}
+
+fn detect_terminal_font(terminal: Option<&str>) -> Option<String> {
+    let cfg_dir = dirs::config_dir()?;
+    let term_low = terminal.unwrap_or("").to_ascii_lowercase();
+    if term_low.contains("kitty")
+        && let Ok(raw) = fs::read_to_string(cfg_dir.join("kitty/kitty.conf"))
+    {
+        let mut family = None;
+        let mut size = None;
+        for line in raw.lines() {
+            let t = line.trim();
+            if t.starts_with('#') {
+                continue;
+            }
+            if let Some(rest) = t.strip_prefix("font_family") {
+                let v = rest.trim();
+                if !v.is_empty() {
+                    family = Some(v.to_string());
+                }
+            } else if let Some(rest) = t.strip_prefix("font_size") {
+                let v = rest.trim();
+                if !v.is_empty() {
+                    size = Some(v.to_string());
+                }
+            }
+        }
+        return match (family, size) {
+            (Some(f), Some(s)) => Some(format!("{f} ({s}pt)")),
+            (Some(f), None) => Some(f),
+            _ => None,
+        };
+    }
+    if term_low.contains("alacritty")
+        && let Ok(raw) = fs::read_to_string(cfg_dir.join("alacritty/alacritty.toml"))
+    {
+        for line in raw.lines() {
+            if let Some((k, v)) = line.split_once('=')
+                && k.trim() == "family"
+            {
+                return Some(v.trim().trim_matches('"').to_string());
+            }
+        }
+    }
+    None
+}
+
+fn collect_drm_displays() -> Vec<DisplayInfo> {
+    let mut out = Vec::new();
+    let Ok(entries) = fs::read_dir("/sys/class/drm") else {
+        return out;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = entry.file_name().to_string_lossy().to_string();
+        if !name.starts_with("card") || !name.contains('-') {
+            continue;
+        }
+        let status = fs::read_to_string(path.join("status")).unwrap_or_default();
+        if status.trim() != "connected" {
+            continue;
+        }
+        let resolution = fs::read_to_string(path.join("modes"))
+            .ok()
+            .and_then(|m| m.lines().next().map(|l| l.trim().to_string()))
+            .filter(|s| !s.is_empty());
+        let connector = name.split_once('-').map(|(_, c)| c).unwrap_or(&name);
+        let is_internal = connector.starts_with("eDP") || connector.starts_with("LVDS");
+        out.push(DisplayInfo {
+            name: connector.to_string(),
+            resolution,
+            refresh_hz: None,
+            size_inches: None,
+            is_internal,
+        });
+    }
+    out
 }

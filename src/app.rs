@@ -16,6 +16,7 @@ use crate::runtime::{
 };
 use crate::system::{SystemCollector, SystemSnapshot};
 use crate::terminal::TerminalGuard;
+use crate::terminal::diagnostics::TerminalDiagnostics;
 use crate::terminal::input::{InputEvent, poll_event};
 use crate::terminal::renderer::{CursorStartupState, draw_frame};
 use crate::ui::borders::parse_border_style;
@@ -27,8 +28,10 @@ use crate::ui::customizer::{
 use crate::ui::theme::Theme;
 use crate::ui::widgets::RenderContext;
 use crate::ui::{
-    ComponentAnimationStore, ContainerGradient, ContainerStyle, RevealState,
-    collect_all_container_ids, compute_dashboard_layout, has_container_id,
+    ComponentAnimationStore, ComponentConfig, ComponentKind, ComponentVisual,
+    ContainerBorderConfig, ContainerGradient, ContainerNode, ContainerSize, ContainerStyle,
+    RevealState, collect_all_container_ids, compute_dashboard_layout, has_container_id,
+    remove_container_node,
 };
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
@@ -58,6 +61,7 @@ pub struct App {
     command_line: CommandLineState,
     customizer: CustomizerState,
     diagnostics_ui: DiagnosticsOverlayState,
+    term_diagnostics: TerminalDiagnostics,
     runtime: ConfigurationRuntime,
     view_mode: ViewMode,
     paused: bool,
@@ -82,9 +86,16 @@ impl App {
             true,
         );
         let lkg = runtime.state().clone();
-        let config = lkg.config;
+        let mut config = lkg.config;
         let themes_map = lkg.themes;
-        let theme = resolve_active_theme(&config, &themes_map);
+        let mut theme = resolve_active_theme(&config, &themes_map);
+        let term_diagnostics = TerminalDiagnostics::detect(width, height);
+        if term_diagnostics.should_use_ascii_fallback() {
+            config.typography.ascii_fallback = true;
+        }
+        if term_diagnostics.should_adapt_colors() {
+            adapt_theme_colors(&mut theme);
+        }
         let theme_list: Vec<ThemeEntry> = themes_map.values().cloned().collect();
 
         let animations = lkg.animations;
@@ -136,13 +147,19 @@ impl App {
             command_line: CommandLineState::default(),
             customizer: CustomizerState::default(),
             diagnostics_ui: DiagnosticsOverlayState::default(),
+            term_diagnostics: term_diagnostics.clone(),
             runtime,
             view_mode,
             paused: false,
             show_help: false,
             should_quit: false,
             fps,
-            status_toast: initial_toast.map(|m| (m, Instant::now() + Duration::from_secs(4))),
+            status_toast: initial_toast
+                .or_else(|| {
+                    (term_diagnostics.warning_count() + term_diagnostics.error_count() > 0)
+                        .then(|| term_diagnostics.summary())
+                })
+                .map(|m| (m, Instant::now() + Duration::from_secs(4))),
             theme_preview_backup: None,
         }
     }
@@ -736,8 +753,25 @@ impl App {
 
         match parsed {
             ParsedCommand::Quit => self.should_quit = true,
+            ParsedCommand::WriteQuit => {
+                self.save_main_config();
+                self.should_quit = true;
+            }
             ParsedCommand::Help => self.show_help = true,
             ParsedCommand::Reload => self.reload_all(guard)?,
+            ParsedCommand::Restore => self.restore_default_config(guard)?,
+            ParsedCommand::Check => {
+                let sz = guard.terminal.size()?;
+                let diag = TerminalDiagnostics::detect(sz.width, sz.height);
+                if diag.should_use_ascii_fallback() {
+                    self.config.typography.ascii_fallback = true;
+                }
+                if diag.should_adapt_colors() {
+                    adapt_theme_colors(&mut self.theme);
+                }
+                self.set_toast(diag.summary());
+                self.term_diagnostics = diag;
+            }
             ParsedCommand::Messages => {
                 self.customizer.close();
                 self.show_help = false;
@@ -920,6 +954,65 @@ impl App {
                     style.effects
                 ));
             }
+            ContainerCommand::Add { id, kind } => {
+                let clean_id = id.trim().to_string();
+                if clean_id.is_empty() {
+                    self.set_toast("Container ID cannot be empty");
+                    return;
+                }
+                if has_container_id(&self.config.ui.root, &clean_id) {
+                    self.set_toast(format!("Container '{clean_id}' already exists"));
+                    return;
+                }
+                let comp_kind = kind.unwrap_or_else(|| {
+                    crate::command::parser::parse_component_kind(&clean_id)
+                        .unwrap_or(ComponentKind::Text)
+                });
+                let new_node = ContainerNode::Component(ComponentConfig {
+                    id: clean_id.clone(),
+                    visible: true,
+                    category: comp_kind.expected_category(),
+                    kind: comp_kind,
+                    width: ContainerSize::Fill(1),
+                    height: ContainerSize::Fixed(6),
+                    visual: ComponentVisual {
+                        padding: 1,
+                        border: ContainerBorderConfig::titled(clean_id.clone()),
+                        ..ComponentVisual::default()
+                    },
+                    ..ComponentConfig::default()
+                });
+                let insert_pos = self
+                    .config
+                    .ui
+                    .root
+                    .children
+                    .iter()
+                    .position(|c| c.id() == "status_spinner")
+                    .unwrap_or(self.config.ui.root.children.len());
+                self.config.ui.root.children.insert(insert_pos, new_node);
+                self.refresh_container_ids();
+                match save_config_to_path(&self.config_path, &self.config) {
+                    Ok(()) => self.set_toast(format!("Added container '{clean_id}' and saved")),
+                    Err(e) => self.set_toast(format!("Added '{clean_id}' (save error: {e})")),
+                }
+            }
+            ContainerCommand::Remove(id) => {
+                if id == "root" {
+                    self.set_toast("Cannot remove root container");
+                    return;
+                }
+                if !remove_container_node(&mut self.config.ui.root, &id) {
+                    self.set_toast(format!("Unknown container '{id}'"));
+                    return;
+                }
+                self.config.container_styles.remove(&id);
+                self.refresh_container_ids();
+                match save_config_to_path(&self.config_path, &self.config) {
+                    Ok(()) => self.set_toast(format!("Removed container '{id}' and saved")),
+                    Err(e) => self.set_toast(format!("Removed '{id}' (save error: {e})")),
+                }
+            }
             ContainerCommand::Set { id, property } => {
                 if !has_container_id(&self.config.ui.root, &id) {
                     self.set_toast(format!("Unknown container '{id}'"));
@@ -1045,6 +1138,26 @@ impl App {
         self.apply_runtime_commit(&commit, guard)
     }
 
+    fn refresh_container_ids(&mut self) {
+        self.container_ids.clear();
+        collect_all_container_ids(&self.config.ui.root, &mut self.container_ids);
+    }
+
+    fn restore_default_config(&mut self, guard: &TerminalGuard) -> Result<()> {
+        self.config = Config::default();
+        self.theme = Theme::from_config(&self.config.theme);
+        self.view_mode = self.config.general.view_mode;
+        self.refresh_container_ids();
+        let sz = guard.terminal.size()?;
+        self.effect =
+            BackgroundPipeline::from_config(&self.config.background, sz.width, sz.height);
+        match save_config_to_path(&self.config_path, &self.config) {
+            Ok(()) => self.set_toast("Restored official default configuration"),
+            Err(e) => self.set_toast(format!("Restored defaults (save error: {e})")),
+        }
+        Ok(())
+    }
+
     fn apply_runtime_commit(&mut self, commit: &RuntimeCommit, guard: &TerminalGuard) -> Result<()> {
         if commit.had_errors {
             self.set_toast(commit.summary.clone());
@@ -1095,6 +1208,8 @@ impl App {
     fn set_effect(&mut self, kind: EffectKind, guard: &TerminalGuard) -> Result<()> {
         self.config.background.effect = kind;
         self.config.background.enabled = kind != EffectKind::None;
+        self.config.background.layers.clear();
+        self.config.background.preset = None;
         match kind {
             EffectKind::Matrix => self.config.background.matrix.enabled = true,
             EffectKind::Water => self.config.background.water.enabled = true,
@@ -1118,6 +1233,8 @@ impl App {
                 self.effect.clear();
                 self.config.background.enabled = false;
                 self.config.background.effect = EffectKind::None;
+                self.config.background.layers.clear();
+                self.config.background.preset = None;
                 self.set_toast("Background stopped");
             }
             BackgroundCommand::Pause => {
@@ -1130,7 +1247,9 @@ impl App {
             }
             BackgroundCommand::Speed(val_str) => {
                 if let Ok(spd) = val_str.parse::<f32>() {
-                    self.effect.set_speed(spd);
+                    let clamped = spd.clamp(0.1, 10.0);
+                    self.effect.set_speed(clamped);
+                    self.config.background.speed = clamped;
                     self.set_toast(format!("Background speed set to {:.2}x", self.effect.speed));
                 }
             }
@@ -1147,6 +1266,12 @@ impl App {
                         ..BackgroundLayerSpec::default()
                     };
                     self.config.background.enabled = kind != BackgroundLayerKind::None;
+                    self.config.background.preset = None;
+                    self.config.background.layers = if kind == BackgroundLayerKind::None {
+                        Vec::new()
+                    } else {
+                        vec![spec.clone()]
+                    };
                     self.effect.set_single(
                         spec,
                         sz.width,
@@ -1160,6 +1285,8 @@ impl App {
                     let pkg = self.animations.resolve_package(&name);
                     if !pkg.definition.backgrounds.is_empty() {
                         self.config.background.enabled = true;
+                        self.config.background.preset = Some(pkg.definition.name.clone());
+                        self.config.background.layers = pkg.definition.backgrounds.clone();
                         self.effect.set_specs(
                             &pkg.definition.backgrounds,
                             sz.width,
@@ -1167,6 +1294,7 @@ impl App {
                             &self.config.background,
                             &pkg.assets,
                         );
+                        self.config.background.effect = self.effect.primary_effect_kind();
                         self.set_toast(format!(
                             "Applied {} background layer(s) from '{}'",
                             self.effect.layer_count(),
@@ -1185,6 +1313,7 @@ impl App {
                         ..BackgroundLayerSpec::default()
                     };
                     self.config.background.enabled = true;
+                    self.config.background.layers.push(spec.clone());
                     self.effect.add_layer(
                         spec,
                         sz.width,
@@ -1208,6 +1337,17 @@ impl App {
     fn set_toast(&mut self, msg: impl Into<String>) {
         self.status_toast = Some((msg.into(), Instant::now() + Duration::from_secs(3)));
     }
+}
+
+fn adapt_theme_colors(theme: &mut Theme) {
+    use crate::ui::theme::adapt_color;
+    theme.primary = adapt_color(theme.primary, false);
+    theme.secondary = adapt_color(theme.secondary, false);
+    theme.accent = adapt_color(theme.accent, false);
+    theme.text = adapt_color(theme.text, false);
+    theme.muted = adapt_color(theme.muted, false);
+    theme.border = adapt_color(theme.border, false);
+    theme.danger = adapt_color(theme.danger, false);
 }
 
 fn resolve_active_theme(cfg: &Config, themes_map: &BTreeMap<String, ThemeEntry>) -> Theme {

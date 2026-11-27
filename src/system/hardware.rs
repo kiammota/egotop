@@ -40,6 +40,7 @@ impl RawCpuTicks {
 pub struct CpuSnapshot {
     pub model: Option<String>,
     pub cores: usize,
+    pub freq_ghz: Option<f32>,
     pub usage_percent: Option<f32>,
     pub per_core_percent: Vec<f32>,
     pub temp_celsius: Option<f32>,
@@ -89,6 +90,7 @@ impl DiskInfo {
 pub struct GpuInfo {
     pub name: Option<String>,
     pub driver: Option<String>,
+    pub is_discrete: Option<bool>,
     pub busy_percent: Option<f32>,
     pub vram_used_bytes: Option<u64>,
     pub vram_total_bytes: Option<u64>,
@@ -160,6 +162,7 @@ pub fn collect_hardware_info(
     let cpu = CpuSnapshot {
         model: cpu_model.clone(),
         cores: cpu_cores,
+        freq_ghz: read_cpu_freq_ghz(),
         usage_percent,
         per_core_percent,
         temp_celsius: read_cpu_temperature(),
@@ -406,9 +409,18 @@ fn collect_gpus() -> Vec<GpuInfo> {
             });
         }
 
+        let is_discrete = match vendor.as_deref() {
+            Some("0x10de") => Some(true),
+            Some("0x8086") => Some(false),
+            _ => fs::read_to_string(dev.join("boot_vga"))
+                .ok()
+                .map(|s| s.trim() == "0"),
+        };
+
         gpus.push(GpuInfo {
             name,
             driver,
+            is_discrete,
             busy_percent,
             vram_used_bytes,
             vram_total_bytes,
@@ -446,6 +458,27 @@ fn read_nvidia_model() -> Option<String> {
                         return Some(model.to_string());
                     }
                 }
+            }
+        }
+    }
+    None
+}
+
+fn read_cpu_freq_ghz() -> Option<f32> {
+    if let Ok(raw) = fs::read_to_string("/sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq")
+        && let Ok(khz) = raw.trim().parse::<f32>()
+        && khz > 0.0
+    {
+        return Some(khz / 1_000_000.0);
+    }
+    if let Ok(info) = fs::read_to_string("/proc/cpuinfo") {
+        for line in info.lines() {
+            if let Some((k, v)) = line.split_once(':')
+                && k.trim() == "cpu MHz"
+                && let Ok(mhz) = v.trim().parse::<f32>()
+                && mhz > 0.0
+            {
+                return Some(mhz / 1000.0);
             }
         }
     }

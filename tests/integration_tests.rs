@@ -2587,3 +2587,292 @@ fn container_styling_system_commands_gradient_effects_and_toml() {
     assert_eq!(buf[(greet_rect.x, greet_rect.y)].symbol(), "╔");
     assert_ne!(buf[(greet_rect.x, greet_rect.y)].bg, buf[(greet_rect.right() - 1, greet_rect.y)].bg);
 }
+
+#[test]
+fn fastfetch_collector_container_add_remove_persistence_and_restore() {
+    // 1. Dynamic system collector populates Fastfetch-level fields without panicking
+    let mut collector = SystemCollector::new();
+    let snap = collector.collect(120, 40);
+    assert!(snap.os.kernel.is_some());
+    assert!(snap.os.arch.is_some());
+    assert!(snap.hardware.cpu.cores >= 1);
+
+    // 2. Command parser supports :container add / remove and :restore
+    assert_eq!(
+        parse_command(":container add my_panel").unwrap(),
+        ParsedCommand::Container(ContainerCommand::Add {
+            id: "my_panel".to_string(),
+            kind: None,
+        })
+    );
+    assert_eq!(
+        parse_command(":container add net_box network").unwrap(),
+        ParsedCommand::Container(ContainerCommand::Add {
+            id: "net_box".to_string(),
+            kind: Some(ComponentKind::Network),
+        })
+    );
+    assert_eq!(
+        parse_command(":container remove net_box").unwrap(),
+        ParsedCommand::Container(ContainerCommand::Remove("net_box".to_string()))
+    );
+    assert_eq!(parse_command(":restore").unwrap(), ParsedCommand::Restore);
+
+    // 3. Adding & removing container persists across save/reload, and restore recovers Config::default()
+    let path = temp_config_path("add_remove_restore");
+    let mut cfg = Config::default();
+    cfg.ui.root.children.push(ContainerNode::Component(ComponentConfig {
+        id: "custom_net".to_string(),
+        visible: true,
+        category: ComponentCategory::Dynamic,
+        kind: ComponentKind::Network,
+        width: ContainerSize::Fill(1),
+        height: ContainerSize::Fixed(6),
+        ..ComponentConfig::default()
+    }));
+    egotop::config::save_config_to_path(&path, &cfg).unwrap();
+    let reloaded = load_from_path(&path).unwrap();
+    assert!(has_container_id(&reloaded.ui.root, "custom_net"));
+
+    let mut modified = reloaded;
+    assert!(egotop::ui::remove_container_node(&mut modified.ui.root, "custom_net"));
+    assert!(!has_container_id(&modified.ui.root, "custom_net"));
+
+    // Restore official defaults
+    let restored = Config::default();
+    egotop::config::save_config_to_path(&path, &restored).unwrap();
+    let after_restore = load_from_path(&path).unwrap();
+    assert_eq!(after_restore, Config::default());
+    assert!(has_container_id(&after_restore.ui.root, "environment"));
+    assert!(has_container_id(&after_restore.ui.root, "terminal"));
+    assert!(has_container_id(&after_restore.ui.root, "storage"));
+    assert!(has_container_id(&after_restore.ui.root, "network"));
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn background_persistence_and_write_command_single_submission() {
+    // 1. :w and :wq parse distinctly
+    assert_eq!(parse_command(":w").unwrap(), ParsedCommand::Write(WriteTarget::All));
+    assert_eq!(parse_command(":wq").unwrap(), ParsedCommand::WriteQuit);
+
+    // 2. CommandLineState::submit clears buffer, closes popup/command mode, and runs once
+    let registry = CommandRegistry::new();
+    let themes = vec![];
+    let animations = AnimationCatalog::load();
+    let layouts = vec![];
+    let containers = vec![];
+    let cctx = CompletionContext {
+        themes: &themes,
+        animations: &animations,
+        layouts: &layouts,
+        containers: &containers,
+    };
+    let mut cmd_line = CommandLineState::default();
+    cmd_line.open(&registry, &cctx);
+    cmd_line.insert_char('w', &registry, &cctx);
+    let submitted = cmd_line.submit();
+    assert_eq!(submitted, "w");
+    assert!(!cmd_line.active);
+    assert!(cmd_line.buffer.is_empty());
+    assert!(!cmd_line.popup_open);
+
+    // 3. Background layer & asset_path persist across save/reload and survive missing asset files
+    let path = temp_config_path("bg_persist");
+    let mut cfg = Config::default();
+    cfg.background.enabled = true;
+    cfg.background.speed = 1.75;
+    cfg.background.layers = vec![
+        BackgroundLayerSpec {
+            effect: BackgroundLayerKind::Starfield,
+            z_index: 0,
+            ..BackgroundLayerSpec::default()
+        },
+        BackgroundLayerSpec {
+            effect: BackgroundLayerKind::CustomAscii,
+            asset: Some("/nonexistent/missing_bg_asset.txt".to_string()),
+            z_index: 1,
+            ..BackgroundLayerSpec::default()
+        },
+    ];
+    // Repeated saves must not duplicate layers or entries
+    egotop::config::save_config_to_path(&path, &cfg).unwrap();
+    egotop::config::save_config_to_path(&path, &cfg).unwrap();
+
+    let reloaded = load_from_path(&path).unwrap();
+    assert_eq!(reloaded.background.layers.len(), 2);
+    assert_eq!(reloaded.background.layers[0].effect, BackgroundLayerKind::Starfield);
+    assert_eq!(
+        reloaded.background.layers[1].asset.as_deref(),
+        Some("/nonexistent/missing_bg_asset.txt")
+    );
+    assert!((reloaded.background.speed - 1.75).abs() < 0.01);
+
+    // Restoring BackgroundPipeline from reloaded config must succeed without panicking
+    let mut pipeline = BackgroundPipeline::from_config(&reloaded.background, 80, 24);
+    assert_eq!(pipeline.layer_count(), 2);
+    pipeline.update(0.1, &reloaded.background);
+
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn terminal_compatibility_diagnostics_and_check_command() {
+    use egotop::terminal::{CheckSeverity, ColorCapability, TerminalDiagnostics};
+
+    // 1. Truecolor + UTF-8 + normal dimensions -> 0 warnings, 0 errors
+    let ok_diag = TerminalDiagnostics::detect_from_env(
+        120,
+        40,
+        Some("xterm-kitty".to_string()),
+        Some("truecolor".to_string()),
+        Some("en_US.UTF-8".to_string()),
+        true,
+    );
+    assert_eq!(ok_diag.color_capability, ColorCapability::Truecolor);
+    assert!(ok_diag.utf8_supported);
+    assert!(ok_diag.unicode_supported);
+    assert!(!ok_diag.should_use_ascii_fallback());
+    assert!(!ok_diag.should_adapt_colors());
+    assert_eq!(ok_diag.warning_count(), 0);
+    assert_eq!(ok_diag.error_count(), 0);
+
+    // 2. 256color + non-UTF-8 + small terminal -> warnings & automatic fallbacks
+    let warn_diag = TerminalDiagnostics::detect_from_env(
+        30,
+        10,
+        Some("xterm-256color".to_string()),
+        None,
+        Some("C".to_string()),
+        false,
+    );
+    assert_eq!(warn_diag.color_capability, ColorCapability::Color256);
+    assert!(!warn_diag.utf8_supported);
+    assert!(warn_diag.should_use_ascii_fallback());
+    assert!(warn_diag.should_adapt_colors());
+    assert!(warn_diag.warning_count() >= 3);
+    assert_eq!(warn_diag.error_count(), 0);
+
+    // 3. Zero dimensions -> Error severity, summary differentiates ERR/WARN
+    let err_diag = TerminalDiagnostics::detect_from_env(
+        0,
+        0,
+        Some("dumb".to_string()),
+        None,
+        Some("en_US.UTF-8".to_string()),
+        false,
+    );
+    assert_eq!(err_diag.color_capability, ColorCapability::Color16);
+    assert_eq!(err_diag.error_count(), 1);
+    assert!(err_diag.findings.iter().any(|f| f.severity == CheckSeverity::Error));
+    assert!(err_diag.summary().contains("1 ERR"));
+
+    // 4. :check command parses cleanly
+    assert_eq!(parse_command(":check").unwrap(), ParsedCommand::Check);
+}
+
+#[test]
+fn container_titles_render_without_borders_and_avoid_content_overlap() {
+    let mut cfg = Config::default();
+    cfg.theme.border_type = BorderStyle::None;
+    cfg.theme.background_transparent = true;
+
+    let area = Rect::new(0, 0, 120, 40);
+    let layout = compute_dashboard_layout(area, &cfg, ViewMode::Dashboard);
+
+    // Greeting has padding = 0 and title = "Welcome": inner_rect must reserve 1 top row for title
+    let greeting = layout.find_component("greeting").unwrap();
+    assert_eq!(greeting.inner_rect.y, greeting.outer_rect.y + 1);
+    assert_eq!(greeting.inner_rect.height, greeting.outer_rect.height - 1);
+
+    // System has padding = 1 and title = "System": inner_rect.y is outer_rect.y + 1
+    let system = layout.find_component("system").unwrap();
+    assert_eq!(system.inner_rect.y, system.outer_rect.y + 1);
+
+    let theme = Theme::from_config(&cfg.theme);
+    let mut collector = SystemCollector::new();
+    let snapshot = collector.collect(area.width, area.height);
+    let effect = create_effect(EffectKind::None, area.width, area.height, &cfg.background);
+    let mut anim_store = ComponentAnimationStore::new();
+    let catalog = AnimationCatalog::load();
+    anim_store.update_all(0.1, &layout, &cfg, &catalog);
+    let transition = TransitionPlayer::new("none", &catalog, 0);
+    let mut customizer = CustomizerState::default();
+    let cmd_line = CommandLineState::default();
+    let startup = CursorStartupState::new(false);
+    let reveal = RevealState::complete();
+    let themes = vec![ThemeEntry {
+        name: "matrix".to_string(),
+        theme: theme.clone(),
+        source_path: None,
+    }];
+    let ctx = RenderContext {
+        config: &cfg,
+        theme: &theme,
+        snapshot: &snapshot,
+        reveal: &reveal,
+        view_mode: ViewMode::Dashboard,
+        paused: false,
+        show_help: false,
+        fps: 30.0,
+        status_toast: None,
+        transparent_bg: true,
+        config_error_count: 0,
+    };
+
+    let backend = TestBackend::new(area.width, area.height);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal
+        .draw(|frame| {
+            draw_frame(
+                frame,
+                &cfg,
+                effect.as_ref(),
+                &transition,
+                &anim_store,
+                &mut customizer,
+                &cmd_line,
+                &startup,
+                &themes,
+                &catalog,
+                &ctx,
+            );
+        })
+        .unwrap();
+
+    let buf = terminal.backend().buffer();
+    let row_text = |y: u16, x_start: u16, x_end: u16| -> String {
+        (x_start..x_end)
+            .map(|x| buf.cell((x, y)).unwrap().symbol())
+            .collect()
+    };
+
+    // Titles must appear on the top row of each component at x + 1 with " {title} " spacing,
+    // without border characters and with theme.primary foreground color.
+    let welcome_row = row_text(
+        greeting.outer_rect.y,
+        greeting.outer_rect.x,
+        greeting.outer_rect.right(),
+    );
+    assert!(
+        welcome_row.contains(" Welcome "),
+        "Expected ' Welcome ' in borderless greeting top row, got: {welcome_row:?}"
+    );
+    assert!(!welcome_row.contains('╭') && !welcome_row.contains('─'));
+    let welcome_cell = buf
+        .cell((greeting.outer_rect.x + 2, greeting.outer_rect.y))
+        .unwrap();
+    assert_eq!(welcome_cell.fg, theme.primary);
+    assert_eq!(welcome_cell.bg, Color::Reset);
+
+    let sys_row = row_text(
+        system.outer_rect.y,
+        system.outer_rect.x,
+        system.outer_rect.right(),
+    );
+    assert!(
+        sys_row.contains(" System "),
+        "Expected ' System ' in borderless system top row, got: {sys_row:?}"
+    );
+    assert!(!sys_row.contains('╭') && !sys_row.contains('─'));
+}

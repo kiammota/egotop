@@ -532,6 +532,8 @@ fn complete_container(
             &[
                 ("list", "List all container IDs"),
                 ("inspect", "Inspect style of a container"),
+                ("add", "Add a new container by ID"),
+                ("remove", "Remove a container by ID"),
                 ("set", "Set a style property on a container"),
                 ("gradient", "Apply a multi-stop gradient to a container"),
                 ("reset", "Reset container style to defaults"),
@@ -541,7 +543,12 @@ fn complete_container(
     }
 
     let sub = prev_args[0].to_ascii_lowercase();
-    if prev_args.len() == 1 && matches!(sub.as_str(), "inspect" | "set" | "gradient" | "reset") {
+    if prev_args.len() == 1
+        && matches!(
+            sub.as_str(),
+            "inspect" | "remove" | "rm" | "del" | "set" | "gradient" | "reset"
+        )
+    {
         return containers
             .iter()
             .filter(|id| id.to_ascii_lowercase().starts_with(&p) || id.to_ascii_lowercase().contains(&p))

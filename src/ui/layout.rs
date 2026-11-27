@@ -213,11 +213,14 @@ fn layout_container_node(container: &ContainerConfig, outer_rect: Rect, out: &mu
         return;
     }
 
-    let inner_rect = compute_inner_rect(
-        outer_rect,
-        container.border.enabled && container.border.style != BorderStyle::None,
-        container.padding,
-    );
+    let has_border = container.border.enabled && container.border.style != BorderStyle::None;
+    let has_title = container
+        .border
+        .title
+        .as_deref()
+        .is_some_and(|t| !t.is_empty());
+    let inner_rect =
+        compute_inner_rect_with_title(outer_rect, has_border, has_title, container.padding);
 
     out.containers.push(PlacedContainer {
         id: container.id.clone(),
@@ -304,9 +307,19 @@ fn layout_container_node(container: &ContainerConfig, outer_rect: Rect, out: &mu
                 layout_container_node(sub, child_rect, out);
             }
             ContainerNode::Component(comp) => {
-                let comp_inner = compute_inner_rect(
+                let has_border =
+                    comp.visual.border.enabled && comp.visual.border.style != BorderStyle::None;
+                let has_title = comp
+                    .visual
+                    .border
+                    .title
+                    .as_deref()
+                    .or(comp.content.title.as_deref())
+                    .is_some_and(|t| !t.is_empty());
+                let comp_inner = compute_inner_rect_with_title(
                     child_rect,
-                    comp.visual.border.enabled && comp.visual.border.style != BorderStyle::None,
+                    has_border,
+                    has_title,
                     comp.visual.padding,
                 );
                 out.components.push(PlacedComponent {
@@ -444,6 +457,15 @@ fn clamp_bounds(val: u16, min_v: Option<u16>, max_v: Option<u16>) -> u16 {
 }
 
 pub fn compute_inner_rect(outer: Rect, has_border: bool, padding: u16) -> Rect {
+    compute_inner_rect_with_title(outer, has_border, false, padding)
+}
+
+pub fn compute_inner_rect_with_title(
+    outer: Rect,
+    has_border: bool,
+    has_title: bool,
+    padding: u16,
+) -> Rect {
     let border_inset = if has_border && outer.width >= 2 && outer.height >= 2 {
         1
     } else {
@@ -463,11 +485,18 @@ pub fn compute_inner_rect(outer: Rect, has_border: bool, padding: u16) -> Rect {
 
     let pad_x = padding.min(after_border.width / 2);
     let pad_y = padding.min(after_border.height / 2);
+    let top_pad = if !has_border && has_title {
+        pad_y.max(1).min(after_border.height)
+    } else {
+        pad_y
+    };
 
     Rect::new(
         after_border.x.saturating_add(pad_x),
-        after_border.y.saturating_add(pad_y),
+        after_border.y.saturating_add(top_pad),
         after_border.width.saturating_sub(pad_x * 2),
-        after_border.height.saturating_sub(pad_y * 2),
+        after_border
+            .height
+            .saturating_sub(top_pad.saturating_add(pad_y)),
     )
 }

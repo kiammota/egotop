@@ -15,6 +15,7 @@ pub use container::{
     ComponentKind, ComponentVisual, ContainerBorderConfig, ContainerConfig, ContainerDirection,
     ContainerGradient, ContainerNode, ContainerSize, ContainerStyle, EffectPolicy,
     GradientDirection, collect_all_container_ids, default_ui_tree, has_container_id,
+    remove_container_node,
 };
 pub use layout::{
     ComputedLayout, ExclusionMask, PlacedComponent, PlacedContainer, compute_container_layout,

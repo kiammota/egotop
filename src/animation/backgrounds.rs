@@ -433,14 +433,33 @@ pub struct BackgroundPipeline {
 impl BackgroundPipeline {
     pub fn from_config(cfg: &BackgroundConfig, width: u16, height: u16) -> Self {
         let mut layers = Vec::new();
-        if cfg.enabled && cfg.effect != EffectKind::None {
-            let eff = crate::animation::create_effect(cfg.effect, width, height, cfg);
-            layers.push((0, BackgroundLayerRuntime::from_legacy(eff)));
+        if cfg.enabled {
+            if !cfg.layers.is_empty() {
+                let empty_assets = BTreeMap::new();
+                for spec in &cfg.layers {
+                    if spec.effect != BackgroundLayerKind::None {
+                        layers.push((
+                            spec.z_index,
+                            BackgroundLayerRuntime::from_spec(
+                                spec.clone(),
+                                width,
+                                height,
+                                cfg,
+                                &empty_assets,
+                            ),
+                        ));
+                    }
+                }
+                layers.sort_by_key(|(z, _)| *z);
+            } else if cfg.effect != EffectKind::None {
+                let eff = crate::animation::create_effect(cfg.effect, width, height, cfg);
+                layers.push((0, BackgroundLayerRuntime::from_legacy(eff)));
+            }
         }
         Self {
             layers,
             paused: false,
-            speed: 1.0,
+            speed: cfg.speed.clamp(0.1, 10.0),
             truecolor: terminal_supports_truecolor(),
         }
     }

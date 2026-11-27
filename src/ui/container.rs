@@ -279,6 +279,9 @@ pub enum ComponentKind {
     Graph,
     System,
     Hardware,
+    Environment,
+    Terminal,
+    Storage,
     Activity,
     Session,
     Header,
@@ -312,6 +315,9 @@ impl ComponentKind {
             | Self::Graph
             | Self::System
             | Self::Hardware
+            | Self::Environment
+            | Self::Terminal
+            | Self::Storage
             | Self::Activity
             | Self::Session
             | Self::Header => ComponentCategory::Dynamic,
@@ -428,6 +434,22 @@ impl Default for ComponentConfig {
     }
 }
 
+pub fn remove_container_node(container: &mut ContainerConfig, id: &str) -> bool {
+    let before = container.children.len();
+    container.children.retain(|child| child.id() != id);
+    if container.children.len() != before {
+        return true;
+    }
+    for child in &mut container.children {
+        if let ContainerNode::Container(sub) = child
+            && remove_container_node(sub, id)
+        {
+            return true;
+        }
+    }
+    false
+}
+
 pub fn default_ui_tree() -> ContainerConfig {
     ContainerConfig {
         id: "root".to_string(),
@@ -509,6 +531,63 @@ pub fn default_ui_tree() -> ContainerConfig {
                 ..ContainerConfig::default()
             }),
             ContainerNode::Container(ContainerConfig {
+                id: "info_row".to_string(),
+                visible: true,
+                direction: ContainerDirection::Horizontal,
+                width: ContainerSize::Fill(1),
+                height: ContainerSize::Fill(1),
+                min_height: Some(5),
+                gap: 1,
+                children: vec![
+                    ContainerNode::Component(ComponentConfig {
+                        id: "environment".to_string(),
+                        visible: true,
+                        category: ComponentCategory::Dynamic,
+                        kind: ComponentKind::Environment,
+                        width: ContainerSize::Percent(40),
+                        height: ContainerSize::Fill(1),
+                        visual: ComponentVisual {
+                            align: Align::Left,
+                            padding: 1,
+                            border: ContainerBorderConfig::titled("Environment"),
+                            ..ComponentVisual::default()
+                        },
+                        ..ComponentConfig::default()
+                    }),
+                    ContainerNode::Component(ComponentConfig {
+                        id: "terminal".to_string(),
+                        visible: true,
+                        category: ComponentCategory::Dynamic,
+                        kind: ComponentKind::Terminal,
+                        width: ContainerSize::Percent(30),
+                        height: ContainerSize::Fill(1),
+                        visual: ComponentVisual {
+                            align: Align::Left,
+                            padding: 1,
+                            border: ContainerBorderConfig::titled("Terminal"),
+                            ..ComponentVisual::default()
+                        },
+                        ..ComponentConfig::default()
+                    }),
+                    ContainerNode::Component(ComponentConfig {
+                        id: "storage".to_string(),
+                        visible: true,
+                        category: ComponentCategory::Dynamic,
+                        kind: ComponentKind::Storage,
+                        width: ContainerSize::Fill(1),
+                        height: ContainerSize::Fill(1),
+                        visual: ComponentVisual {
+                            align: Align::Left,
+                            padding: 1,
+                            border: ContainerBorderConfig::titled("Storage"),
+                            ..ComponentVisual::default()
+                        },
+                        ..ComponentConfig::default()
+                    }),
+                ],
+                ..ContainerConfig::default()
+            }),
+            ContainerNode::Container(ContainerConfig {
                 id: "bottom_row".to_string(),
                 visible: true,
                 direction: ContainerDirection::Horizontal,
@@ -522,7 +601,7 @@ pub fn default_ui_tree() -> ContainerConfig {
                         visible: true,
                         category: ComponentCategory::Dynamic,
                         kind: ComponentKind::Activity,
-                        width: ContainerSize::Percent(60),
+                        width: ContainerSize::Percent(40),
                         height: ContainerSize::Fill(1),
                         visual: ComponentVisual {
                             align: Align::Left,
@@ -534,11 +613,26 @@ pub fn default_ui_tree() -> ContainerConfig {
                         ..ComponentConfig::default()
                     }),
                     ContainerNode::Component(ComponentConfig {
+                        id: "network".to_string(),
+                        visible: true,
+                        category: ComponentCategory::Dynamic,
+                        kind: ComponentKind::Network,
+                        width: ContainerSize::Percent(30),
+                        height: ContainerSize::Fill(1),
+                        visual: ComponentVisual {
+                            align: Align::Left,
+                            padding: 1,
+                            border: ContainerBorderConfig::titled("Network"),
+                            ..ComponentVisual::default()
+                        },
+                        ..ComponentConfig::default()
+                    }),
+                    ContainerNode::Component(ComponentConfig {
                         id: "session".to_string(),
                         visible: true,
                         category: ComponentCategory::Dynamic,
                         kind: ComponentKind::Session,
-                        width: ContainerSize::Percent(40),
+                        width: ContainerSize::Fill(1),
                         height: ContainerSize::Fill(1),
                         visual: ComponentVisual {
                             align: Align::Left,

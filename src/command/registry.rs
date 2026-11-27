@@ -107,14 +107,30 @@ impl CommandRegistry {
                 CommandDescriptor {
                     name: "container",
                     aliases: &[],
-                    description: "Inspect and customize individual container styles",
-                    usage: ":container <list|inspect|set|gradient|reset> ...",
+                    description: "Add, remove, inspect, and customize containers",
+                    usage: ":container <list|inspect|add|remove|set|gradient|reset> ...",
                     args: &[CommandArgSpec {
                         name: "<subcommand>",
                         required: false,
-                        description: "list, inspect, set, gradient, reset",
+                        description: "list, inspect, add, remove, set, gradient, reset",
                     }],
                     provider: CompletionProviderKind::Container,
+                },
+                CommandDescriptor {
+                    name: "restore",
+                    aliases: &[],
+                    description: "Restore official default configuration and container layout",
+                    usage: ":restore",
+                    args: &[],
+                    provider: CompletionProviderKind::None,
+                },
+                CommandDescriptor {
+                    name: "check",
+                    aliases: &[],
+                    description: "Run terminal compatibility diagnostics",
+                    usage: ":check",
+                    args: &[],
+                    provider: CompletionProviderKind::None,
                 },
                 CommandDescriptor {
                     name: "effect",

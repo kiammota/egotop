@@ -112,8 +112,11 @@ fn render_container_box(frame: &mut Frame, container: &PlacedContainer, ctx: &Re
     let has_grad = style_override.and_then(|s| s.gradient.as_ref()).is_some();
     if show_border && area.width >= 2 && area.height >= 2 {
         render_border_block(frame, area, &border, bg, !has_grad, ctx);
-    } else if !has_grad && bg != Color::Reset {
-        frame.render_widget(Block::default().style(Style::default().bg(bg)), area);
+    } else {
+        if !has_grad && bg != Color::Reset {
+            frame.render_widget(Block::default().style(Style::default().bg(bg)), area);
+        }
+        render_borderless_title(frame, area, border.title.as_deref(), ctx);
     }
 }
 
@@ -159,21 +162,24 @@ fn render_placed_component(
             .unwrap_or_else(|| ctx.panel_bg()),
     };
 
-    let show_border = comp.visual.border.enabled
-        && comp.visual.border.style != BorderStyle::None
+    let mut border = comp.visual.border.clone();
+    if border.title.is_none() {
+        border.title = comp.content.title.clone();
+    }
+    let show_border = border.enabled
+        && border.style != BorderStyle::None
         && (ctx.config.theme.border_type != BorderStyle::None
             || style_override.and_then(|s| s.border_style).is_some());
     if show_border && outer.width >= 2 && outer.height >= 2 {
-        let mut border = comp.visual.border.clone();
-        if border.title.is_none() {
-            border.title = comp.content.title.clone();
-        }
         render_border_block(frame, outer, &border, bg, !has_grad, ctx);
-    } else if !has_grad && bg != Color::Reset {
-        frame.render_widget(
-            Block::default().style(Style::default().fg(ctx.theme.text).bg(bg)),
-            outer,
-        );
+    } else {
+        if !has_grad && bg != Color::Reset {
+            frame.render_widget(
+                Block::default().style(Style::default().fg(ctx.theme.text).bg(bg)),
+                outer,
+            );
+        }
+        render_borderless_title(frame, outer, border.title.as_deref(), ctx);
     }
 
     let inner = placed.inner_rect.intersection(outer);
@@ -284,6 +290,35 @@ fn render_border_block(
     frame.render_widget(block, area);
 }
 
+fn render_borderless_title(
+    frame: &mut Frame,
+    area: Rect,
+    title: Option<&str>,
+    ctx: &RenderContext,
+) {
+    let Some(title) = title.filter(|t| !t.is_empty()) else {
+        return;
+    };
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+
+    // Preserve the exact horizontal offset (x + 1) and spacing (" {title} ") used by bordered blocks.
+    let (title_x, max_w) = if area.width >= 3 {
+        (area.x.saturating_add(1), area.width.saturating_sub(2))
+    } else {
+        (area.x, area.width)
+    };
+    let title_area = Rect::new(title_x, area.y, max_w, 1);
+    let span = Span::styled(
+        format!(" {title} "),
+        Style::default()
+            .fg(ctx.theme.primary)
+            .add_modifier(Modifier::BOLD),
+    );
+    frame.render_widget(Paragraph::new(Line::from(span)), title_area);
+}
+
 fn render_static_component(
     frame: &mut Frame,
     area: Rect,
@@ -309,6 +344,9 @@ fn render_dynamic_component(
         ComponentKind::Header => render_header_component(frame, area, ctx),
         ComponentKind::System => render_system_component(frame, area, comp, ctx),
         ComponentKind::Hardware => render_hardware_component(frame, area, ctx),
+        ComponentKind::Environment => render_environment_component(frame, area, ctx),
+        ComponentKind::Terminal => render_terminal_component(frame, area, ctx),
+        ComponentKind::Storage => render_storage_component(frame, area, ctx),
         ComponentKind::Activity => render_activity_component(frame, area, comp, ctx),
         ComponentKind::Session => render_session_component(frame, area, ctx),
         ComponentKind::Cpu => render_cpu_component(frame, area, ctx),
@@ -699,37 +737,38 @@ fn render_system_component(
     let sess = &ctx.snapshot.session;
     let hide = ctx.config.general.hide_unavailable;
 
+    let pkgs_str = if os.packages.is_empty() {
+        None
+    } else {
+        Some(
+            os.packages
+                .iter()
+                .map(|(mgr, cnt)| format!("{cnt} ({mgr})"))
+                .collect::<Vec<_>>()
+                .join(", "),
+        )
+    };
+    let os_arch = match (&os.distro_name, &os.arch) {
+        (Some(d), Some(a)) => Some(format!("{d} {a}")),
+        (Some(d), None) => Some(d.clone()),
+        _ => None,
+    };
+
     let candidates = [
-        ("distro", format!("{} Distro", icons.os()), os.distro_name.clone()),
+        ("distro", format!("{} OS", icons.os()), os_arch),
+        ("host_model", format!("{} Host", icons.host()), os.host_model.clone()),
+        ("hostname", "   Hostname".to_string(), os.hostname.clone()),
         ("kernel", format!("{} Kernel", icons.kernel()), os.kernel.clone()),
-        ("arch", format!("{} Arch", icons.kernel()), os.arch.clone()),
-        ("host", format!("{} Host", icons.host()), os.hostname.clone()),
-        (
-            "user",
-            format!("{} User", icons.user()),
-            ctx.config
-                .general
-                .user_override
-                .clone()
-                .or_else(|| os.username.clone()),
-        ),
+        ("packages", "   Packages".to_string(), pkgs_str),
+        ("locale", "   Locale".to_string(), os.locale.clone()),
         ("shell", format!("{} Shell", icons.shell()), os.shell.clone()),
-        (
-            "terminal",
-            format!("{} Terminal", icons.terminal()),
-            os.terminal.clone(),
-        ),
+        ("terminal", format!("{} Terminal", icons.terminal()), os.terminal.clone()),
         (
             "wm",
             format!("{} DE/WM", icons.wm()),
             sess.window_manager
                 .clone()
                 .or_else(|| sess.desktop_env.clone()),
-        ),
-        (
-            "session",
-            format!("{} Session", icons.wm()),
-            sess.session_type.clone(),
         ),
         (
             "resolution",
@@ -774,24 +813,38 @@ fn render_hardware_component(frame: &mut Frame, area: Rect, ctx: &RenderContext)
         lines.push(kv_line(&format!("{} CPU", icons.cpu()), "N/A", ctx.theme));
     }
 
-    let cpu_usage_line = match (hw.cpu.usage_percent, hw.cpu.temp_celsius) {
-        (Some(pct), Some(temp)) => Some(bar_line(
+    let cpu_usage_line = match (hw.cpu.usage_percent, hw.cpu.temp_celsius, hw.cpu.freq_ghz) {
+        (Some(pct), Some(temp), Some(ghz)) => Some(bar_line(
+            "   CPU Usage",
+            pct,
+            &format!("{pct:.1}% ({}c @ {ghz:.2}GHz, {temp:.0}°C)", hw.cpu.cores),
+            bar_width,
+            ctx.theme,
+        )),
+        (Some(pct), Some(temp), None) => Some(bar_line(
             "   CPU Usage",
             pct,
             &format!("{pct:.1}% ({temp:.0}°C)"),
             bar_width,
             ctx.theme,
         )),
-        (Some(pct), None) => Some(bar_line(
+        (Some(pct), None, Some(ghz)) => Some(bar_line(
+            "   CPU Usage",
+            pct,
+            &format!("{pct:.1}% ({}c @ {ghz:.2}GHz)", hw.cpu.cores),
+            bar_width,
+            ctx.theme,
+        )),
+        (Some(pct), None, None) => Some(bar_line(
             "   CPU Usage",
             pct,
             &format!("{pct:.1}% ({} cores)", hw.cpu.cores),
             bar_width,
             ctx.theme,
         )),
-        (None, Some(temp)) => Some(kv_line("   CPU Temp", &format!("{temp:.1}°C"), ctx.theme)),
-        (None, None) if !hide => Some(kv_line("   CPU Usage", "N/A", ctx.theme)),
-        (None, None) => None,
+        (None, Some(temp), _) => Some(kv_line("   CPU Temp", &format!("{temp:.1}°C"), ctx.theme)),
+        (None, None, _) if !hide => Some(kv_line("   CPU Usage", "N/A", ctx.theme)),
+        (None, None, _) => None,
     };
     if let Some(line) = cpu_usage_line {
         lines.push(line);
@@ -851,6 +904,9 @@ fn render_hardware_component(frame: &mut Frame, area: Rect, ctx: &RenderContext)
 
     if let Some(gpu) = hw.gpus.first() {
         let mut gpu_str = gpu.name.clone().unwrap_or_else(|| "GPU".to_string());
+        if let Some(disc) = gpu.is_discrete {
+            gpu_str.push_str(if disc { " [Discrete]" } else { " [Integrated]" });
+        }
         if let Some(busy) = gpu.busy_percent {
             gpu_str.push_str(&format!(" • {busy:.0}%"));
         }
@@ -1126,15 +1182,114 @@ fn render_network_component(frame: &mut Frame, area: Rect, ctx: &RenderContext) 
         ),
     ];
     for iface in net.interfaces.iter().take(3) {
+        let ip = iface.ipv4.as_deref().unwrap_or("no-ip");
         lines.push(kv_line(
             &iface.name,
             &format!(
-                "↓{} ↑{}",
+                "{ip} (↓{} ↑{})",
                 format_bytes(iface.rx_bytes),
                 format_bytes(iface.tx_bytes)
             ),
             ctx.theme,
         ));
+    }
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), area);
+}
+
+fn render_environment_component(frame: &mut Frame, area: Rect, ctx: &RenderContext) {
+    let os = &ctx.snapshot.os;
+    let sess = &ctx.snapshot.session;
+    let icons = IconSet::from_config(&ctx.config.typography);
+    let mut lines = Vec::new();
+    lines.push(kv_line(
+        &format!("{} WM/DE", icons.wm()),
+        sess.window_manager
+            .as_deref()
+            .or(sess.desktop_env.as_deref())
+            .unwrap_or("N/A"),
+        ctx.theme,
+    ));
+    lines.push(kv_line(
+        "   Protocol",
+        sess.session_type.as_deref().unwrap_or("N/A"),
+        ctx.theme,
+    ));
+    if let Some(disp) = os.displays.first() {
+        let kind = if disp.is_internal { "Internal" } else { "External" };
+        let res = disp.resolution.as_deref().unwrap_or("?");
+        lines.push(kv_line(
+            "   Display",
+            &format!("{} {res} ({kind})", disp.name),
+            ctx.theme,
+        ));
+    }
+    if let Some(theme) = &os.gtk_theme {
+        lines.push(kv_line("   GTK Theme", theme, ctx.theme));
+    }
+    if let Some(ic) = &os.icons {
+        lines.push(kv_line("   Icons", ic, ctx.theme));
+    }
+    if let Some(font) = &os.ui_font {
+        lines.push(kv_line("   UI Font", font, ctx.theme));
+    }
+    if let Some(cursor) = &os.cursor_theme {
+        lines.push(kv_line("   Cursor", cursor, ctx.theme));
+    }
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), area);
+}
+
+fn render_terminal_component(frame: &mut Frame, area: Rect, ctx: &RenderContext) {
+    let os = &ctx.snapshot.os;
+    let sess = &ctx.snapshot.session;
+    let icons = IconSet::from_config(&ctx.config.typography);
+    let lines = vec![
+        kv_line(
+            &format!("{} Terminal", icons.terminal()),
+            os.terminal.as_deref().unwrap_or("N/A"),
+            ctx.theme,
+        ),
+        kv_line(
+            &format!("{} Shell", icons.shell()),
+            os.shell.as_deref().unwrap_or("N/A"),
+            ctx.theme,
+        ),
+        kv_line(
+            "   Font",
+            os.terminal_font.as_deref().unwrap_or("N/A"),
+            ctx.theme,
+        ),
+        kv_line(
+            "   Size",
+            &format!("{}x{}", sess.terminal_cols, sess.terminal_rows),
+            ctx.theme,
+        ),
+    ];
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), area);
+}
+
+fn render_storage_component(frame: &mut Frame, area: Rect, ctx: &RenderContext) {
+    let icons = IconSet::from_config(&ctx.config.typography);
+    let disks = &ctx.snapshot.hardware.disks;
+    let bar_width = area.width.saturating_sub(36).clamp(6, 16) as usize;
+    let mut lines = Vec::new();
+    for disk in disks {
+        let pct = disk.usage_percent();
+        let info = format!(
+            "{} / {} ({pct:.0}%) [{}]",
+            format_bytes(disk.used_bytes),
+            format_bytes(disk.total_bytes),
+            disk.fs_type
+        );
+        lines.push(bar_line(
+            &format!("{} {}", icons.disk(), disk.mount_point),
+            pct,
+            &info,
+            bar_width,
+            ctx.theme,
+        ));
+    }
+    if lines.is_empty() {
+        lines.push(kv_line(&format!("{} Disk", icons.disk()), "N/A", ctx.theme));
     }
     frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), area);
 }

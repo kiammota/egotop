@@ -882,6 +882,8 @@ fn check_unknown_fields(
                     "density",
                     "opacity",
                     "region",
+                    "preset",
+                    "layers",
                     "matrix",
                     "water",
                     "particles",

@@ -1,3 +1,4 @@
+use crate::animation::BackgroundLayerSpec;
 use crate::ui::borders::BorderCharsConfig;
 use crate::ui::container::{BackgroundFill, ContainerConfig, ContainerStyle, default_ui_tree};
 use serde::{Deserialize, Serialize};
@@ -339,6 +340,10 @@ pub struct BackgroundConfig {
     pub density: f32,
     pub opacity: f32,
     pub region: Option<RegionConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preset: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub layers: Vec<BackgroundLayerSpec>,
     pub matrix: MatrixConfig,
     pub water: WaterConfig,
     pub particles: ParticlesConfig,
@@ -354,6 +359,8 @@ impl Default for BackgroundConfig {
             density: 0.60,
             opacity: 0.38,
             region: None,
+            preset: None,
+            layers: Vec::new(),
             matrix: MatrixConfig::default(),
             water: WaterConfig::default(),
             particles: ParticlesConfig::default(),

@@ -1,5 +1,8 @@
+pub mod diagnostics;
 pub mod input;
 pub mod renderer;
+
+pub use diagnostics::{CheckSeverity, ColorCapability, DiagnosticFinding, TerminalDiagnostics};
 
 use crossterm::{
     cursor,

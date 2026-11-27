@@ -8,7 +8,7 @@ use std::fs;
 use std::time::Instant;
 
 pub use hardware::{CpuSnapshot, DiskInfo, GpuInfo, HardwareInfo, MemorySnapshot};
-pub use os::OsInfo;
+pub use os::{DisplayInfo, OsInfo};
 pub use session::SessionInfo;
 pub use uptime::ActivityInfo;
 
@@ -17,6 +17,7 @@ const HISTORY_CAPACITY: usize = 60;
 #[derive(Debug, Clone, Default)]
 pub struct NetworkInterfaceInfo {
     pub name: String,
+    pub ipv4: Option<String>,
     pub rx_bytes: u64,
     pub tx_bytes: u64,
     pub rx_bytes_per_sec: u64,
@@ -137,6 +138,7 @@ impl SystemCollector {
             .unwrap_or(1.0);
 
         let mut interfaces = Vec::new();
+        let ipv4_map = read_interface_ipv4s();
         let mut total_rx_bytes = 0u64;
         let mut total_tx_bytes = 0u64;
         let mut total_rx_bps = 0u64;
@@ -164,8 +166,13 @@ impl SystemCollector {
             total_rx_bps = total_rx_bps.saturating_add(rx_bps);
             total_tx_bps = total_tx_bps.saturating_add(tx_bps);
 
+            let ipv4 = ipv4_map
+                .iter()
+                .find(|(n, _)| n == name)
+                .map(|(_, ip)| ip.clone());
             interfaces.push(NetworkInterfaceInfo {
                 name: name.clone(),
+                ipv4,
                 rx_bytes: *rx,
                 tx_bytes: *tx,
                 rx_bytes_per_sec: rx_bps,
@@ -200,6 +207,34 @@ fn read_proc_net_dev() -> Vec<(String, u64, u64)> {
             out.push((iface.trim().to_string(), rx, tx));
         }
     }
+    out
+}
+
+fn read_interface_ipv4s() -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    let mut ifap: *mut libc::ifaddrs = std::ptr::null_mut();
+    if unsafe { libc::getifaddrs(&mut ifap) } != 0 || ifap.is_null() {
+        return out;
+    }
+    let mut cur = ifap;
+    while !cur.is_null() {
+        let ifa = unsafe { &*cur };
+        if !ifa.ifa_name.is_null() && !ifa.ifa_addr.is_null() {
+            let sa_family = unsafe { (*ifa.ifa_addr).sa_family } as i32;
+            if sa_family == libc::AF_INET {
+                let name = unsafe { std::ffi::CStr::from_ptr(ifa.ifa_name) }
+                    .to_string_lossy()
+                    .to_string();
+                if name != "lo" {
+                    let addr_in = unsafe { &*(ifa.ifa_addr as *const libc::sockaddr_in) };
+                    let ip = std::net::Ipv4Addr::from(u32::from_be(addr_in.sin_addr.s_addr));
+                    out.push((name, ip.to_string()));
+                }
+            }
+        }
+        cur = ifa.ifa_next;
+    }
+    unsafe { libc::freeifaddrs(ifap) };
     out
 }
 

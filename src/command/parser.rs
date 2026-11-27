@@ -1,7 +1,9 @@
 use crate::config::schema::is_valid_color_spec;
 use crate::config::{BorderStyle, EffectKind, ViewMode};
 use crate::ui::borders::parse_border_style;
-use crate::ui::container::{BackgroundFill, EffectPolicy, GradientDirection};
+use crate::ui::container::{
+    BackgroundFill, ComponentKind, EffectPolicy, GradientDirection,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ContainerProperty {
@@ -16,6 +18,11 @@ pub enum ContainerProperty {
 pub enum ContainerCommand {
     List,
     Inspect(String),
+    Add {
+        id: String,
+        kind: Option<ComponentKind>,
+    },
+    Remove(String),
     Set {
         id: String,
         property: ContainerProperty,
@@ -84,6 +91,9 @@ pub enum ParsedCommand {
         value: String,
     },
     Help,
+    Check,
+    Restore,
+    WriteQuit,
     Quit,
 }
 
@@ -99,8 +109,11 @@ pub fn parse_command(raw: &str) -> Result<ParsedCommand, String> {
 
     match head.as_str() {
         "q" | "quit" => Ok(ParsedCommand::Quit),
+        "wq" => Ok(ParsedCommand::WriteQuit),
         "h" | "help" => Ok(ParsedCommand::Help),
         "r" | "reload" => Ok(ParsedCommand::Reload),
+        "check" => Ok(ParsedCommand::Check),
+        "restore" => Ok(ParsedCommand::Restore),
         "msg" | "messages" => Ok(ParsedCommand::Messages),
         "err" | "errors" => Ok(ParsedCommand::Errors),
         "w" | "write" => {
@@ -296,6 +309,27 @@ fn parse_container_command(args: &[&str]) -> Result<ParsedCommand, String> {
                 (*id).to_string(),
             )))
         }
+        "add" => {
+            let id = args
+                .get(1)
+                .ok_or_else(|| "Usage: :container add <id> [type]".to_string())?;
+            let kind = match args.get(2) {
+                Some(raw_kind) => Some(parse_component_kind(raw_kind)?),
+                None => None,
+            };
+            Ok(ParsedCommand::Container(ContainerCommand::Add {
+                id: (*id).to_string(),
+                kind,
+            }))
+        }
+        "remove" | "rm" | "del" => {
+            let id = args
+                .get(1)
+                .ok_or_else(|| "Usage: :container remove <id>".to_string())?;
+            Ok(ParsedCommand::Container(ContainerCommand::Remove(
+                (*id).to_string(),
+            )))
+        }
         "reset" => {
             let id = args
                 .get(1)
@@ -420,7 +454,38 @@ fn parse_container_command(args: &[&str]) -> Result<ParsedCommand, String> {
             }))
         }
         other => Err(format!(
-            "Unknown :container subcommand '{other}' (expected list, inspect, set, gradient, or reset)"
+            "Unknown :container subcommand '{other}' (expected list, inspect, add, remove, set, gradient, or reset)"
         )),
+    }
+}
+
+pub fn parse_component_kind(raw: &str) -> Result<ComponentKind, String> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "text" => Ok(ComponentKind::Text),
+        "ascii-logo" | "logo" => Ok(ComponentKind::AsciiLogo),
+        "separator" => Ok(ComponentKind::Separator),
+        "greeting" => Ok(ComponentKind::Greeting),
+        "cpu" => Ok(ComponentKind::Cpu),
+        "memory" | "ram" => Ok(ComponentKind::Memory),
+        "temperature" | "temp" => Ok(ComponentKind::Temperature),
+        "processes" | "procs" => Ok(ComponentKind::Processes),
+        "network" | "net" => Ok(ComponentKind::Network),
+        "uptime" => Ok(ComponentKind::Uptime),
+        "graph" => Ok(ComponentKind::Graph),
+        "system" => Ok(ComponentKind::System),
+        "hardware" => Ok(ComponentKind::Hardware),
+        "environment" | "env" => Ok(ComponentKind::Environment),
+        "terminal" | "term" => Ok(ComponentKind::Terminal),
+        "storage" | "disk" => Ok(ComponentKind::Storage),
+        "activity" => Ok(ComponentKind::Activity),
+        "session" => Ok(ComponentKind::Session),
+        "header" => Ok(ComponentKind::Header),
+        "spinner" => Ok(ComponentKind::Spinner),
+        "typewriter" => Ok(ComponentKind::Typewriter),
+        "matrix" => Ok(ComponentKind::Matrix),
+        "particles" => Ok(ComponentKind::Particles),
+        "frames" => Ok(ComponentKind::Frames),
+        "ascii-object" => Ok(ComponentKind::AsciiObject),
+        other => Err(format!("Unknown component type '{other}'")),
     }
 }

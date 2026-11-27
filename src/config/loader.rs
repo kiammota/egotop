@@ -47,10 +47,7 @@ pub fn load_or_create(custom_path: Option<&Path>) -> Result<ConfigLoadResult, Co
                 source,
             })?;
         }
-        fs::write(&path, DEFAULT_CONFIG_TOML).map_err(|source| ConfigError::Io {
-            path: path.clone(),
-            source,
-        })?;
+        save_config_to_path(&path, &Config::default())?;
         created_default = true;
     }
 
