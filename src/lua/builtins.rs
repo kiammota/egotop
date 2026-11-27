@@ -31,6 +31,7 @@ pub const BUILTIN_LUA_MODULES: &[(&str, &str, &str)] = &[
     ("effects.starfield", "effects/starfield.lua", include_str!("../../lua/effects/starfield.lua")),
     ("effects.noise", "effects/noise.lua", include_str!("../../lua/effects/noise.lua")),
     ("effects.floating_chars", "effects/floating_chars.lua", include_str!("../../lua/effects/floating_chars.lua")),
+    ("effects.christmas_tree", "effects/christmas_tree.lua", include_str!("../../lua/effects/christmas_tree.lua")),
     ("effects.none", "effects/none.lua", include_str!("../../lua/effects/none.lua")),
     // Animations
     ("animations.matrix_boot", "animations/matrix_boot.lua", include_str!("../../lua/animations/matrix_boot.lua")),

@@ -1,4 +1,4 @@
--- Multi-depth starfield background effect (implemented in Lua).
+-- Multi-depth parallax starfield effect (Lua Canvas / Cell-Buffer API).
 local starfield = {}
 
 local STARS = { ".", "·", "*", "✦" }
@@ -13,6 +13,7 @@ local function seed(state, w, h, density)
             y = math.random() * math.max(1, h),
             depth = depth,
             glyph = STARS[depth],
+            twinkle = math.random() * math.pi * 2.0,
         }
     end
 end
@@ -24,15 +25,16 @@ function starfield.setup(opts)
 
     return {
         name = "starfield",
-        fps = opts.fps or 24,
+        fps = opts.fps or 30,
         options = opts,
-        init = function(state, ctx)
-            seed(state, ctx.width, ctx.height, density)
+        init = function(ctx)
+            seed(ctx.state, ctx.width, ctx.height, density)
         end,
-        resize = function(state, ctx)
-            seed(state, ctx.width, ctx.height, density)
+        resize = function(ctx)
+            seed(ctx.state, ctx.width, ctx.height, density)
         end,
-        update = function(state, dt, ctx)
+        update = function(dt, _t, ctx)
+            local state = ctx.state
             if not state.stars then
                 seed(state, ctx.width, ctx.height, density)
             end
@@ -44,13 +46,16 @@ function starfield.setup(opts)
                 end
             end
         end,
-        render = function(state, draw, ctx)
-            if not state.stars then
+        render = function(canvas, ctx)
+            local stars = ctx.state.stars
+            if not stars then
                 return
             end
-            for _, s in ipairs(state.stars) do
-                local fg = draw:blend(ctx.theme.muted, ctx.theme.text, s.depth / 4.0)
-                draw:cell(math.floor(s.x), math.floor(s.y), s.glyph, fg, nil)
+            for _, s in ipairs(stars) do
+                local depth_t = s.depth / 4.0
+                local fg = canvas:blend(ctx.theme.muted, ctx.theme.text, depth_t)
+                local intensity = 0.5 + 0.5 * ctx.sin(ctx.t * 2.5 + s.twinkle)
+                canvas:put(s.x, s.y, s.glyph, fg, nil, 0.35 + 0.65 * depth_t * intensity)
             end
         end,
     }

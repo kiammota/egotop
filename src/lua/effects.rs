@@ -1,11 +1,13 @@
 use crate::animation::BackgroundEffect;
 use crate::config::{BackgroundConfig, EffectKind};
+use crate::lua::canvas::{
+    CanvasBuffer, LuaCanvasHandle, attach_math_helpers, build_theme_lua_table,
+};
 use crate::lua::configure_lua_vm;
-use crate::ui::theme::{Theme, blend_color, parse_color};
-use mlua::{Function, Lua, RegistryKey, Table, UserData, UserDataMethods, Value};
+use crate::ui::theme::Theme;
+use mlua::{Function, Lua, RegistryKey, Table, Value};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::style::Color;
 use std::sync::{Arc, Mutex};
 
 #[derive(Debug, Clone)]
@@ -27,7 +29,7 @@ impl LuaEffectSpec {
         let name = tbl
             .get::<String>("name")
             .unwrap_or_else(|_| "none".to_string());
-        let fps = tbl.get::<u32>("fps").unwrap_or(24).clamp(1, 60);
+        let fps = tbl.get::<u32>("fps").unwrap_or(30).clamp(1, 60);
         let opts = tbl.get::<Table>("options").ok();
         let (density, speed, color, head_color, charset, spacing, char_glyph, count) =
             if let Some(o) = opts {
@@ -60,115 +62,12 @@ impl LuaEffectSpec {
     }
 }
 
-#[derive(Debug, Clone)]
-struct CachedCell {
-    x: u16,
-    y: u16,
-    ch: String,
-    fg: Color,
-    bg: Option<Color>,
-}
-
-#[derive(Clone)]
-struct DrawCanvasHandle {
-    cells: Arc<Mutex<Vec<CachedCell>>>,
-    width: u16,
-    height: u16,
-    theme: Theme,
-}
-
-impl UserData for DrawCanvasHandle {
-    fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
-        methods.add_method("cell", |_, this, (x, y, ch, fg, bg): (i32, i32, String, Option<String>, Option<String>)| {
-            if x < 0 || y < 0 || x >= this.width as i32 || y >= this.height as i32 {
-                return Ok(());
-            }
-            let fg_col = fg
-                .as_deref()
-                .map(|s| parse_color(s, this.theme.primary))
-                .unwrap_or(this.theme.text);
-            let bg_col = bg.as_deref().map(|s| parse_color(s, Color::Reset));
-            this.cells.lock().unwrap().push(CachedCell {
-                x: x as u16,
-                y: y as u16,
-                ch,
-                fg: fg_col,
-                bg: bg_col,
-            });
-            Ok(())
-        });
-
-        methods.add_method("text", |_, this, (x, y, txt, fg, bg): (i32, i32, String, Option<String>, Option<String>)| {
-            if y < 0 || y >= this.height as i32 {
-                return Ok(());
-            }
-            let fg_col = fg
-                .as_deref()
-                .map(|s| parse_color(s, this.theme.primary))
-                .unwrap_or(this.theme.text);
-            let bg_col = bg.as_deref().map(|s| parse_color(s, Color::Reset));
-            let mut guard = this.cells.lock().unwrap();
-            for (i, ch) in txt.chars().enumerate() {
-                let px = x + i as i32;
-                if px >= 0 && px < this.width as i32 {
-                    guard.push(CachedCell {
-                        x: px as u16,
-                        y: y as u16,
-                        ch: ch.to_string(),
-                        fg: fg_col,
-                        bg: bg_col,
-                    });
-                }
-            }
-            Ok(())
-        });
-
-        methods.add_method("fill", |_, this, (x, y, w, h, ch, fg, bg): (i32, i32, i32, i32, String, Option<String>, Option<String>)| {
-            let fg_col = fg
-                .as_deref()
-                .map(|s| parse_color(s, this.theme.muted))
-                .unwrap_or(this.theme.muted);
-            let bg_col = bg.as_deref().map(|s| parse_color(s, Color::Reset));
-            let glyph = if ch.is_empty() { " ".to_string() } else { ch };
-            let mut guard = this.cells.lock().unwrap();
-            for dy in 0..h {
-                for dx in 0..w {
-                    let px = x + dx;
-                    let py = y + dy;
-                    if px >= 0 && py >= 0 && px < this.width as i32 && py < this.height as i32 {
-                        guard.push(CachedCell {
-                            x: px as u16,
-                            y: py as u16,
-                            ch: glyph.clone(),
-                            fg: fg_col,
-                            bg: bg_col,
-                        });
-                    }
-                }
-            }
-            Ok(())
-        });
-
-        methods.add_method("blend", |_, _, (c1, c2, t): (String, String, f32)| {
-            let a = parse_color(&c1, Color::White);
-            let b = parse_color(&c2, Color::Black);
-            Ok(color_to_hex(blend_color(a, b, t.clamp(0.0, 1.0))))
-        });
-    }
-}
-
-fn color_to_hex(c: Color) -> String {
-    match c {
-        Color::Rgb(r, g, b) => format!("#{r:02X}{g:02X}{b:02X}"),
-        _ => "#FFFFFF".to_string(),
-    }
-}
-
-struct LuaEffectInner {
+struct LuaScriptInner {
     lua: Lua,
     module_key: RegistryKey,
     state_key: RegistryKey,
     init_called: bool,
+    legacy_stateful: bool,
     width: u16,
     height: u16,
     fps: u32,
@@ -177,25 +76,357 @@ struct LuaEffectInner {
     last_error: Option<String>,
 }
 
-/// Hosts a Lua effect module (`effects.<name>.setup(opts)`) behind EgoTop's `BackgroundEffect` trait,
-/// throttling Lua updates to the effect's target FPS and caching the resulting cells.
+/// Reusable stateful Lua shader/canvas host supporting `setup(config)` -> `init(ctx)`,
+/// `update(dt, t, ctx)`, and `render(canvas, ctx)` with clipped truecolor & z-buffered frames.
+pub struct LuaCanvasInstance {
+    pub script_name: String,
+    inner: Option<LuaScriptInner>,
+    canvas_buf: Arc<Mutex<CanvasBuffer>>,
+    theme_snapshot: Theme,
+}
+
+impl LuaCanvasInstance {
+    pub fn from_spec(spec: &LuaEffectSpec, width: u16, height: u16, theme: Theme) -> Self {
+        let mut inst = Self {
+            script_name: spec.name.clone(),
+            inner: None,
+            canvas_buf: Arc::new(Mutex::new(CanvasBuffer::new(width, height))),
+            theme_snapshot: theme,
+        };
+        inst.initialize_with_spec(spec, width, height);
+        inst
+    }
+
+    pub fn from_script_name(
+        script_name: &str,
+        width: u16,
+        height: u16,
+        fps: u32,
+        speed: f32,
+        density: f32,
+        theme: Theme,
+    ) -> Self {
+        let spec = LuaEffectSpec {
+            name: script_name.to_string(),
+            fps: fps.clamp(1, 60),
+            density,
+            speed,
+            color: None,
+            head_color: None,
+            charset: None,
+            spacing: None,
+            char_glyph: None,
+            count: None,
+        };
+        Self::from_spec(&spec, width, height, theme)
+    }
+
+    pub fn set_theme(&mut self, theme: Theme) {
+        self.theme_snapshot = theme;
+    }
+
+    pub fn last_error(&self) -> Option<&str> {
+        self.inner.as_ref().and_then(|i| i.last_error.as_deref())
+    }
+
+    pub fn resize(&mut self, width: u16, height: u16) {
+        self.canvas_buf.lock().unwrap().resize(width, height);
+        let Some(inner) = self.inner.as_mut() else {
+            return;
+        };
+        if inner.width == width && inner.height == height {
+            return;
+        }
+        inner.width = width;
+        inner.height = height;
+        inner.accum_dt = 1.0;
+
+        if let (Ok(fx), Ok(st), Ok(ctx)) = (
+            inner.lua.registry_value::<Table>(&inner.module_key),
+            inner.lua.registry_value::<Table>(&inner.state_key),
+            build_script_ctx(
+                &self.theme_snapshot,
+                &inner.lua,
+                width,
+                height,
+                0.0,
+                inner.elapsed,
+                inner.fps,
+                None,
+            ),
+        ) {
+            let _ = ctx.set("state", st.clone());
+            if let Ok(Value::Function(resize_fn)) = fx.get::<Value>("resize") {
+                let res = if inner.legacy_stateful {
+                    resize_fn.call::<()>((st, ctx))
+                } else {
+                    resize_fn.call::<()>(ctx)
+                };
+                if let Err(e) = res {
+                    inner.last_error = Some(e.to_string());
+                }
+            }
+        }
+    }
+
+    pub fn update(&mut self, dt_secs: f32, speed_mult: f32) {
+        let Some(inner) = self.inner.as_mut() else {
+            return;
+        };
+        inner.accum_dt += dt_secs;
+        let min_step = 1.0 / (inner.fps.max(1) as f32);
+        if inner.accum_dt < min_step {
+            return;
+        }
+        let step_dt = inner.accum_dt * speed_mult.max(0.05);
+        inner.accum_dt = 0.0;
+        inner.elapsed += step_dt;
+
+        let Ok(fx) = inner.lua.registry_value::<Table>(&inner.module_key) else {
+            return;
+        };
+        let Ok(st) = inner.lua.registry_value::<Table>(&inner.state_key) else {
+            return;
+        };
+        let Ok(ctx) = build_script_ctx(
+            &self.theme_snapshot,
+            &inner.lua,
+            inner.width,
+            inner.height,
+            step_dt,
+            inner.elapsed,
+            inner.fps,
+            Some(st.clone()),
+        ) else {
+            return;
+        };
+
+        if !inner.init_called {
+            inner.init_called = true;
+            if let Ok(Value::Function(init_fn)) = fx.get::<Value>("init") {
+                let res = if inner.legacy_stateful {
+                    init_fn.call::<()>((st.clone(), ctx.clone()))
+                } else {
+                    init_fn.call::<()>(ctx.clone())
+                };
+                if let Err(e) = res {
+                    inner.last_error = Some(e.to_string());
+                    return;
+                }
+            }
+        }
+
+        if let Ok(Value::Function(update_fn)) = fx.get::<Value>("update") {
+            let res = if inner.legacy_stateful {
+                update_fn.call::<()>((st.clone(), step_dt, ctx.clone()))
+            } else {
+                update_fn.call::<()>((step_dt, inner.elapsed, ctx.clone()))
+            };
+            if let Err(e) = res {
+                inner.last_error = Some(e.to_string());
+                return;
+            }
+        }
+
+        {
+            let mut guard = self.canvas_buf.lock().unwrap();
+            guard.resize(inner.width, inner.height);
+            guard.begin_frame();
+        }
+        let canvas_handle =
+            LuaCanvasHandle::new(Arc::clone(&self.canvas_buf), self.theme_snapshot.clone());
+
+        if let Ok(Value::Function(render_fn)) = fx.get::<Value>("render") {
+            let res = if inner.legacy_stateful {
+                render_fn.call::<()>((st, canvas_handle, ctx))
+            } else {
+                render_fn.call::<()>((canvas_handle, ctx))
+            };
+            if let Err(e) = res {
+                inner.last_error = Some(e.to_string());
+            }
+        }
+    }
+
+    pub fn render(&self, buf: &mut Buffer, area: Rect, theme: &Theme) {
+        if area.width == 0 || area.height == 0 {
+            return;
+        }
+        let guard = self.canvas_buf.lock().unwrap();
+        guard.blit_to_buffer(buf, area, theme.text);
+    }
+
+    pub fn clear_buffer(&mut self) {
+        self.canvas_buf.lock().unwrap().begin_frame();
+    }
+
+    fn initialize_with_spec(&mut self, spec: &LuaEffectSpec, width: u16, height: u16) {
+        let lua = Lua::new();
+        if configure_lua_vm(&lua, None).is_err() {
+            return;
+        }
+
+        let normalized = spec.name.trim().to_ascii_lowercase().replace('-', "_");
+        let mod_name = if normalized.contains('.') {
+            normalized.clone()
+        } else {
+            format!("effects.{normalized}")
+        };
+
+        let Ok(opts) = lua.create_table() else {
+            return;
+        };
+        let _ = opts.set("fps", spec.fps);
+        let _ = opts.set("density", spec.density);
+        let _ = opts.set("speed", spec.speed);
+        if let Some(c) = &spec.color {
+            let _ = opts.set("color", c.as_str());
+        }
+        if let Some(hc) = &spec.head_color {
+            let _ = opts.set("head_color", hc.as_str());
+        }
+        if let Some(cs) = &spec.charset {
+            let _ = opts.set("charset", cs.as_str());
+        }
+        if let Some(sp) = spec.spacing {
+            let _ = opts.set("spacing", sp);
+        }
+        if let Some(cg) = &spec.char_glyph {
+            let _ = opts.set("char", cg.as_str());
+        }
+        if let Some(cnt) = spec.count {
+            let _ = opts.set("count", cnt);
+        }
+
+        let load_fn: mlua::Result<Table> = (|| {
+            let require: Function = lua.globals().get("require")?;
+            let mod_val: Value = require.call(mod_name.as_str())?;
+            match mod_val {
+                Value::Table(mod_tbl) => {
+                    if let Ok(Value::Function(setup)) = mod_tbl.get::<Value>("setup") {
+                        setup.call(opts)
+                    } else {
+                        Ok(mod_tbl)
+                    }
+                }
+                Value::Function(setup) => setup.call(opts),
+                _ => Err(mlua::Error::RuntimeError(format!(
+                    "Lua effect '{mod_name}' did not return a module table or setup function"
+                ))),
+            }
+        })();
+
+        let fx_tbl = match load_fn {
+            Ok(t) => t,
+            Err(e) => {
+                self.inner = None;
+                let _ = e;
+                return;
+            }
+        };
+
+        let fps = fx_tbl.get::<u32>("fps").unwrap_or(spec.fps).clamp(1, 60);
+        let explicit_legacy = fx_tbl
+            .get::<Option<bool>>("legacy")
+            .ok()
+            .flatten()
+            .unwrap_or(false)
+            || fx_tbl
+                .get::<Option<u32>>("api_version")
+                .ok()
+                .flatten()
+                .is_some_and(|v| v == 1);
+        // Auto-detect legacy 3-arg `render(state, draw, ctx)` / 2-arg `init(state, ctx)` scripts
+        // so user customizations on disk keep working cleanly alongside the new canvas API.
+        let inferred_legacy = if !explicit_legacy {
+            lua.load(
+                r#"
+                return function(fx)
+                    if type(debug) ~= "table" or type(debug.getinfo) ~= "function" then return false end
+                    if type(fx.render) == "function" then
+                        local info = debug.getinfo(fx.render, "u")
+                        if info and info.nparams == 3 then return true end
+                    end
+                    if type(fx.init) == "function" then
+                        local info = debug.getinfo(fx.init, "u")
+                        if info and info.nparams == 2 then return true end
+                    end
+                    return false
+                end
+                "#,
+            )
+            .eval::<Function>()
+            .and_then(|f| f.call::<bool>(fx_tbl.clone()))
+            .unwrap_or(false)
+        } else {
+            false
+        };
+        let legacy_stateful = explicit_legacy || inferred_legacy;
+
+        let Ok(module_key) = lua.create_registry_value(fx_tbl) else {
+            return;
+        };
+        let Ok(state_tbl) = lua.create_table() else {
+            return;
+        };
+        let Ok(state_key) = lua.create_registry_value(state_tbl) else {
+            return;
+        };
+
+        self.inner = Some(LuaScriptInner {
+            lua,
+            module_key,
+            state_key,
+            init_called: false,
+            legacy_stateful,
+            width,
+            height,
+            fps,
+            accum_dt: 1.0,
+            elapsed: 0.0,
+            last_error: None,
+        });
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_script_ctx(
+    theme_snap: &Theme,
+    lua: &Lua,
+    w: u16,
+    h: u16,
+    dt: f32,
+    elapsed: f32,
+    fps: u32,
+    state_tbl: Option<Table>,
+) -> mlua::Result<Table> {
+    let ctx = lua.create_table()?;
+    ctx.set("width", w)?;
+    ctx.set("height", h)?;
+    ctx.set("dt", dt)?;
+    ctx.set("t", elapsed)?;
+    ctx.set("time", elapsed)?;
+    ctx.set("elapsed", elapsed)?;
+    ctx.set("fps", fps)?;
+    if let Some(st) = state_tbl {
+        ctx.set("state", st)?;
+    }
+    ctx.set("theme", build_theme_lua_table(lua, theme_snap)?)?;
+    attach_math_helpers(lua, &ctx)?;
+    Ok(ctx)
+}
+
+/// Hosts a Lua effect module (`effects.<name>`) behind EgoTop's `BackgroundEffect` trait,
+/// rendering onto the clipped `CanvasBuffer` at its configured FPS.
 pub struct LuaEffectAdapter {
     spec: LuaEffectSpec,
-    inner: Option<LuaEffectInner>,
-    cached_cells: Vec<CachedCell>,
-    theme_snapshot: Theme,
+    host: LuaCanvasInstance,
 }
 
 impl LuaEffectAdapter {
     pub fn from_spec(spec: LuaEffectSpec, width: u16, height: u16, theme: Theme) -> Self {
-        let mut adapter = Self {
-            spec,
-            inner: None,
-            cached_cells: Vec::new(),
-            theme_snapshot: theme,
-        };
-        adapter.initialize(width, height);
-        adapter
+        let host = LuaCanvasInstance::from_spec(&spec, width, height, theme);
+        Self { spec, host }
     }
 
     pub fn from_effect_name(
@@ -207,7 +438,7 @@ impl LuaEffectAdapter {
     ) -> Self {
         let spec = LuaEffectSpec {
             name: name.to_string(),
-            fps: 24,
+            fps: 30,
             density: cfg.density,
             speed: cfg.speed,
             color: None,
@@ -221,103 +452,16 @@ impl LuaEffectAdapter {
     }
 
     pub fn set_theme(&mut self, theme: Theme) {
-        self.theme_snapshot = theme;
+        self.host.set_theme(theme);
     }
 
     pub fn last_error(&self) -> Option<&str> {
-        self.inner.as_ref().and_then(|i| i.last_error.as_deref())
+        self.host.last_error()
     }
 
-    fn initialize(&mut self, width: u16, height: u16) {
-        let lua = Lua::new();
-        if configure_lua_vm(&lua, None).is_err() {
-            return;
-        }
-        let mod_name = format!(
-            "effects.{}",
-            self.spec.name.trim().to_ascii_lowercase().replace('-', "_")
-        );
-        let Ok(opts) = lua.create_table() else {
-            return;
-        };
-        let _ = opts.set("fps", self.spec.fps);
-        let _ = opts.set("density", self.spec.density);
-        let _ = opts.set("speed", self.spec.speed);
-        if let Some(c) = &self.spec.color {
-            let _ = opts.set("color", c.as_str());
-        }
-        if let Some(hc) = &self.spec.head_color {
-            let _ = opts.set("head_color", hc.as_str());
-        }
-        if let Some(cs) = &self.spec.charset {
-            let _ = opts.set("charset", cs.as_str());
-        }
-        if let Some(sp) = self.spec.spacing {
-            let _ = opts.set("spacing", sp);
-        }
-        if let Some(cg) = &self.spec.char_glyph {
-            let _ = opts.set("char", cg.as_str());
-        }
-        if let Some(cnt) = self.spec.count {
-            let _ = opts.set("count", cnt);
-        }
-
-        let load_fn: mlua::Result<Table> = (|| {
-            let require: Function = lua.globals().get("require")?;
-            let mod_tbl: Table = require.call(mod_name.as_str())?;
-            let setup: Function = mod_tbl.get("setup")?;
-            setup.call(opts)
-        })();
-
-        let Ok(fx_tbl) = load_fn else {
-            return;
-        };
-        let fps = fx_tbl.get::<u32>("fps").unwrap_or(self.spec.fps).clamp(1, 60);
-        let Ok(module_key) = lua.create_registry_value(fx_tbl) else {
-            return;
-        };
-        let Ok(state_tbl) = lua.create_table() else {
-            return;
-        };
-        let Ok(state_key) = lua.create_registry_value(state_tbl) else {
-            return;
-        };
-
-        self.inner = Some(LuaEffectInner {
-            lua,
-            module_key,
-            state_key,
-            init_called: false,
-            width,
-            height,
-            fps,
-            accum_dt: 1.0, // trigger initial render immediately
-            elapsed: 0.0,
-            last_error: None,
-        });
+    pub fn name(&self) -> &str {
+        &self.spec.name
     }
-}
-
-fn build_ctx_table_for_theme(
-    theme_snap: &Theme,
-    lua: &Lua,
-    w: u16,
-    h: u16,
-    elapsed: f32,
-) -> mlua::Result<Table> {
-    let ctx = lua.create_table()?;
-    ctx.set("width", w)?;
-    ctx.set("height", h)?;
-    ctx.set("elapsed", elapsed)?;
-
-    let theme = lua.create_table()?;
-    theme.set("primary", color_to_hex(theme_snap.primary))?;
-    theme.set("secondary", color_to_hex(theme_snap.secondary))?;
-    theme.set("accent", color_to_hex(theme_snap.accent))?;
-    theme.set("text", color_to_hex(theme_snap.text))?;
-    theme.set("muted", color_to_hex(theme_snap.muted))?;
-    ctx.set("theme", theme)?;
-    Ok(ctx)
 }
 
 impl BackgroundEffect for LuaEffectAdapter {
@@ -332,105 +476,21 @@ impl BackgroundEffect for LuaEffectAdapter {
     }
 
     fn resize(&mut self, width: u16, height: u16, _cfg: &BackgroundConfig) {
-        if let Some(inner) = self.inner.as_mut() {
-            inner.width = width;
-            inner.height = height;
-            inner.accum_dt = 1.0;
-            if let (Ok(fx), Ok(st), Ok(ctx)) = (
-                inner.lua.registry_value::<Table>(&inner.module_key),
-                inner.lua.registry_value::<Table>(&inner.state_key),
-                build_ctx_table_for_theme(&self.theme_snapshot, &inner.lua, width, height, inner.elapsed),
-            ) && let Ok(Value::Function(resize_fn)) = fx.get::<Value>("resize")
-                && let Err(e) = resize_fn.call::<()>((st, ctx))
-            {
-                inner.last_error = Some(e.to_string());
-            }
-        }
+        self.host.resize(width, height);
     }
 
     fn update(&mut self, dt_secs: f32, cfg: &BackgroundConfig) {
         if !cfg.enabled {
-            self.cached_cells.clear();
+            self.host.clear_buffer();
             return;
         }
-        let Some(inner) = self.inner.as_mut() else {
-            return;
-        };
-        inner.accum_dt += dt_secs;
-        let min_step = 1.0 / (inner.fps.max(1) as f32);
-        if inner.accum_dt < min_step {
-            return;
-        }
-        let step_dt = inner.accum_dt * cfg.speed.max(0.05);
-        inner.accum_dt = 0.0;
-        inner.elapsed += step_dt;
-
-        let Ok(fx) = inner.lua.registry_value::<Table>(&inner.module_key) else {
-            return;
-        };
-        let Ok(st) = inner.lua.registry_value::<Table>(&inner.state_key) else {
-            return;
-        };
-        let Ok(ctx) = build_ctx_table_for_theme(
-            &self.theme_snapshot,
-            &inner.lua,
-            inner.width,
-            inner.height,
-            inner.elapsed,
-        ) else {
-            return;
-        };
-
-        if !inner.init_called {
-            inner.init_called = true;
-            if let Ok(Value::Function(init_fn)) = fx.get::<Value>("init")
-                && let Err(e) = init_fn.call::<()>((st.clone(), ctx.clone()))
-            {
-                inner.last_error = Some(e.to_string());
-                return;
-            }
-        }
-
-        if let Ok(Value::Function(update_fn)) = fx.get::<Value>("update")
-            && let Err(e) = update_fn.call::<()>((st.clone(), step_dt, ctx.clone()))
-        {
-            inner.last_error = Some(e.to_string());
-            return;
-        }
-
-        let buf = Arc::new(Mutex::new(Vec::new()));
-        let draw_handle = DrawCanvasHandle {
-            cells: Arc::clone(&buf),
-            width: inner.width,
-            height: inner.height,
-            theme: self.theme_snapshot.clone(),
-        };
-        if let Ok(Value::Function(render_fn)) = fx.get::<Value>("render")
-            && let Err(e) = render_fn.call::<()>((st, draw_handle, ctx))
-        {
-            inner.last_error = Some(e.to_string());
-            return;
-        }
-        self.cached_cells = std::mem::take(&mut *buf.lock().unwrap());
+        self.host.update(dt_secs, cfg.speed);
     }
 
-    fn render(&self, buf: &mut Buffer, area: Rect, cfg: &BackgroundConfig, _theme: &Theme) {
+    fn render(&self, buf: &mut Buffer, area: Rect, cfg: &BackgroundConfig, theme: &Theme) {
         if !cfg.enabled || area.width == 0 || area.height == 0 {
             return;
         }
-        for cell in &self.cached_cells {
-            let x = area.x + cell.x;
-            let y = area.y + cell.y;
-            if x < area.right()
-                && y < area.bottom()
-                && let Some(dst) = buf.cell_mut((x, y))
-            {
-                dst.set_symbol(&cell.ch);
-                dst.set_fg(cell.fg);
-                if let Some(bg) = cell.bg {
-                    dst.set_bg(bg);
-                }
-            }
-        }
+        self.host.render(buf, area, theme);
     }
 }

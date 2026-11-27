@@ -2,13 +2,13 @@ use crate::animation::{AnimationCatalog, BackgroundEffect, TransitionPlayer};
 use crate::command::CommandLineState;
 use crate::config::schema::BackgroundBaseType;
 use crate::config::{Config, ThemeEntry};
-use crate::lua::LuaAnimationRuntime;
+use crate::lua::{AnimationLayer, LuaAnimationRuntime};
 use crate::ui::components::ComponentAnimationStore;
 use crate::ui::customizer::{CustomizerState, render_customizer, render_help_overlay};
 use crate::ui::layout::{ExclusionMask, compute_dashboard_layout};
 use crate::ui::theme::parse_color;
 use crate::ui::widgets::{
-    RenderContext, apply_color_opacity, render_command_line, render_container_tree,
+    RenderContext, apply_color_opacity, render_command_line_with_footer, render_container_tree,
     render_gradient_bg_with_opacity,
 };
 use ratatui::Frame;
@@ -153,17 +153,44 @@ pub fn draw_frame(
         render_help_overlay(frame, area, ctx.theme);
     }
 
-    render_command_line(frame, area, command_line, ctx);
+    let footer_rect = layout
+        .find_component("status_spinner")
+        .filter(|c| c.outer_rect.height >= 3)
+        .map(|c| c.outer_rect);
+    render_command_line_with_footer(frame, area, footer_rect, command_line, ctx);
 }
 
 pub fn render_lua_animation_overlay(
     frame: &mut Frame,
     area: Rect,
     lua_anim: &LuaAnimationRuntime,
+    theme: &crate::ui::theme::Theme,
 ) {
-    if !lua_anim.is_finished() {
-        lua_anim.render(frame.buffer_mut(), area);
+    if lua_anim.is_finished() {
+        return;
     }
+    match lua_anim.layer() {
+        AnimationLayer::Background => {}
+        AnimationLayer::Boxed => lua_anim.render_boxed(frame, area, theme),
+        AnimationLayer::Overlay => lua_anim.render(frame.buffer_mut(), area),
+    }
+}
+
+pub fn render_lua_animation_background(
+    frame: &mut Frame,
+    area: Rect,
+    config: &Config,
+    ctx: &RenderContext,
+    lua_anim: &LuaAnimationRuntime,
+) {
+    if lua_anim.is_finished() || lua_anim.layer() != AnimationLayer::Background {
+        return;
+    }
+    let layout = compute_dashboard_layout(area, config, ctx.view_mode);
+    let mask = ExclusionMask::from_layout_with_styles(&layout, &config.container_styles);
+    render_global_with_mask(frame, area, &mask, |buf, a| {
+        lua_anim.render(buf, a);
+    });
 }
 
 fn render_global_with_mask<F>(frame: &mut Frame, area: Rect, mask: &ExclusionMask, draw_fn: F)

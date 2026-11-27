@@ -1,6 +1,7 @@
 pub mod animation_runtime;
 pub mod api;
 pub mod builtins;
+pub mod canvas;
 pub mod effects;
 pub mod fonts;
 pub mod serializer;
@@ -12,9 +13,12 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
-pub use animation_runtime::{GreetingCellTransform, LuaAnimationRuntime, LuaSceneElement};
+pub use animation_runtime::{
+    AnimationLayer, GreetingCellTransform, LuaAnimationRuntime, LuaSceneElement,
+};
 pub use builtins::{BUILTIN_LUA_MODULES, ensure_lua_config_tree, ensure_lua_tree_at};
-pub use effects::{LuaEffectAdapter, LuaEffectSpec};
+pub use canvas::{CanvasBuffer, LuaCanvasHandle};
+pub use effects::{LuaCanvasInstance, LuaEffectAdapter, LuaEffectSpec};
 pub use fonts::{list_lua_fonts, load_lua_font};
 pub use serializer::serialize_config_to_lua;
 
@@ -309,7 +313,7 @@ mod tests {
             bundle.theme.clone(),
         );
         fx.update(0.1, &bundle.config.background);
-        assert!(fx.last_error().is_none());
+        assert!(fx.last_error().is_none(), "lua fx error: {:?}", fx.last_error());
         let mut buf = Buffer::empty(Rect::new(0, 0, 40, 12));
         fx.render(&mut buf, Rect::new(0, 0, 40, 12), &bundle.config.background, &bundle.theme);
 

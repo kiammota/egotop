@@ -1,4 +1,4 @@
--- Procedural ambient noise field background effect (implemented in Lua).
+-- Procedural ambient noise field effect (Lua Canvas / Cell-Buffer API).
 local noise = {}
 
 local SHADES = { "·", ":", "+", "*" }
@@ -10,24 +10,24 @@ function noise.setup(opts)
 
     return {
         name = "noise",
-        fps = opts.fps or 15,
+        fps = opts.fps or 20,
         options = opts,
-        init = function(state)
-            state.t = 0.0
+        init = function(ctx)
+            ctx.state.phase = 0.0
         end,
-        update = function(state, dt)
-            state.t = (state.t or 0.0) + dt * speed
+        update = function(dt, _t, ctx)
+            ctx.state.phase = (ctx.state.phase or 0.0) + dt * speed
         end,
-        render = function(state, draw, ctx)
-            local step_t = math.floor((state.t or 0.0) * 6.0)
-            local threshold = 1.0 - density * 0.4
-            for y = 0, ctx.height - 1, 2 do
-                for x = 0, ctx.width - 1, 2 do
-                    local h = math.abs(math.sin(x * 12.9898 + y * 78.233 + step_t * 1.37) * 43758.5453)
-                    local frac = h - math.floor(h)
-                    if frac > threshold then
-                        local idx = math.min(#SHADES, math.max(1, math.floor(frac * #SHADES) + 1))
-                        draw:cell(x, y, SHADES[idx], ctx.theme.muted, nil)
+        render = function(canvas, ctx)
+            local z = (ctx.state.phase or 0.0) * 1.4
+            local threshold = 1.0 - density * 0.45
+            for y = 0, canvas.height - 1, 2 do
+                for x = 0, canvas.width - 1, 2 do
+                    local n = ctx.noise(x * 0.22, y * 0.28, z)
+                    if n > threshold then
+                        local norm = ctx.clamp((n - threshold) / math.max(0.01, 1.0 - threshold), 0.0, 1.0)
+                        local idx = math.min(#SHADES, math.max(1, math.floor(norm * #SHADES) + 1))
+                        canvas:put(x, y, SHADES[idx], ctx.theme.muted, nil, 0.45 + 0.55 * norm)
                     end
                 end
             end

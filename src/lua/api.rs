@@ -112,6 +112,11 @@ pub fn register_egotop_api(lua: &Lua, state: Arc<Mutex<LuaConfigBundle>>) -> mlu
         )?;
     }
 
+    // egotop.math.* (trigonometry, clamp, lerp, hsv_to_rgb, rgb_scale, noise, hash)
+    if let Ok(math_tbl) = crate::lua::canvas::create_math_table(lua) {
+        egotop.set("math", math_tbl)?;
+    }
+
     // Helper constructors: egotop.container(tbl) & egotop.component(tbl)
     egotop.set(
         "container",
@@ -642,6 +647,7 @@ fn parse_component_table(tbl: &Table) -> ComponentConfig {
     if let Some(v) = tbl.get::<Option<bool>>("visible").ok().flatten() {
         comp.visible = v;
     }
+    let has_explicit_cat = tbl.get::<String>("category").is_ok();
     if let Ok(cat) = tbl.get::<String>("category") {
         comp.category = match cat.trim().to_ascii_lowercase().as_str() {
             "static" => ComponentCategory::Static,
@@ -651,6 +657,9 @@ fn parse_component_table(tbl: &Table) -> ComponentConfig {
     }
     if let Ok(kind_str) = tbl.get::<String>("kind") {
         comp.kind = parse_component_kind(&kind_str);
+        if !has_explicit_cat {
+            comp.category = comp.kind.expected_category();
+        }
     }
     if let Ok(w) = tbl.get::<Value>("width")
         && !w.is_nil()
@@ -695,6 +704,12 @@ fn parse_component_table(tbl: &Table) -> ComponentConfig {
     if let Ok(t) = tbl.get::<String>("text") {
         comp.content.text = Some(t);
     }
+    if let Ok(p) = tbl.get::<String>("preset") {
+        comp.content.preset = Some(p);
+    }
+    if let Ok(s) = tbl.get::<String>("script") {
+        comp.content.script = Some(s);
+    }
     if let Ok(fields) = tbl.get::<Table>("fields") {
         let vec: Vec<String> = fields.sequence_values::<String>().flatten().collect();
         if !vec.is_empty() {
@@ -712,7 +727,24 @@ fn parse_component_table(tbl: &Table) -> ComponentConfig {
         if let Ok(sp) = atbl.get::<f32>("speed") {
             anim.speed = sp;
         }
+        if let Ok(den) = atbl.get::<f32>("density") {
+            anim.density = Some(den);
+        }
+        if let Ok(scr) = atbl.get::<Option<String>>("script")
+            && comp.content.script.is_none()
+        {
+            comp.content.script = scr;
+        }
         comp.animation = Some(anim);
+    }
+    if comp.kind == ComponentKind::Canvas && comp.content.script.is_none() {
+        if let Ok(raw_kind) = tbl.get::<String>("kind")
+            && raw_kind.trim().eq_ignore_ascii_case("christmas_tree")
+        {
+            comp.content.script = Some("effects.christmas_tree".to_string());
+        } else if let Some(preset) = comp.content.preset.clone() {
+            comp.content.script = Some(preset);
+        }
     }
     // Note: `Function` unused warning safeguard if additional callbacks are passed
     let _: Option<Function> = tbl.get::<Function>("on_render").ok();
@@ -746,6 +778,7 @@ fn parse_component_kind(raw: &str) -> ComponentKind {
         "matrix" => ComponentKind::Matrix,
         "particles" => ComponentKind::Particles,
         "ascii_object" => ComponentKind::AsciiObject,
+        "canvas" | "lua" | "shader" | "christmas_tree" => ComponentKind::Canvas,
         _ => ComponentKind::Text,
     }
 }

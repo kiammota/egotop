@@ -56,6 +56,7 @@ fn component_kind_str(kind: crate::ui::container::ComponentKind) -> &'static str
         Matrix => "matrix",
         Particles => "particles",
         AsciiObject => "ascii_object",
+        Canvas => "canvas",
     }
 }
 
@@ -165,6 +166,9 @@ fn write_container(out: &mut String, c: &ContainerConfig, indent: usize, is_root
                     }
                     if let Some(t) = &comp.content.text {
                         let _ = writeln!(out, "{cip}text = {},", lua_str(t));
+                    }
+                    if let Some(s) = &comp.content.script {
+                        let _ = writeln!(out, "{cip}script = {},", lua_str(s));
                     }
                     if let Some(anim) = &comp.animation {
                         let fps = anim.fps.unwrap_or(12);

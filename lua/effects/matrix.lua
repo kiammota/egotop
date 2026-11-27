@@ -1,4 +1,4 @@
--- Matrix falling glyph stream background effect (implemented in Lua).
+-- Matrix falling glyph stream background effect (Lua Canvas / Cell-Buffer API).
 local matrix = {}
 
 local DEFAULT_CHARSET = "01ﾊﾐﾋｰｳｼﾅﾓﾆｻﾜﾂｵﾘｱﾎﾃﾏｹﾒｴｶｷﾑﾕﾗｾﾈｽﾀﾇﾍ"
@@ -20,7 +20,6 @@ local function reset_streams(state, w, h, density)
             y = math.random() * h,
             speed = 4.0 + math.random() * 14.0,
             len = math.random(5, math.max(6, math.floor(h * 0.65))),
-            glyphs = {},
         }
     end
 end
@@ -33,17 +32,16 @@ function matrix.setup(opts)
 
     return {
         name = "matrix",
-        fps = opts.fps or 24,
+        fps = opts.fps or 30,
         options = opts,
-        init = function(state, ctx)
-            state.tick = 0
-            reset_streams(state, ctx.width, ctx.height, density)
+        init = function(ctx)
+            reset_streams(ctx.state, ctx.width, ctx.height, density)
         end,
-        resize = function(state, ctx)
-            reset_streams(state, ctx.width, ctx.height, density)
+        resize = function(ctx)
+            reset_streams(ctx.state, ctx.width, ctx.height, density)
         end,
-        update = function(state, dt, ctx)
-            state.tick = (state.tick or 0) + dt
+        update = function(dt, _t, ctx)
+            local state = ctx.state
             if not state.cols then
                 reset_streams(state, ctx.width, ctx.height, density)
             end
@@ -55,30 +53,32 @@ function matrix.setup(opts)
                 end
             end
         end,
-        render = function(state, draw, ctx)
+        render = function(canvas, ctx)
+            local cols = ctx.state.cols
+            local n_glyphs = #glyphs
+            if n_glyphs == 0 or not cols then
+                return
+            end
             local head_color = opts.head_color or ctx.theme.text
             local trail_color = opts.color or ctx.theme.primary
             local tail_color = ctx.theme.muted
-            local n_glyphs = #glyphs
-            if n_glyphs == 0 or not state.cols then
-                return
-            end
+            local tick = math.floor(ctx.t * 8.0)
 
-            for _, col in ipairs(state.cols) do
+            for _, col in ipairs(cols) do
                 local head_y = math.floor(col.y)
                 for offset = 0, col.len - 1 do
                     local y = head_y - offset
-                    if y >= 0 and y < ctx.height then
-                        local idx = ((col.x * 31 + y * 17 + math.floor(state.tick * 8)) % n_glyphs) + 1
+                    if y >= 0 and y < canvas.height then
+                        local idx = ((col.x * 31 + y * 17 + tick) % n_glyphs) + 1
                         local ch = glyphs[idx]
-                        local fg
                         if offset == 0 then
-                            fg = head_color
+                            canvas:put(col.x, y, ch, head_color, nil, 1.0)
                         else
-                            local t = offset / math.max(1, col.len - 1)
-                            fg = draw:blend(trail_color, tail_color, t)
+                            local fade = offset / math.max(1, col.len - 1)
+                            local fg = canvas:blend(trail_color, tail_color, fade)
+                            local intensity = 1.0 - 0.55 * fade
+                            canvas:put(col.x, y, ch, fg, nil, intensity)
                         end
-                        draw:cell(col.x, y, ch, fg, nil)
                     end
                 end
             end

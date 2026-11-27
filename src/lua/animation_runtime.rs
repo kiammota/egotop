@@ -1,12 +1,24 @@
 use crate::animation::EasingCurve;
 use crate::config::paths;
+use crate::lua::canvas::{CanvasBuffer, LuaCanvasHandle, attach_math_helpers, build_theme_lua_table};
 use crate::lua::configure_lua_vm;
-use crate::ui::theme::{blend_color, parse_color};
+use crate::ui::theme::{Theme, blend_color, parse_color};
 use mlua::{Function, Lua, RegistryKey, Table, UserData, UserDataMethods, Value};
+use ratatui::Frame;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Modifier};
+use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Block, Borders, Clear};
 use std::sync::{Arc, Mutex};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AnimationLayer {
+    Background,
+    Boxed,
+    #[default]
+    Overlay,
+}
 
 #[derive(Debug, Clone)]
 pub struct LuaSceneElement {
@@ -139,18 +151,24 @@ struct RuntimeShared {
     reveal_progress: Arc<Mutex<f32>>,
     finished: Arc<Mutex<bool>>,
     paused: bool,
+    layer: Arc<Mutex<AnimationLayer>>,
+    box_title: Arc<Mutex<Option<String>>>,
+    canvas_buf: Arc<Mutex<CanvasBuffer>>,
     elements: Arc<Mutex<Vec<LuaSceneElement>>>,
     every_tasks: Arc<Mutex<Vec<ScheduledEvery>>>,
     after_tasks: Arc<Mutex<Vec<ScheduledAfter>>>,
     tweens: Arc<Mutex<Vec<ActiveTween>>>,
     sequences: Arc<Mutex<Vec<ActiveSequence>>>,
     greeting_fn: Arc<Mutex<Option<RegistryKey>>>,
+    shader_module: Arc<Mutex<Option<RegistryKey>>>,
+    shader_state: Arc<Mutex<Option<RegistryKey>>>,
+    shader_init_called: Arc<Mutex<bool>>,
+    duration_limit_ms: Arc<Mutex<Option<f32>>>,
     next_elem_id: Arc<Mutex<usize>>,
 }
 
-/// Robust, throttled, non-blocking Lua Animation Runtime hosting animations with `setup(api)`.
-/// Supports arbitrary durations, multi-element scenes, sequences, tweens, scheduled tasks,
-/// and per-character greeting transforms without blocking the UI event loop.
+/// Robust, throttled, non-blocking Lua Animation Runtime hosting animations with `setup(api)`
+/// as well as shader-style `init(ctx)` / `update(dt, t, ctx)` / `render(canvas, ctx)` modules.
 pub struct LuaAnimationRuntime {
     pub active_id: String,
     lua: Option<Lua>,
@@ -173,12 +191,19 @@ impl LuaAnimationRuntime {
                 reveal_progress: Arc::new(Mutex::new(0.0)),
                 finished: Arc::new(Mutex::new(false)),
                 paused: false,
+                layer: Arc::new(Mutex::new(AnimationLayer::Overlay)),
+                box_title: Arc::new(Mutex::new(None)),
+                canvas_buf: Arc::new(Mutex::new(CanvasBuffer::new(screen_w, screen_h))),
                 elements: Arc::new(Mutex::new(Vec::new())),
                 every_tasks: Arc::new(Mutex::new(Vec::new())),
                 after_tasks: Arc::new(Mutex::new(Vec::new())),
                 tweens: Arc::new(Mutex::new(Vec::new())),
                 sequences: Arc::new(Mutex::new(Vec::new())),
                 greeting_fn: Arc::new(Mutex::new(None)),
+                shader_module: Arc::new(Mutex::new(None)),
+                shader_state: Arc::new(Mutex::new(None)),
+                shader_init_called: Arc::new(Mutex::new(false)),
+                duration_limit_ms: Arc::new(Mutex::new(None)),
                 next_elem_id: Arc::new(Mutex::new(1)),
             },
             target_fps: target_fps.clamp(1, 60),
@@ -187,6 +212,27 @@ impl LuaAnimationRuntime {
         };
         rt.load_and_setup(name);
         rt
+    }
+
+    pub fn layer(&self) -> AnimationLayer {
+        *self.shared.layer.lock().unwrap()
+    }
+
+    pub fn boxed_rect(&self, screen: Rect) -> Rect {
+        let w = screen.width.saturating_sub(6).clamp(24, 72).min(screen.width);
+        let h = screen.height.saturating_sub(4).clamp(14, 30).min(screen.height);
+        let x = screen.x + screen.width.saturating_sub(w) / 2;
+        let y = screen.y + screen.height.saturating_sub(h) / 2;
+        Rect::new(x, y, w, h)
+    }
+
+    fn effective_canvas_dims(&self) -> (u16, u16) {
+        if self.layer() == AnimationLayer::Boxed {
+            let rect = self.boxed_rect(Rect::new(0, 0, self.shared.screen_w, self.shared.screen_h));
+            (rect.width.saturating_sub(2), rect.height.saturating_sub(2))
+        } else {
+            (self.shared.screen_w, self.shared.screen_h)
+        }
     }
 
     pub fn is_finished(&self) -> bool {
@@ -209,11 +255,14 @@ impl LuaAnimationRuntime {
         *self.shared.finished.lock().unwrap() = true;
         *self.shared.reveal_progress.lock().unwrap() = 1.0;
         self.shared.elements.lock().unwrap().clear();
+        self.shared.canvas_buf.lock().unwrap().begin_frame();
     }
 
     pub fn resize(&mut self, w: u16, h: u16) {
         self.shared.screen_w = w;
         self.shared.screen_h = h;
+        let (cw, ch) = self.effective_canvas_dims();
+        self.shared.canvas_buf.lock().unwrap().resize(cw, ch);
     }
 
     fn load_and_setup(&mut self, name: &str) {
@@ -236,23 +285,54 @@ impl LuaAnimationRuntime {
         let normalized = name.trim().to_ascii_lowercase().replace('-', "_");
         let custom_path = paths::animations_path().join(format!("{normalized}.lua"));
         let res: mlua::Result<()> = (|| {
-            if custom_path.exists() {
+            let mod_tbl: Value = if custom_path.exists() {
                 let raw = std::fs::read_to_string(&custom_path).unwrap_or_default();
-                let val: Value = lua
-                    .load(&raw)
+                lua.load(&raw)
                     .set_name(custom_path.display().to_string())
-                    .eval()?;
-                if let Value::Table(t) = val
-                    && let Ok(f) = t.get::<Function>("setup")
-                {
-                    f.call::<()>(api)?;
-                }
+                    .eval()?
             } else {
                 let require: Function = lua.globals().get("require")?;
                 let mod_name = format!("animations.{normalized}");
-                let mod_tbl: Table = require.call(mod_name.as_str())?;
-                let setup: Function = mod_tbl.get("setup")?;
-                setup.call::<()>(api)?;
+                require.call(mod_name.as_str())?
+            };
+
+            if let Value::Table(t) = mod_tbl {
+                let returned_shader: Option<Table> = if let Ok(f) = t.get::<Function>("setup") {
+                    match f.call::<Value>(api)? {
+                        Value::Table(ret) => Some(ret),
+                        _ => None,
+                    }
+                } else if t.get::<Function>("render").is_ok() || t.get::<Function>("update").is_ok() {
+                    Some(t)
+                } else {
+                    None
+                };
+
+                if let Some(stbl) = returned_shader {
+                    if let Ok(layer_str) = stbl.get::<String>("layer") {
+                        *self.shared.layer.lock().unwrap() = parse_animation_layer(&layer_str);
+                    }
+                    if let Ok(title) = stbl.get::<String>("title") {
+                        *self.shared.box_title.lock().unwrap() = Some(title);
+                    }
+                    if let Ok(fps) = stbl.get::<u32>("fps") {
+                        self.target_fps = fps.clamp(1, 60);
+                    }
+                    if let Ok(dur_s) = stbl.get::<f32>("duration") {
+                        *self.shared.duration_limit_ms.lock().unwrap() =
+                            (dur_s > 0.0).then_some(dur_s * 1000.0);
+                    } else if let Ok(dur_ms) = stbl.get::<f32>("duration_ms") {
+                        *self.shared.duration_limit_ms.lock().unwrap() =
+                            (dur_ms > 0.0).then_some(dur_ms);
+                    }
+                    if let Ok(mod_key) = lua.create_registry_value(stbl)
+                        && let Ok(state_tbl) = lua.create_table()
+                        && let Ok(state_key) = lua.create_registry_value(state_tbl)
+                    {
+                        *self.shared.shader_module.lock().unwrap() = Some(mod_key);
+                        *self.shared.shader_state.lock().unwrap() = Some(state_key);
+                    }
+                }
             }
             Ok(())
         })();
@@ -262,6 +342,8 @@ impl LuaAnimationRuntime {
             self.stop();
             return;
         }
+        let (cw, ch) = self.effective_canvas_dims();
+        self.shared.canvas_buf.lock().unwrap().resize(cw, ch);
         self.lua = Some(lua);
     }
 
@@ -533,6 +615,41 @@ impl LuaAnimationRuntime {
                 })?,
             )?;
         }
+        // api.layer("background" | "boxed" | "overlay"), api.box_title(str), api.math
+        {
+            let lr = Arc::clone(&shared.layer);
+            api.set(
+                "layer",
+                lua.create_function(move |_, layer_str: String| {
+                    *lr.lock().unwrap() = parse_animation_layer(&layer_str);
+                    Ok(())
+                })?,
+            )?;
+        }
+        {
+            let bt = Arc::clone(&shared.box_title);
+            api.set(
+                "box_title",
+                lua.create_function(move |_, title: Option<String>| {
+                    *bt.lock().unwrap() = title;
+                    Ok(())
+                })?,
+            )?;
+        }
+        {
+            let cbuf = Arc::clone(&shared.canvas_buf);
+            api.set(
+                "canvas",
+                lua.create_function(move |_, ()| {
+                    Ok(LuaCanvasHandle::new(
+                        Arc::clone(&cbuf),
+                        Theme::from_config(&crate::config::ThemeConfig::default()),
+                    ))
+                })?,
+            )?;
+        }
+        attach_math_helpers(lua, &api)?;
+
         api.set("ui", ui)?;
 
         Ok(api)
@@ -693,12 +810,95 @@ impl LuaAnimationRuntime {
             *self.shared.finished.lock().unwrap() = true;
             *self.shared.reveal_progress.lock().unwrap() = 1.0;
         }
+
+        // 5. Shader lifecycle (`init(ctx)` / `update(dt, t, ctx)` / `render(canvas, ctx)`)
+        let shader_mod_key_present = self.shared.shader_module.lock().unwrap().is_some();
+        if shader_mod_key_present {
+            let (cw, ch) = self.effective_canvas_dims();
+            let t_secs = self.shared.elapsed_ms / 1000.0;
+            let theme = Theme::from_config(&crate::config::ThemeConfig::default());
+
+            let ctx_opt: Option<Table> = (|| {
+                let state_guard = self.shared.shader_state.lock().unwrap();
+                let st = state_guard
+                    .as_ref()
+                    .and_then(|k| lua.registry_value::<Table>(k).ok())?;
+                let ctx = lua.create_table().ok()?;
+                let _ = ctx.set("width", cw);
+                let _ = ctx.set("height", ch);
+                let _ = ctx.set("dt", step_dt);
+                let _ = ctx.set("t", t_secs);
+                let _ = ctx.set("time", t_secs);
+                let _ = ctx.set("elapsed", t_secs);
+                let _ = ctx.set("fps", self.target_fps);
+                let _ = ctx.set("state", st);
+                if let Ok(tt) = build_theme_lua_table(lua, &theme) {
+                    let _ = ctx.set("theme", tt);
+                }
+                let _ = attach_math_helpers(lua, &ctx);
+                Some(ctx)
+            })();
+
+            let mod_tbl_opt = self
+                .shared
+                .shader_module
+                .lock()
+                .unwrap()
+                .as_ref()
+                .and_then(|k| lua.registry_value::<Table>(k).ok());
+
+            if let (Some(mod_tbl), Some(ctx)) = (mod_tbl_opt, ctx_opt) {
+                let mut init_called = self.shared.shader_init_called.lock().unwrap();
+                if !*init_called {
+                    *init_called = true;
+                    if let Ok(Value::Function(init_fn)) = mod_tbl.get::<Value>("init")
+                        && let Err(e) = init_fn.call::<()>(ctx.clone())
+                    {
+                        self.last_error = Some(e.to_string());
+                    }
+                }
+                drop(init_called);
+
+                if let Ok(Value::Function(upd_fn)) = mod_tbl.get::<Value>("update")
+                    && let Err(e) = upd_fn.call::<()>((step_dt, t_secs, ctx.clone()))
+                {
+                    self.last_error = Some(e.to_string());
+                }
+
+                {
+                    let mut guard = self.shared.canvas_buf.lock().unwrap();
+                    guard.resize(cw, ch);
+                    guard.begin_frame();
+                }
+                let canvas_handle =
+                    LuaCanvasHandle::new(Arc::clone(&self.shared.canvas_buf), theme);
+                if let Ok(Value::Function(ren_fn)) = mod_tbl.get::<Value>("render")
+                    && let Err(e) = ren_fn.call::<()>((canvas_handle, ctx))
+                {
+                    self.last_error = Some(e.to_string());
+                }
+            }
+
+            if let Some(limit_ms) = *self.shared.duration_limit_ms.lock().unwrap()
+                && self.shared.elapsed_ms >= limit_ms
+            {
+                *self.shared.finished.lock().unwrap() = true;
+                *self.shared.reveal_progress.lock().unwrap() = 1.0;
+                self.shared.canvas_buf.lock().unwrap().begin_frame();
+            }
+        }
     }
 
     pub fn render(&self, buf: &mut Buffer, area: Rect) {
         if area.width == 0 || area.height == 0 {
             return;
         }
+        // 1. Canvas buffer cells (automatically clipped to `area`)
+        {
+            let guard = self.shared.canvas_buf.lock().unwrap();
+            guard.blit_to_buffer(buf, area, Color::White);
+        }
+        // 2. Imperative `api.element` sprites (clipped to `area`)
         let elements = self.shared.elements.lock().unwrap();
         for el in elements.iter() {
             if !el.visible {
@@ -728,5 +928,46 @@ impl LuaAnimationRuntime {
                 }
             }
         }
+    }
+
+    /// Renders a `Boxed` animation cleanly inside an isolated, bordered modal panel
+    /// so zero characters can ever bleed over other dashboard containers or borders.
+    pub fn render_boxed(&self, frame: &mut Frame, screen: Rect, theme: &Theme) {
+        let popup = self.boxed_rect(screen).intersection(screen);
+        if popup.width < 6 || popup.height < 5 {
+            return;
+        }
+        frame.render_widget(Clear, popup);
+        let title_str = self
+            .shared
+            .box_title
+            .lock()
+            .unwrap()
+            .clone()
+            .unwrap_or_else(|| self.active_id.to_lowercase());
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_set(theme.borders.as_ratatui_set())
+            .border_style(Style::default().fg(theme.primary))
+            .title(Line::from(Span::styled(
+                format!(" {title_str} "),
+                Style::default()
+                    .fg(theme.accent)
+                    .add_modifier(Modifier::BOLD),
+            )))
+            .style(Style::default().fg(theme.text).bg(theme.panel_background));
+        let inner = block.inner(popup);
+        frame.render_widget(block, popup);
+        if inner.width > 0 && inner.height > 0 {
+            self.render(frame.buffer_mut(), inner);
+        }
+    }
+}
+
+fn parse_animation_layer(s: &str) -> AnimationLayer {
+    match s.trim().to_ascii_lowercase().as_str() {
+        "background" | "bg" => AnimationLayer::Background,
+        "boxed" | "box" | "window" | "panel" => AnimationLayer::Boxed,
+        _ => AnimationLayer::Overlay,
     }
 }

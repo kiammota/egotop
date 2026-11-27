@@ -1,4 +1,4 @@
--- CRT horizontal scanlines background effect (implemented in Lua).
+-- CRT horizontal scanlines effect (Lua Canvas / Cell-Buffer API).
 local scanlines = {}
 
 function scanlines.setup(opts)
@@ -9,23 +9,27 @@ function scanlines.setup(opts)
 
     return {
         name = "scanlines",
-        fps = opts.fps or 20,
+        fps = opts.fps or 24,
         options = opts,
-        init = function(state)
-            state.offset = 0.0
+        init = function(ctx)
+            ctx.state.offset = 0.0
         end,
-        update = function(state, dt)
-            state.offset = (state.offset or 0.0) + dt * speed * 6.0
+        update = function(dt, _t, ctx)
+            ctx.state.offset = (ctx.state.offset or 0.0) + dt * speed * 6.0
         end,
-        render = function(state, draw, ctx)
-            local beam_y = math.floor(state.offset or 0) % math.max(1, ctx.height)
+        render = function(canvas, ctx)
+            local beam_y = math.floor(ctx.state.offset or 0) % math.max(1, canvas.height)
             local line_color = opts.color or ctx.theme.muted
             local beam_color = ctx.theme.primary
-            for y = 0, ctx.height - 1 do
+            for y = 0, canvas.height - 1 do
                 if y == beam_y then
-                    draw:fill(0, y, ctx.width, 1, "═", beam_color, nil)
+                    for x = 0, canvas.width - 1 do
+                        canvas:put(x, y, "═", beam_color, nil, 1.0)
+                    end
                 elseif y % spacing == 0 then
-                    draw:fill(0, y, ctx.width, 1, char, line_color, nil)
+                    for x = 0, canvas.width - 1 do
+                        canvas:put(x, y, char, line_color, nil, 0.55)
+                    end
                 end
             end
         end,

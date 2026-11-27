@@ -1,4 +1,4 @@
--- Floating glowing particles background effect (implemented in Lua).
+-- Floating glowing particles effect (Lua Canvas / Cell-Buffer API).
 local particles = {}
 
 local GLYPHS = { "·", "•", "◦", "✦", "✧", "*" }
@@ -14,6 +14,7 @@ local function seed_particles(state, w, h, density)
             vy = -(0.8 + math.random() * 2.8),
             glyph = GLYPHS[math.random(1, #GLYPHS)],
             hue = math.random(),
+            phase = math.random() * math.pi * 2.0,
         }
     end
 end
@@ -25,15 +26,16 @@ function particles.setup(opts)
 
     return {
         name = "particles",
-        fps = opts.fps or 24,
+        fps = opts.fps or 30,
         options = opts,
-        init = function(state, ctx)
-            seed_particles(state, ctx.width, ctx.height, density)
+        init = function(ctx)
+            seed_particles(ctx.state, ctx.width, ctx.height, density)
         end,
-        resize = function(state, ctx)
-            seed_particles(state, ctx.width, ctx.height, density)
+        resize = function(ctx)
+            seed_particles(ctx.state, ctx.width, ctx.height, density)
         end,
-        update = function(state, dt, ctx)
+        update = function(dt, _t, ctx)
+            local state = ctx.state
             if not state.items then
                 seed_particles(state, ctx.width, ctx.height, density)
             end
@@ -46,15 +48,17 @@ function particles.setup(opts)
                 end
             end
         end,
-        render = function(state, draw, ctx)
-            if not state.items then
+        render = function(canvas, ctx)
+            local items = ctx.state.items
+            if not items then
                 return
             end
             local c1 = opts.color or ctx.theme.primary
             local c2 = ctx.theme.accent
-            for _, p in ipairs(state.items) do
-                local fg = draw:blend(c1, c2, p.hue)
-                draw:cell(math.floor(p.x), math.floor(p.y), p.glyph, fg, nil)
+            for _, p in ipairs(items) do
+                local fg = canvas:blend(c1, c2, p.hue)
+                local pulse = 0.65 + 0.35 * ctx.sin(ctx.t * 3.0 + p.phase)
+                canvas:put(p.x, p.y, p.glyph, fg, nil, pulse)
             end
         end,
     }
