@@ -503,7 +503,7 @@ fn complete_set_option(prev_args: &[String], current: &str) -> Vec<CompletionIte
                 None,
             );
         }
-        if key == "border.style" {
+        if key == "border.style" || key == "borders.style" {
             return complete_from_pairs(&p, BorderChars::STYLE_NAMES, None);
         }
         if let Some(prop) = key.strip_prefix("border.")

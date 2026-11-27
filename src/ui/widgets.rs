@@ -1,5 +1,5 @@
 use crate::command::CommandLineState;
-use crate::config::{Align, Config, GraphStyle, ViewMode};
+use crate::config::{Align, BorderStyle, Config, GraphStyle, ViewMode};
 use crate::system::{SystemSnapshot, format_bytes, uptime::format_uptime};
 use crate::ui::components::{ComponentAnimationStore, render_animated_component, render_clipped};
 use crate::ui::container::{
@@ -78,7 +78,10 @@ fn render_container_box(frame: &mut Frame, container: &PlacedContainer, ctx: &Re
         .map(|c| parse_color(c, ctx.panel_bg()))
         .unwrap_or_else(|| ctx.panel_bg());
 
-    if container.border.enabled && area.width >= 2 && area.height >= 2 {
+    let show_border = container.border.enabled
+        && container.border.style != BorderStyle::None
+        && ctx.config.theme.border_type != BorderStyle::None;
+    if show_border && area.width >= 2 && area.height >= 2 {
         render_border_block(frame, area, &container.border, bg, ctx);
     } else if container.background.is_some() && bg != Color::Reset {
         frame.render_widget(Block::default().style(Style::default().bg(bg)), area);
@@ -104,7 +107,10 @@ fn render_placed_component(
         .map(|c| parse_color(c, ctx.panel_bg()))
         .unwrap_or_else(|| ctx.panel_bg());
 
-    if comp.visual.border.enabled && outer.width >= 2 && outer.height >= 2 {
+    let show_border = comp.visual.border.enabled
+        && comp.visual.border.style != BorderStyle::None
+        && ctx.config.theme.border_type != BorderStyle::None;
+    if show_border && outer.width >= 2 && outer.height >= 2 {
         let mut border = comp.visual.border.clone();
         if border.title.is_none() {
             border.title = comp.content.title.clone();

@@ -344,6 +344,15 @@ fn command_parser_and_contextual_completion_engine() {
 
 #[test]
 fn border_chars_validation_and_runtime_application() {
+    assert_eq!(parse_border_style("none").unwrap(), BorderStyle::None);
+    let mut no_border_cfg = Config::default();
+    no_border_cfg.theme.border_type = BorderStyle::None;
+    let layout_no_border =
+        compute_dashboard_layout(Rect::new(0, 0, 100, 30), &no_border_cfg, ViewMode::Dashboard);
+    let sys_no_border = layout_no_border.find_component("system").unwrap();
+    // No 1-cell border inset, only 1-cell padding
+    assert_eq!(sys_no_border.inner_rect.x, sys_no_border.outer_rect.x + 1);
+
     assert!(validate_border_char("━").is_ok());
     assert!(validate_border_char("╔").is_ok());
     // Reject empty, multi-char, control, zero-width, and double-width characters

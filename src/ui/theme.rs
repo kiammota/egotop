@@ -59,7 +59,7 @@ impl Theme {
     pub fn set_border_style(&mut self, style: BorderStyle) {
         self.border_type = match style {
             BorderStyle::Rounded => BorderType::Rounded,
-            BorderStyle::Plain => BorderType::Plain,
+            BorderStyle::Plain | BorderStyle::None => BorderType::Plain,
             BorderStyle::Double => BorderType::Double,
             BorderStyle::Thick => BorderType::Thick,
         };

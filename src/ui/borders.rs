@@ -82,6 +82,7 @@ impl BorderChars {
         ("plain", "Sharp single-line box borders (┌─┐)"),
         ("double", "Double-line box borders (╔═╗)"),
         ("thick", "Heavy thick box borders (┏━┓)"),
+        ("none", "No borders"),
     ];
 
     pub fn from_style(style: BorderStyle) -> Self {
@@ -125,7 +126,7 @@ impl BorderChars {
                 bottom_separator: "╩".to_string(),
                 intersection: "╬".to_string(),
             },
-            BorderStyle::Thick => Self {
+            BorderStyle::Thick | BorderStyle::None => Self {
                 top_left: "┏".to_string(),
                 top_right: "┓".to_string(),
                 bottom_left: "┗".to_string(),
@@ -241,8 +242,9 @@ pub fn parse_border_style(raw: &str) -> Result<BorderStyle, String> {
         "plain" | "solid" => Ok(BorderStyle::Plain),
         "double" => Ok(BorderStyle::Double),
         "thick" => Ok(BorderStyle::Thick),
+        "none" | "off" => Ok(BorderStyle::None),
         other => Err(format!(
-            "Invalid border style '{other}' (expected rounded, plain, double, or thick)"
+            "Invalid border style '{other}' (expected rounded, plain, double, thick, or none)"
         )),
     }
 }

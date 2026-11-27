@@ -1,4 +1,4 @@
-use crate::config::{Config, ViewMode};
+use crate::config::{BorderStyle, Config, ViewMode};
 use crate::ui::container::{
     ComponentConfig, ContainerBorderConfig, ContainerConfig, ContainerDirection, ContainerNode,
     ContainerSize,
@@ -44,11 +44,23 @@ pub fn compute_dashboard_layout(
     cfg: &Config,
     view_mode: ViewMode,
 ) -> ComputedLayout {
+    let no_borders = cfg.theme.border_type == BorderStyle::None;
     match view_mode {
-        ViewMode::Dashboard => compute_container_layout(screen, &cfg.ui.root),
+        ViewMode::Dashboard => {
+            if no_borders {
+                let mut root = cfg.ui.root.clone();
+                disable_container_borders(&mut root);
+                compute_container_layout(screen, &root)
+            } else {
+                compute_container_layout(screen, &cfg.ui.root)
+            }
+        }
         ViewMode::Compact => {
             let mut root = cfg.ui.root.clone();
             apply_compact_overrides(&mut root);
+            if no_borders {
+                disable_container_borders(&mut root);
+            }
             compute_container_layout(screen, &root)
         }
         ViewMode::Minimal => {
@@ -68,7 +80,22 @@ pub fn compute_dashboard_layout(
             if let Some(spinner) = find_first_component_by_id(&cfg.ui.root, "status_spinner") {
                 minimal_root.children.push(ContainerNode::Component(spinner));
             }
+            if no_borders {
+                disable_container_borders(&mut minimal_root);
+            }
             compute_container_layout(screen, &minimal_root)
+        }
+    }
+}
+
+fn disable_container_borders(container: &mut ContainerConfig) {
+    container.border.enabled = false;
+    for child in &mut container.children {
+        match child {
+            ContainerNode::Container(c) => disable_container_borders(c),
+            ContainerNode::Component(comp) => {
+                comp.visual.border.enabled = false;
+            }
         }
     }
 }
@@ -140,7 +167,7 @@ fn layout_container_node(container: &ContainerConfig, outer_rect: Rect, out: &mu
 
     let inner_rect = compute_inner_rect(
         outer_rect,
-        container.border.enabled,
+        container.border.enabled && container.border.style != BorderStyle::None,
         container.padding,
     );
 
@@ -230,7 +257,7 @@ fn layout_container_node(container: &ContainerConfig, outer_rect: Rect, out: &mu
             ContainerNode::Component(comp) => {
                 let comp_inner = compute_inner_rect(
                     child_rect,
-                    comp.visual.border.enabled,
+                    comp.visual.border.enabled && comp.visual.border.style != BorderStyle::None,
                     comp.visual.padding,
                 );
                 out.components.push(PlacedComponent {

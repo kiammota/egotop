@@ -851,7 +851,7 @@ impl App {
             return;
         }
 
-        if k == "border.style" {
+        if k == "border.style" || k == "borders.style" {
             match parse_border_style(value) {
                 Ok(style) => {
                     self.config.theme.border_type = style;
