@@ -779,6 +779,7 @@ fn check_unknown_fields(
                     "header",
                     "background",
                     "ui",
+                    "container_styles",
                 ],
                 "",
                 path,

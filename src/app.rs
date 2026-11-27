@@ -4,7 +4,8 @@ use crate::animation::{
 };
 use crate::command::{
     AnimationAction, BackgroundCommand, CommandLineState, CommandRegistry, CompletionContext,
-    LayoutSelection, ParsedCommand, WriteTarget, parse_command,
+    ContainerCommand, ContainerProperty, LayoutSelection, ParsedCommand, WriteTarget,
+    parse_command,
 };
 use crate::config::{
     Config, EffectKind, StartupMode, StartupTrigger, ThemeEntry, ViewMode, save_config_to_path,
@@ -25,7 +26,10 @@ use crate::ui::customizer::{
 };
 use crate::ui::theme::Theme;
 use crate::ui::widgets::RenderContext;
-use crate::ui::{ComponentAnimationStore, RevealState, compute_dashboard_layout};
+use crate::ui::{
+    ComponentAnimationStore, ContainerGradient, ContainerStyle, RevealState,
+    collect_all_container_ids, compute_dashboard_layout, has_container_id,
+};
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
@@ -41,6 +45,7 @@ pub struct App {
     theme: Theme,
     animations: AnimationCatalog,
     layout_names: Vec<String>,
+    container_ids: Vec<String>,
     layouts_map: BTreeMap<String, LayoutPreset>,
     transition: TransitionPlayer,
     startup_cursor: CursorStartupState,
@@ -85,6 +90,8 @@ impl App {
         let animations = lkg.animations;
         let layouts_map = lkg.layouts;
         let layout_names: Vec<String> = layouts_map.keys().cloned().collect();
+        let mut container_ids = Vec::new();
+        collect_all_container_ids(&config.ui.root, &mut container_ids);
 
         let is_cursor_startup = config.startup.mode == StartupMode::Cursor;
         let wait_init = is_cursor_startup || config.init.wait_for_input;
@@ -112,6 +119,7 @@ impl App {
             theme,
             animations,
             layout_names,
+            container_ids,
             layouts_map,
             transition,
             startup_cursor: CursorStartupState::new(wait_init),
@@ -266,6 +274,7 @@ impl App {
             themes: &self.theme_list,
             animations: &self.animations,
             layouts: &self.layout_names,
+            containers: &self.container_ids,
         }
     }
 
@@ -873,8 +882,104 @@ impl App {
                     }
                 }
             },
+            ParsedCommand::Container(ccmd) => {
+                self.execute_container_command(ccmd);
+            }
         }
         Ok(())
+    }
+
+    fn execute_container_command(&mut self, cmd: ContainerCommand) {
+        match cmd {
+            ContainerCommand::List => {
+                let mut ids = Vec::new();
+                collect_all_container_ids(&self.config.ui.root, &mut ids);
+                self.set_toast(format!("Containers: {}", ids.join(", ")));
+            }
+            ContainerCommand::Inspect(id) => {
+                if !has_container_id(&self.config.ui.root, &id) {
+                    self.set_toast(format!("Unknown container '{id}'"));
+                    return;
+                }
+                let style = self
+                    .config
+                    .container_styles
+                    .get(&id)
+                    .cloned()
+                    .unwrap_or_default();
+                let grad = style
+                    .gradient
+                    .as_ref()
+                    .map(|g| format!("{:?}({})", g.direction, g.colors.join("→")))
+                    .unwrap_or_else(|| "none".to_string());
+                self.set_toast(format!(
+                    "{id}: bg={:?} fg={} border={} effects={:?} grad={grad}",
+                    style.background,
+                    style.foreground.as_deref().unwrap_or("inherit"),
+                    style.border_color.as_deref().unwrap_or("inherit"),
+                    style.effects
+                ));
+            }
+            ContainerCommand::Set { id, property } => {
+                if !has_container_id(&self.config.ui.root, &id) {
+                    self.set_toast(format!("Unknown container '{id}'"));
+                    return;
+                }
+                let entry: &mut ContainerStyle = self
+                    .config
+                    .container_styles
+                    .entry(id.clone())
+                    .or_default();
+                match property {
+                    ContainerProperty::Background(fill) => {
+                        entry.background = fill;
+                        entry.gradient = None;
+                        self.set_toast(format!("Updated {id}.background"));
+                    }
+                    ContainerProperty::Foreground(fg) => {
+                        entry.foreground = fg;
+                        self.set_toast(format!("Updated {id}.foreground"));
+                    }
+                    ContainerProperty::BorderColor(c) => {
+                        entry.border_color = c;
+                        self.set_toast(format!("Updated {id}.border.color"));
+                    }
+                    ContainerProperty::BorderStyle(st) => {
+                        entry.border_style = Some(st);
+                        self.set_toast(format!("Updated {id}.border.style = {}", st.label()));
+                    }
+                    ContainerProperty::Effects(policy) => {
+                        entry.effects = policy;
+                        self.set_toast(format!("Updated {id}.effects = {policy:?}"));
+                    }
+                }
+            }
+            ContainerCommand::Gradient {
+                id,
+                direction,
+                colors,
+            } => {
+                if !has_container_id(&self.config.ui.root, &id) {
+                    self.set_toast(format!("Unknown container '{id}'"));
+                    return;
+                }
+                let entry = self
+                    .config
+                    .container_styles
+                    .entry(id.clone())
+                    .or_default();
+                entry.gradient = Some(ContainerGradient { direction, colors });
+                self.set_toast(format!("Applied {direction:?} gradient to '{id}'"));
+            }
+            ContainerCommand::Reset(id) => {
+                if !has_container_id(&self.config.ui.root, &id) {
+                    self.set_toast(format!("Unknown container '{id}'"));
+                    return;
+                }
+                self.config.container_styles.remove(&id);
+                self.set_toast(format!("Reset style for '{id}'"));
+            }
+        }
     }
 
     fn execute_set_option(&mut self, key: &str, value: &str) {

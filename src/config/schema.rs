@@ -1,6 +1,7 @@
 use crate::ui::borders::BorderCharsConfig;
-use crate::ui::container::{ContainerConfig, default_ui_tree};
+use crate::ui::container::{BackgroundFill, ContainerConfig, ContainerStyle, default_ui_tree};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use thiserror::Error;
 
@@ -61,6 +62,8 @@ pub struct Config {
     pub header: HeaderConfig,
     pub background: BackgroundConfig,
     pub ui: UiConfig,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub container_styles: BTreeMap<String, ContainerStyle>,
 }
 
 impl Default for Config {
@@ -74,6 +77,7 @@ impl Default for Config {
             header: HeaderConfig::default(),
             background: BackgroundConfig::default(),
             ui: UiConfig::default(),
+            container_styles: BTreeMap::new(),
         }
     }
 }
@@ -627,6 +631,48 @@ impl Config {
                 field: "startup.cursor.blink_interval".to_string(),
                 message: "must be at least 50 ms".to_string(),
             });
+        }
+        for (id, style) in &self.container_styles {
+            if let BackgroundFill::Solid(c) = &style.background
+                && !is_valid_color_spec(c)
+            {
+                return Err(ConfigError::Validation {
+                    field: format!("container_styles.{id}.background"),
+                    message: format!("invalid color '{c}'"),
+                });
+            }
+            if let Some(c) = &style.foreground
+                && !is_valid_color_spec(c)
+            {
+                return Err(ConfigError::Validation {
+                    field: format!("container_styles.{id}.foreground"),
+                    message: format!("invalid color '{c}'"),
+                });
+            }
+            if let Some(c) = &style.border_color
+                && !is_valid_color_spec(c)
+            {
+                return Err(ConfigError::Validation {
+                    field: format!("container_styles.{id}.border_color"),
+                    message: format!("invalid color '{c}'"),
+                });
+            }
+            if let Some(grad) = &style.gradient {
+                if grad.colors.len() < 2 {
+                    return Err(ConfigError::Validation {
+                        field: format!("container_styles.{id}.gradient.colors"),
+                        message: "gradient requires at least 2 colors".to_string(),
+                    });
+                }
+                for c in &grad.colors {
+                    if !is_valid_color_spec(c) {
+                        return Err(ConfigError::Validation {
+                            field: format!("container_styles.{id}.gradient.colors"),
+                            message: format!("invalid color '{c}'"),
+                        });
+                    }
+                }
+            }
         }
         Ok(())
     }

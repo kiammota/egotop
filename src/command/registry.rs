@@ -5,6 +5,7 @@ pub enum CompletionProviderKind {
     Animation,
     Background,
     Layout,
+    Container,
     SetOption,
     Effect,
     WriteTarget,
@@ -102,6 +103,18 @@ impl CommandRegistry {
                         description: "View mode or layout preset name",
                     }],
                     provider: CompletionProviderKind::Layout,
+                },
+                CommandDescriptor {
+                    name: "container",
+                    aliases: &[],
+                    description: "Inspect and customize individual container styles",
+                    usage: ":container <list|inspect|set|gradient|reset> ...",
+                    args: &[CommandArgSpec {
+                        name: "<subcommand>",
+                        required: false,
+                        description: "list, inspect, set, gradient, reset",
+                    }],
+                    provider: CompletionProviderKind::Container,
                 },
                 CommandDescriptor {
                     name: "effect",

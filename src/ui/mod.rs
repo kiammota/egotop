@@ -11,9 +11,10 @@ pub mod widgets;
 pub use borders::{BorderChars, BorderCharsConfig, parse_border_style, validate_border_char};
 pub use components::ComponentAnimationStore;
 pub use container::{
-    ComponentAnimationConfig, ComponentCategory, ComponentConfig, ComponentContent,
+    BackgroundFill, ComponentAnimationConfig, ComponentCategory, ComponentConfig, ComponentContent,
     ComponentKind, ComponentVisual, ContainerBorderConfig, ContainerConfig, ContainerDirection,
-    ContainerNode, ContainerSize, default_ui_tree,
+    ContainerGradient, ContainerNode, ContainerSize, ContainerStyle, EffectPolicy,
+    GradientDirection, collect_all_container_ids, default_ui_tree, has_container_id,
 };
 pub use layout::{
     ComputedLayout, ExclusionMask, PlacedComponent, PlacedContainer, compute_container_layout,

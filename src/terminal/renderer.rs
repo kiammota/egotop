@@ -85,7 +85,7 @@ pub fn draw_frame(
     }
 
     let layout = compute_dashboard_layout(area, config, ctx.view_mode);
-    let mask = ExclusionMask::from_layout(&layout);
+    let mask = ExclusionMask::from_layout_with_styles(&layout, &config.container_styles);
 
     render_global_with_mask(frame, area, &mask, |buf, a| {
         effect.render(buf, a, &config.background, ctx.theme);

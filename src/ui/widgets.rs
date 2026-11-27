@@ -1,14 +1,16 @@
 use crate::command::CommandLineState;
 use crate::config::{Align, BorderStyle, Config, GraphStyle, ViewMode};
 use crate::system::{SystemSnapshot, format_bytes, uptime::format_uptime};
+use crate::ui::borders::BorderChars;
 use crate::ui::components::{
     ComponentAnimState, ComponentAnimationStore, render_animated_component, render_clipped,
 };
 use crate::ui::container::{
-    ComponentCategory, ComponentConfig, ComponentKind, ContainerBorderConfig,
+    BackgroundFill, ComponentCategory, ComponentConfig, ComponentKind, ContainerBorderConfig,
+    ContainerGradient, GradientDirection,
 };
 use crate::ui::layout::{ComputedLayout, PlacedComponent, PlacedContainer};
-use crate::ui::theme::{Theme, parse_color};
+use crate::ui::theme::{Theme, blend_color, parse_color};
 use crate::ui::typography::{
     IconSet, RevealState, render_figlet_lines, resolve_logo_lines, slice_marquee_lines,
 };
@@ -72,22 +74,45 @@ fn render_container_box(frame: &mut Frame, container: &PlacedContainer, ctx: &Re
         return;
     }
 
-    let bg = if container.transparent {
-        Color::Reset
-    } else {
-        container
-            .background
-            .as_deref()
-            .map(|c| parse_color(c, ctx.theme.panel_background))
-            .unwrap_or(ctx.theme.panel_background)
+    let style_override = ctx.config.container_styles.get(&container.id);
+    if let Some(grad) = style_override.and_then(|s| s.gradient.as_ref()) {
+        render_gradient_bg(frame, area, grad, ctx.theme.panel_background);
+    }
+
+    let bg = match style_override.map(|s| &s.background) {
+        Some(BackgroundFill::Transparent) => Color::Reset,
+        Some(BackgroundFill::Solid(c)) => parse_color(c, ctx.theme.panel_background),
+        Some(BackgroundFill::Inherit) | None => {
+            if container.transparent {
+                Color::Reset
+            } else {
+                container
+                    .background
+                    .as_deref()
+                    .map(|c| parse_color(c, ctx.theme.panel_background))
+                    .unwrap_or(ctx.theme.panel_background)
+            }
+        }
     };
 
-    let show_border = container.border.enabled
-        && container.border.style != BorderStyle::None
+    let mut border = container.border.clone();
+    if let Some(ov) = style_override {
+        if let Some(c) = &ov.border_color {
+            border.color = Some(c.clone());
+        }
+        if let Some(st) = ov.border_style {
+            border.style = st;
+            border.enabled = st != BorderStyle::None;
+        }
+    }
+
+    let show_border = border.enabled
+        && border.style != BorderStyle::None
         && ctx.config.theme.border_type != BorderStyle::None;
+    let has_grad = style_override.and_then(|s| s.gradient.as_ref()).is_some();
     if show_border && area.width >= 2 && area.height >= 2 {
-        render_border_block(frame, area, &container.border, bg, ctx);
-    } else if !container.transparent && bg != Color::Reset {
+        render_border_block(frame, area, &border, bg, !has_grad, ctx);
+    } else if !has_grad && bg != Color::Reset {
         frame.render_widget(Block::default().style(Style::default().bg(bg)), area);
     }
 }
@@ -103,24 +128,48 @@ fn render_placed_component(
         return;
     }
 
-    let comp = &placed.config;
-    let bg = comp
-        .visual
-        .background
-        .as_deref()
-        .map(|c| parse_color(c, ctx.panel_bg()))
-        .unwrap_or_else(|| ctx.panel_bg());
+    let mut comp = placed.config.clone();
+    let style_override = ctx.config.container_styles.get(&placed.id);
+    if let Some(ov) = style_override {
+        if let Some(fg) = &ov.foreground {
+            comp.visual.color = Some(fg.clone());
+        }
+        if let Some(c) = &ov.border_color {
+            comp.visual.border.color = Some(c.clone());
+        }
+        if let Some(st) = ov.border_style {
+            comp.visual.border.style = st;
+            comp.visual.border.enabled = st != BorderStyle::None;
+        }
+    }
+
+    let has_grad = style_override.and_then(|s| s.gradient.as_ref()).is_some();
+    if let Some(grad) = style_override.and_then(|s| s.gradient.as_ref()) {
+        render_gradient_bg(frame, outer, grad, ctx.theme.panel_background);
+    }
+
+    let bg = match style_override.map(|s| &s.background) {
+        Some(BackgroundFill::Transparent) => Color::Reset,
+        Some(BackgroundFill::Solid(c)) => parse_color(c, ctx.theme.panel_background),
+        Some(BackgroundFill::Inherit) | None => comp
+            .visual
+            .background
+            .as_deref()
+            .map(|c| parse_color(c, ctx.panel_bg()))
+            .unwrap_or_else(|| ctx.panel_bg()),
+    };
 
     let show_border = comp.visual.border.enabled
         && comp.visual.border.style != BorderStyle::None
-        && ctx.config.theme.border_type != BorderStyle::None;
+        && (ctx.config.theme.border_type != BorderStyle::None
+            || style_override.and_then(|s| s.border_style).is_some());
     if show_border && outer.width >= 2 && outer.height >= 2 {
         let mut border = comp.visual.border.clone();
         if border.title.is_none() {
             border.title = comp.content.title.clone();
         }
-        render_border_block(frame, outer, &border, bg, ctx);
-    } else if comp.visual.background.is_some() && bg != Color::Reset {
+        render_border_block(frame, outer, &border, bg, !has_grad, ctx);
+    } else if !has_grad && bg != Color::Reset {
         frame.render_widget(
             Block::default().style(Style::default().fg(ctx.theme.text).bg(bg)),
             outer,
@@ -133,10 +182,56 @@ fn render_placed_component(
     }
 
     match comp.category {
-        ComponentCategory::Static => render_static_component(frame, inner, comp, anim_store, ctx),
-        ComponentCategory::Dynamic => render_dynamic_component(frame, inner, comp, ctx),
+        ComponentCategory::Static => render_static_component(frame, inner, &comp, anim_store, ctx),
+        ComponentCategory::Dynamic => render_dynamic_component(frame, inner, &comp, ctx),
         ComponentCategory::Animated => {
-            render_animated_component(frame, inner, comp, anim_store, ctx.config, ctx.theme);
+            render_animated_component(frame, inner, &comp, anim_store, ctx.config, ctx.theme);
+        }
+    }
+}
+
+fn render_gradient_bg(
+    frame: &mut Frame,
+    area: Rect,
+    grad: &ContainerGradient,
+    fallback: Color,
+) {
+    if grad.colors.len() < 2 || area.width == 0 || area.height == 0 {
+        return;
+    }
+    let parsed: Vec<Color> = grad
+        .colors
+        .iter()
+        .map(|c| parse_color(c, fallback))
+        .collect();
+    let segments = parsed.len() - 1;
+    let buf = frame.buffer_mut();
+
+    for dy in 0..area.height {
+        for dx in 0..area.width {
+            let t = match grad.direction {
+                GradientDirection::Horizontal => {
+                    if area.width <= 1 {
+                        0.0
+                    } else {
+                        dx as f32 / (area.width - 1) as f32
+                    }
+                }
+                GradientDirection::Vertical => {
+                    if area.height <= 1 {
+                        0.0
+                    } else {
+                        dy as f32 / (area.height - 1) as f32
+                    }
+                }
+            };
+            let scaled = (t.clamp(0.0, 1.0)) * segments as f32;
+            let idx = (scaled.floor() as usize).min(segments - 1);
+            let local_t = scaled - idx as f32;
+            let color = blend_color(parsed[idx], parsed[idx + 1], local_t);
+            if let Some(cell) = buf.cell_mut((area.x + dx, area.y + dy)) {
+                cell.set_bg(color);
+            }
         }
     }
 }
@@ -146,6 +241,7 @@ fn render_border_block(
     area: Rect,
     border: &ContainerBorderConfig,
     bg: Color,
+    clear_if_opaque: bool,
     ctx: &RenderContext,
 ) {
     let border_color = border
@@ -153,11 +249,23 @@ fn render_border_block(
         .as_deref()
         .map(|c| parse_color(c, ctx.theme.border))
         .unwrap_or(ctx.theme.border);
+    let custom_chars = BorderChars::from_style(border.style);
+    let border_set = if border.style != BorderStyle::None {
+        custom_chars.as_ratatui_set()
+    } else {
+        ctx.theme.borders.as_ratatui_set()
+    };
+    let mut b_style = Style::default().fg(border_color);
+    let mut blk_style = Style::default().fg(ctx.theme.text);
+    if clear_if_opaque {
+        b_style = b_style.bg(bg);
+        blk_style = blk_style.bg(bg);
+    }
     let mut block = Block::default()
         .borders(Borders::ALL)
-        .border_set(ctx.theme.borders.as_ratatui_set())
-        .border_style(Style::default().fg(border_color).bg(bg))
-        .style(Style::default().fg(ctx.theme.text).bg(bg));
+        .border_set(border_set)
+        .border_style(b_style)
+        .style(blk_style);
 
     if let Some(title) = &border.title
         && !title.is_empty()
@@ -170,7 +278,7 @@ fn render_border_block(
         ));
     }
 
-    if bg != Color::Reset {
+    if clear_if_opaque && bg != Color::Reset {
         frame.render_widget(Clear, area);
     }
     frame.render_widget(block, area);

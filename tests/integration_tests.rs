@@ -7,7 +7,8 @@ use egotop::animation::{
 };
 use egotop::command::{
     AnimationAction, BackgroundCommand, CommandLineState, CommandRegistry, CompletionContext,
-    CompletionEngine, LayoutSelection, ParsedCommand, WriteTarget, parse_command,
+    CompletionEngine, ContainerCommand, ContainerProperty, LayoutSelection, ParsedCommand,
+    WriteTarget, parse_command,
 };
 use egotop::config::{
     AnimationDefinition, AnimationPackage, BackgroundConfig, BorderStyle, Config,
@@ -37,9 +38,10 @@ use egotop::ui::widgets::{
     truncate_display_width,
 };
 use egotop::ui::{
-    ComponentAnimationStore, ComponentCategory, ComponentConfig, ComponentKind,
-    ContainerBorderConfig, ContainerConfig, ContainerDirection, ContainerNode, ContainerSize,
-    RevealState, compute_container_layout, compute_dashboard_layout,
+    BackgroundFill, ComponentAnimationStore, ComponentCategory, ComponentConfig, ComponentKind,
+    ContainerBorderConfig, ContainerConfig, ContainerDirection, ContainerGradient, ContainerNode,
+    ContainerSize, ContainerStyle, EffectPolicy, ExclusionMask, GradientDirection, RevealState,
+    compute_container_layout, compute_dashboard_layout, has_container_id,
 };
 use unicode_width::UnicodeWidthStr;
 use ratatui::Terminal;
@@ -254,10 +256,12 @@ fn command_parser_and_contextual_completion_engine() {
     ];
     let animations = AnimationCatalog::load();
     let layouts = vec!["my_grid".to_string()];
+    let containers = vec!["root".to_string(), "system".to_string()];
     let ctx = CompletionContext {
         themes: &themes,
         animations: &animations,
         layouts: &layouts,
+        containers: &containers,
     };
 
     // No duplicate entries for command aliases (:w / :write, :q / :quit)
@@ -420,10 +424,12 @@ fn full_dashboard_and_cursor_startup_render_via_test_backend() {
         source_path: None,
     }];
     let layouts = vec![];
+    let containers = vec![];
     let cctx = CompletionContext {
         themes: &themes,
         animations: &catalog,
         layouts: &layouts,
+        containers: &containers,
     };
 
     let backend = TestBackend::new(120, 36);
@@ -782,10 +788,12 @@ fn completion_excludes_exact_matches_and_preserves_alternatives() {
     ];
     let animations = AnimationCatalog::load();
     let layouts = vec!["my_grid".to_string(), "compact".to_string()];
+    let containers = vec!["root".to_string(), "system".to_string()];
     let ctx = CompletionContext {
         themes: &themes,
         animations: &animations,
         layouts: &layouts,
+        containers: &containers,
     };
 
     // Case A: partial command suggests full command
@@ -1000,10 +1008,12 @@ fn popup_layout_prevents_overflow_handles_unicode_and_resizes_cleanly() {
     // 3. Completion popup stays cleanly within borders when resized to narrow terminals
     let registry = CommandRegistry::new();
     let layouts = Vec::new();
+    let containers = Vec::new();
     let cctx = CompletionContext {
         themes: &themes,
         animations: &catalog,
         layouts: &layouts,
+        containers: &containers,
     };
     let mut cmd_line = CommandLineState::default();
     cmd_line.open(&registry, &cctx);
@@ -1398,10 +1408,12 @@ count = 9999
     let themes = Vec::new();
     let animations = AnimationCatalog::load();
     let layouts = Vec::new();
+    let containers = Vec::new();
     let cctx = CompletionContext {
         themes: &themes,
         animations: &animations,
         layouts: &layouts,
+        containers: &containers,
     };
     let res = CompletionEngine::complete("background ", 11, &registry, &cctx);
     assert!(res.items.iter().any(|i| i.insert_text == "starfield"));
@@ -2415,4 +2427,163 @@ fn container_isolation_and_independent_transparency_flags() {
     let buf2 = term2.backend().buffer();
     assert_eq!(buf2[(opaque_rect.x, opaque_rect.y)].bg, Color::Rgb(0x11, 0x22, 0x33));
     assert_eq!(buf2[(trans_rect.x, trans_rect.y)].bg, Color::Reset);
+}
+
+#[test]
+fn container_styling_system_commands_gradient_effects_and_toml() {
+    // 1. Command parsing & validation
+    assert_eq!(
+        parse_command(":container list").unwrap(),
+        ParsedCommand::Container(ContainerCommand::List)
+    );
+    assert_eq!(
+        parse_command(":container inspect system").unwrap(),
+        ParsedCommand::Container(ContainerCommand::Inspect("system".to_string()))
+    );
+    assert_eq!(
+        parse_command(":container set system background #112233").unwrap(),
+        ParsedCommand::Container(ContainerCommand::Set {
+            id: "system".to_string(),
+            property: ContainerProperty::Background(BackgroundFill::Solid("#112233".to_string())),
+        })
+    );
+    assert_eq!(
+        parse_command(":container set system foreground #AABBCC").unwrap(),
+        ParsedCommand::Container(ContainerCommand::Set {
+            id: "system".to_string(),
+            property: ContainerProperty::Foreground(Some("#AABBCC".to_string())),
+        })
+    );
+    assert_eq!(
+        parse_command(":container set system border.style double").unwrap(),
+        ParsedCommand::Container(ContainerCommand::Set {
+            id: "system".to_string(),
+            property: ContainerProperty::BorderStyle(BorderStyle::Double),
+        })
+    );
+    assert_eq!(
+        parse_command(":container set system effects allow").unwrap(),
+        ParsedCommand::Container(ContainerCommand::Set {
+            id: "system".to_string(),
+            property: ContainerProperty::Effects(EffectPolicy::Allow),
+        })
+    );
+    assert_eq!(
+        parse_command(":container gradient greeting horizontal #102030 #405060").unwrap(),
+        ParsedCommand::Container(ContainerCommand::Gradient {
+            id: "greeting".to_string(),
+            direction: GradientDirection::Horizontal,
+            colors: vec!["#102030".to_string(), "#405060".to_string()],
+        })
+    );
+    assert_eq!(
+        parse_command(":container reset system").unwrap(),
+        ParsedCommand::Container(ContainerCommand::Reset("system".to_string()))
+    );
+
+    // Invalid colors, directions, policies, and gradient < 2 colors must fail
+    assert!(parse_command(":container set system background not-a-color").is_err());
+    assert!(parse_command(":container set system effects bogus").is_err());
+    assert!(parse_command(":container gradient system diagonal #111111 #222222").is_err());
+    assert!(parse_command(":container gradient system horizontal #111111").is_err());
+
+    // 2. Autocomplete for :container
+    let registry = CommandRegistry::new();
+    let themes = vec![];
+    let animations = AnimationCatalog::load();
+    let layouts = vec![];
+    let containers = vec!["root".to_string(), "system".to_string(), "hardware".to_string()];
+    let cctx = CompletionContext {
+        themes: &themes,
+        animations: &animations,
+        layouts: &layouts,
+        containers: &containers,
+    };
+    let sub_comp = CompletionEngine::complete("container ", 10, &registry, &cctx);
+    assert!(sub_comp.items.iter().any(|i| i.insert_text == "gradient"));
+    let id_comp = CompletionEngine::complete("container set sy", 16, &registry, &cctx);
+    assert_eq!(id_comp.items.len(), 1);
+    assert_eq!(id_comp.items[0].insert_text, "system");
+    let eff_comp = CompletionEngine::complete("container set system effects ", 29, &registry, &cctx);
+    assert!(eff_comp.items.iter().any(|i| i.insert_text == "isolated"));
+
+    // 3. Runtime rendering: gradient + effect policy (allow vs exclude) + TOML persistence
+    let mut cfg = Config::default();
+    assert!(!has_container_id(&cfg.ui.root, "nonexistent_id"));
+    assert!(has_container_id(&cfg.ui.root, "system"));
+
+    cfg.container_styles.insert(
+        "greeting".to_string(),
+        ContainerStyle {
+            background: BackgroundFill::Inherit,
+            foreground: Some("#FFFFFF".to_string()),
+            border_color: Some("#FF00FF".to_string()),
+            border_style: Some(BorderStyle::Double),
+            gradient: Some(ContainerGradient {
+                direction: GradientDirection::Horizontal,
+                colors: vec!["#100020".to_string(), "#204080".to_string()],
+            }),
+            effects: EffectPolicy::Allow,
+        },
+    );
+
+    // TOML round-trip persistence
+    let path = temp_config_path("container_styles");
+    egotop::config::save_config_to_path(&path, &cfg).unwrap();
+    let reloaded = load_from_path(&path).unwrap();
+    assert_eq!(reloaded.container_styles, cfg.container_styles);
+    let _ = std::fs::remove_file(&path);
+
+    // ExclusionMask respects EffectPolicy::Allow (not excluded) vs Exclude (excluded)
+    let layout = compute_dashboard_layout(Rect::new(0, 0, 100, 36), &cfg, ViewMode::Dashboard);
+    let mask = ExclusionMask::from_layout_with_styles(&layout, &cfg.container_styles);
+    let greet_rect = layout.find_component("greeting").unwrap().outer_rect;
+    let sys_rect = layout.find_component("system").unwrap().outer_rect;
+    assert!(!mask.contains(greet_rect.x + 1, greet_rect.y + 1));
+    assert!(mask.contains(sys_rect.x + 1, sys_rect.y + 1));
+
+    // Render gradient onto greeting
+    let theme = Theme::from_config(&cfg.theme);
+    let mut collector = SystemCollector::new();
+    let snap = collector.collect(100, 36);
+    let reveal = RevealState::complete();
+    let effect = create_effect(EffectKind::None, 100, 36, &cfg.background);
+    let transition = TransitionPlayer::new("none", &animations, 0);
+    let anim_store = ComponentAnimationStore::new();
+    let mut customizer = CustomizerState::default();
+    let cmd_line = CommandLineState::default();
+    let startup = CursorStartupState::new(false);
+    let rctx = RenderContext {
+        config: &cfg,
+        theme: &theme,
+        snapshot: &snap,
+        reveal: &reveal,
+        view_mode: ViewMode::Dashboard,
+        paused: false,
+        show_help: false,
+        fps: 30.0,
+        status_toast: None,
+        transparent_bg: false,
+        config_error_count: 0,
+    };
+    let mut term = Terminal::new(TestBackend::new(100, 36)).unwrap();
+    term.draw(|frame| {
+        draw_frame(
+            frame,
+            &cfg,
+            effect.as_ref(),
+            &transition,
+            &anim_store,
+            &mut customizer,
+            &cmd_line,
+            &startup,
+            &themes,
+            &animations,
+            &rctx,
+        );
+    })
+    .unwrap();
+    let buf = term.backend().buffer();
+    assert_eq!(buf[(greet_rect.x, greet_rect.y)].symbol(), "╔");
+    assert_ne!(buf[(greet_rect.x, greet_rect.y)].bg, buf[(greet_rect.right() - 1, greet_rect.y)].bg);
 }

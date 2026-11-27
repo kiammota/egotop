@@ -1,9 +1,10 @@
 use crate::config::{BorderStyle, Config, ViewMode};
 use crate::ui::container::{
     ComponentConfig, ContainerBorderConfig, ContainerConfig, ContainerDirection, ContainerNode,
-    ContainerSize,
+    ContainerSize, ContainerStyle, EffectPolicy,
 };
 use ratatui::layout::Rect;
+use std::collections::BTreeMap;
 
 #[derive(Debug, Clone)]
 pub struct PlacedContainer {
@@ -37,14 +38,34 @@ pub struct ExclusionMask {
 
 impl ExclusionMask {
     pub fn from_layout(layout: &ComputedLayout) -> Self {
+        Self::from_layout_with_styles(layout, &BTreeMap::new())
+    }
+
+    pub fn from_layout_with_styles(
+        layout: &ComputedLayout,
+        styles: &BTreeMap<String, ContainerStyle>,
+    ) -> Self {
         let mut rects = Vec::with_capacity(layout.components.len() + layout.containers.len());
         for c in &layout.containers {
-            if c.id != "root" && c.id != "minimal_root" && (c.border.enabled || !c.transparent) {
+            if c.id == "root" || c.id == "minimal_root" {
+                continue;
+            }
+            let policy = styles
+                .get(&c.id)
+                .map(|s| s.effects)
+                .unwrap_or(EffectPolicy::Exclude);
+            if policy != EffectPolicy::Allow && (c.border.enabled || !c.transparent || styles.contains_key(&c.id)) {
                 rects.push(c.outer_rect);
             }
         }
         for comp in &layout.components {
-            rects.push(comp.outer_rect);
+            let policy = styles
+                .get(&comp.id)
+                .map(|s| s.effects)
+                .unwrap_or(EffectPolicy::Exclude);
+            if policy != EffectPolicy::Allow {
+                rects.push(comp.outer_rect);
+            }
         }
         Self { rects }
     }

@@ -1,6 +1,90 @@
 use crate::config::{Align, BorderStyle, GraphStyle, MatrixCharset};
 use serde::{Deserialize, Deserializer, Serialize};
 
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum BackgroundFill {
+    #[default]
+    Inherit,
+    Transparent,
+    Solid(String),
+}
+
+impl Serialize for BackgroundFill {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Self::Inherit => serializer.serialize_str("inherit"),
+            Self::Transparent => serializer.serialize_str("transparent"),
+            Self::Solid(c) => serializer.serialize_str(c),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for BackgroundFill {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(deserializer)?;
+        let low = s.trim().to_ascii_lowercase();
+        match low.as_str() {
+            "" | "inherit" => Ok(Self::Inherit),
+            "transparent" | "reset" => Ok(Self::Transparent),
+            _ => Ok(Self::Solid(s.trim().to_string())),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum GradientDirection {
+    #[default]
+    Horizontal,
+    Vertical,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ContainerGradient {
+    pub direction: GradientDirection,
+    pub colors: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum EffectPolicy {
+    #[default]
+    Exclude,
+    Allow,
+    Isolated,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(default)]
+pub struct ContainerStyle {
+    pub background: BackgroundFill,
+    pub foreground: Option<String>,
+    pub border_color: Option<String>,
+    pub border_style: Option<BorderStyle>,
+    pub gradient: Option<ContainerGradient>,
+    pub effects: EffectPolicy,
+}
+
+pub fn collect_all_container_ids(container: &ContainerConfig, out: &mut Vec<String>) {
+    out.push(container.id.clone());
+    for child in &container.children {
+        match child {
+            ContainerNode::Container(sub) => collect_all_container_ids(sub, out),
+            ContainerNode::Component(comp) => out.push(comp.id.clone()),
+        }
+    }
+}
+
+pub fn has_container_id(container: &ContainerConfig, id: &str) -> bool {
+    if container.id == id {
+        return true;
+    }
+    container.children.iter().any(|child| match child {
+        ContainerNode::Container(sub) => has_container_id(sub, id),
+        ContainerNode::Component(comp) => comp.id == id,
+    })
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum ContainerDirection {

@@ -1,4 +1,32 @@
-use crate::config::{EffectKind, ViewMode};
+use crate::config::schema::is_valid_color_spec;
+use crate::config::{BorderStyle, EffectKind, ViewMode};
+use crate::ui::borders::parse_border_style;
+use crate::ui::container::{BackgroundFill, EffectPolicy, GradientDirection};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ContainerProperty {
+    Background(BackgroundFill),
+    Foreground(Option<String>),
+    BorderColor(Option<String>),
+    BorderStyle(BorderStyle),
+    Effects(EffectPolicy),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ContainerCommand {
+    List,
+    Inspect(String),
+    Set {
+        id: String,
+        property: ContainerProperty,
+    },
+    Gradient {
+        id: String,
+        direction: GradientDirection,
+        colors: Vec<String>,
+    },
+    Reset(String),
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AnimationAction {
@@ -50,6 +78,7 @@ pub enum ParsedCommand {
     Background(BackgroundCommand),
     Effect(Option<EffectKind>),
     Layout(Option<LayoutSelection>),
+    Container(ContainerCommand),
     Set {
         key: String,
         value: String,
@@ -107,6 +136,7 @@ pub fn parse_command(raw: &str) -> Result<ParsedCommand, String> {
             Ok(ParsedCommand::Effect(Some(kind)))
         }
         "layout" => parse_layout_command(&rest),
+        "container" => parse_container_command(&rest),
         "set" => parse_set_command(&rest),
         other => Err(format!("Unknown command ':{other}' (type :help for usage)")),
     }
@@ -249,4 +279,148 @@ fn parse_set_command(args: &[&str]) -> Result<ParsedCommand, String> {
     let key = args[0].to_string();
     let value = args[1..].join(" ");
     Ok(ParsedCommand::Set { key, value })
+}
+
+fn parse_container_command(args: &[&str]) -> Result<ParsedCommand, String> {
+    let Some(sub) = args.first().map(|s| s.to_ascii_lowercase()) else {
+        return Ok(ParsedCommand::Container(ContainerCommand::List));
+    };
+
+    match sub.as_str() {
+        "list" => Ok(ParsedCommand::Container(ContainerCommand::List)),
+        "inspect" => {
+            let id = args
+                .get(1)
+                .ok_or_else(|| "Usage: :container inspect <id>".to_string())?;
+            Ok(ParsedCommand::Container(ContainerCommand::Inspect(
+                (*id).to_string(),
+            )))
+        }
+        "reset" => {
+            let id = args
+                .get(1)
+                .ok_or_else(|| "Usage: :container reset <id>".to_string())?;
+            Ok(ParsedCommand::Container(ContainerCommand::Reset(
+                (*id).to_string(),
+            )))
+        }
+        "set" => {
+            let id = args
+                .get(1)
+                .ok_or_else(|| "Usage: :container set <id> <property> <value>".to_string())?;
+            let prop = args
+                .get(2)
+                .ok_or_else(|| "Usage: :container set <id> <property> <value>".to_string())?;
+            let val = args
+                .get(3)
+                .ok_or_else(|| "Usage: :container set <id> <property> <value>".to_string())?;
+
+            let property = match prop.to_ascii_lowercase().as_str() {
+                "background" | "bg" => {
+                    let low = val.to_ascii_lowercase();
+                    let fill = match low.as_str() {
+                        "inherit" => BackgroundFill::Inherit,
+                        "transparent" | "reset" => BackgroundFill::Transparent,
+                        _ => {
+                            if !is_valid_color_spec(val) {
+                                return Err(format!("Invalid background color '{val}'"));
+                            }
+                            BackgroundFill::Solid((*val).to_string())
+                        }
+                    };
+                    ContainerProperty::Background(fill)
+                }
+                "foreground" | "fg" => {
+                    let low = val.to_ascii_lowercase();
+                    if low == "inherit" || low == "none" {
+                        ContainerProperty::Foreground(None)
+                    } else {
+                        if !is_valid_color_spec(val) {
+                            return Err(format!("Invalid foreground color '{val}'"));
+                        }
+                        ContainerProperty::Foreground(Some((*val).to_string()))
+                    }
+                }
+                "border.color" => {
+                    let low = val.to_ascii_lowercase();
+                    if low == "inherit" || low == "none" {
+                        ContainerProperty::BorderColor(None)
+                    } else {
+                        if !is_valid_color_spec(val) {
+                            return Err(format!("Invalid border color '{val}'"));
+                        }
+                        ContainerProperty::BorderColor(Some((*val).to_string()))
+                    }
+                }
+                "border.style" => {
+                    ContainerProperty::BorderStyle(parse_border_style(val)?)
+                }
+                "effects" => {
+                    let policy = match val.to_ascii_lowercase().as_str() {
+                        "exclude" => EffectPolicy::Exclude,
+                        "allow" => EffectPolicy::Allow,
+                        "isolated" => EffectPolicy::Isolated,
+                        other => {
+                            return Err(format!(
+                                "Invalid effect policy '{other}' (expected exclude, allow, or isolated)"
+                            ));
+                        }
+                    };
+                    ContainerProperty::Effects(policy)
+                }
+                other => {
+                    return Err(format!(
+                        "Unknown container property '{other}' (expected background, foreground, border.color, border.style, or effects)"
+                    ));
+                }
+            };
+
+            Ok(ParsedCommand::Container(ContainerCommand::Set {
+                id: (*id).to_string(),
+                property,
+            }))
+        }
+        "gradient" => {
+            let id = args
+                .get(1)
+                .ok_or_else(|| {
+                    "Usage: :container gradient <id> <direction> <color1> <color2> [color...]"
+                        .to_string()
+                })?;
+            let dir_str = args
+                .get(2)
+                .ok_or_else(|| {
+                    "Usage: :container gradient <id> <horizontal|vertical> <color1> <color2> [color...]"
+                        .to_string()
+                })?;
+            let direction = match dir_str.to_ascii_lowercase().as_str() {
+                "horizontal" | "h" => GradientDirection::Horizontal,
+                "vertical" | "v" => GradientDirection::Vertical,
+                other => {
+                    return Err(format!(
+                        "Invalid gradient direction '{other}' (expected horizontal or vertical)"
+                    ));
+                }
+            };
+            let color_args = &args[3..];
+            if color_args.len() < 2 {
+                return Err("Gradient requires at least 2 colors".to_string());
+            }
+            let mut colors = Vec::with_capacity(color_args.len());
+            for c in color_args {
+                if !is_valid_color_spec(c) {
+                    return Err(format!("Invalid gradient color '{c}'"));
+                }
+                colors.push((*c).to_string());
+            }
+            Ok(ParsedCommand::Container(ContainerCommand::Gradient {
+                id: (*id).to_string(),
+                direction,
+                colors,
+            }))
+        }
+        other => Err(format!(
+            "Unknown :container subcommand '{other}' (expected list, inspect, set, gradient, or reset)"
+        )),
+    }
 }

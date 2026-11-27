@@ -22,6 +22,7 @@ pub struct CompletionContext<'a> {
     pub themes: &'a [ThemeEntry],
     pub animations: &'a AnimationCatalog,
     pub layouts: &'a [String],
+    pub containers: &'a [String],
 }
 
 pub struct CompletionEngine;
@@ -85,6 +86,9 @@ impl CompletionEngine {
                 }
                 CompletionProviderKind::Layout => {
                     complete_layout(&prev_args, &current_token, ctx.layouts)
+                }
+                CompletionProviderKind::Container => {
+                    complete_container(&prev_args, &current_token, ctx.containers)
                 }
                 CompletionProviderKind::SetOption => complete_set_option(&prev_args, &current_token),
                 CompletionProviderKind::Effect => {
@@ -511,6 +515,93 @@ fn complete_set_option(prev_args: &[String], current: &str) -> Vec<CompletionIte
         {
             return complete_from_pairs(&p, suggested_chars_for_property(prop), None);
         }
+    }
+
+    Vec::new()
+}
+
+fn complete_container(
+    prev_args: &[String],
+    current: &str,
+    containers: &[String],
+) -> Vec<CompletionItem> {
+    let p = current.to_ascii_lowercase();
+    if prev_args.is_empty() {
+        return complete_from_pairs(
+            &p,
+            &[
+                ("list", "List all container IDs"),
+                ("inspect", "Inspect style of a container"),
+                ("set", "Set a style property on a container"),
+                ("gradient", "Apply a multi-stop gradient to a container"),
+                ("reset", "Reset container style to defaults"),
+            ],
+            None,
+        );
+    }
+
+    let sub = prev_args[0].to_ascii_lowercase();
+    if prev_args.len() == 1 && matches!(sub.as_str(), "inspect" | "set" | "gradient" | "reset") {
+        return containers
+            .iter()
+            .filter(|id| id.to_ascii_lowercase().starts_with(&p) || id.to_ascii_lowercase().contains(&p))
+            .map(|id| CompletionItem {
+                insert_text: id.clone(),
+                label: id.clone(),
+                description: "Container ID".to_string(),
+                expected_arg: None,
+            })
+            .collect();
+    }
+
+    if sub == "set" && prev_args.len() == 2 {
+        return complete_from_pairs(
+            &p,
+            &[
+                ("background", "inherit | transparent | <color>"),
+                ("foreground", "Default content foreground color"),
+                ("border.color", "Border color override"),
+                ("border.style", "rounded | plain | double | thick | none"),
+                ("effects", "exclude | allow | isolated"),
+            ],
+            None,
+        );
+    }
+
+    if sub == "set" && prev_args.len() == 3 {
+        return match prev_args[2].to_ascii_lowercase().as_str() {
+            "background" | "bg" => complete_from_pairs(
+                &p,
+                &[
+                    ("inherit", "Inherit parent/global background"),
+                    ("transparent", "Terminal transparency (Color::Reset)"),
+                    ("#0A141E", "Hex solid color example"),
+                ],
+                None,
+            ),
+            "border.style" => complete_from_pairs(&p, BorderChars::STYLE_NAMES, None),
+            "effects" => complete_from_pairs(
+                &p,
+                &[
+                    ("exclude", "Block global effects inside container"),
+                    ("allow", "Allow global effects inside container"),
+                    ("isolated", "Block global effects, allow local container effects"),
+                ],
+                None,
+            ),
+            _ => Vec::new(),
+        };
+    }
+
+    if sub == "gradient" && prev_args.len() == 2 {
+        return complete_from_pairs(
+            &p,
+            &[
+                ("horizontal", "Left-to-right gradient"),
+                ("vertical", "Top-to-bottom gradient"),
+            ],
+            None,
+        );
     }
 
     Vec::new()
