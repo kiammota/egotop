@@ -102,11 +102,16 @@ pub fn compute_dashboard_layout(
             .container_styles
             .get(&c.name)
             .and_then(|s| s.border_style);
-        let eff_style = ov_style.or(c.border.style).unwrap_or(cfg.theme.border_type);
-        if eff_style == BorderStyle::None {
+        if let Some(st) = ov_style {
+            if st == BorderStyle::None {
+                c.border.enabled = false;
+                c.border.style = Some(BorderStyle::None);
+            } else {
+                c.border.enabled = true;
+                c.border.style = Some(st);
+            }
+        } else if cfg.theme.border_type == BorderStyle::None {
             c.border.enabled = false;
-        } else if let Some(st) = ov_style {
-            c.border.style = Some(st);
         }
     }
 
@@ -754,7 +759,7 @@ pub fn compute_inner_rect_with_title(
 
     let pad_x = padding.min(after_border.width / 2);
     let pad_y = padding.min(after_border.height / 2);
-    let top_pad = if !has_border && has_title {
+    let top_pad = if border_inset == 0 && has_title {
         pad_y.max(1).min(after_border.height)
     } else {
         pad_y

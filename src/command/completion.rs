@@ -84,6 +84,9 @@ impl CompletionEngine {
                 CompletionProviderKind::Background => {
                     complete_background(&prev_args, &current_token, ctx.animations)
                 }
+                CompletionProviderKind::Border => {
+                    complete_border(&prev_args, &current_token, ctx.containers)
+                }
                 CompletionProviderKind::Layout => {
                     complete_layout(&prev_args, &current_token, ctx.layouts)
                 }
@@ -339,15 +342,15 @@ fn complete_background(
             Some("<arg>"),
         );
         items.extend(complete_from_pairs(&p, &presets, None));
-        let lua_effects = crate::lua::list_lua_effects();
-        for name in lua_effects {
+        let all_anims = crate::lua::list_all_canvas_animations();
+        for name in all_anims {
             if name.to_ascii_lowercase().starts_with(&p)
                 && !items.iter().any(|i| i.insert_text.eq_ignore_ascii_case(&name))
             {
                 items.push(CompletionItem {
                     insert_text: name.clone(),
                     label: name.clone(),
-                    description: format!("Custom background effect 'effects.{name}'"),
+                    description: format!("Canvas background animation '{name}'"),
                     expected_arg: None,
                 });
             }
@@ -359,15 +362,15 @@ fn complete_background(
         let sub = prev_args[0].to_ascii_lowercase();
         if matches!(sub.as_str(), "set" | "add" | "layer") {
             let mut items = complete_from_pairs(&p, &presets, None);
-            let lua_effects = crate::lua::list_lua_effects();
-            for name in lua_effects {
+            let all_anims = crate::lua::list_all_canvas_animations();
+            for name in all_anims {
                 if name.to_ascii_lowercase().starts_with(&p)
                     && !items.iter().any(|i| i.insert_text.eq_ignore_ascii_case(&name))
                 {
                     items.push(CompletionItem {
                         insert_text: name.clone(),
                         label: name.clone(),
-                        description: format!("Custom background effect 'effects.{name}'"),
+                        description: format!("Canvas background animation '{name}'"),
                         expected_arg: None,
                     });
                 }
@@ -552,6 +555,72 @@ fn complete_set_option(prev_args: &[String], current: &str) -> Vec<CompletionIte
     Vec::new()
 }
 
+fn complete_border(
+    prev_args: &[String],
+    current: &str,
+    containers: &[String],
+) -> Vec<CompletionItem> {
+    let p = current.to_ascii_lowercase();
+    if prev_args.is_empty() {
+        let mut items = complete_from_pairs(&p, BorderChars::STYLE_NAMES, None);
+        if "background".starts_with(&p) {
+            items.push(CompletionItem {
+                insert_text: "background".to_string(),
+                label: "background".to_string(),
+                description: "Global background canvas border".to_string(),
+                expected_arg: Some("<style>".to_string()),
+            });
+        }
+        if "all".starts_with(&p) {
+            items.push(CompletionItem {
+                insert_text: "all".to_string(),
+                label: "all".to_string(),
+                description: "Apply border style to all bordered canvases".to_string(),
+                expected_arg: Some("<style>".to_string()),
+            });
+        }
+        for id in containers {
+            let l = id.to_ascii_lowercase();
+            if l.starts_with(&p) || (!p.is_empty() && l.contains(&p)) {
+                items.push(CompletionItem {
+                    insert_text: id.clone(),
+                    label: id.clone(),
+                    description: format!("Set border for '{id}' container canvas"),
+                    expected_arg: Some("<style>".to_string()),
+                });
+            }
+        }
+        for &(prop, desc) in BorderChars::PROPERTY_SPECS {
+            if prop != "style" && prop.starts_with(&p) {
+                items.push(CompletionItem {
+                    insert_text: prop.to_string(),
+                    label: prop.to_string(),
+                    description: desc.to_string(),
+                    expected_arg: Some("<char>".to_string()),
+                });
+            }
+        }
+        return items;
+    }
+
+    if prev_args.len() == 1 {
+        let first = prev_args[0].to_ascii_lowercase();
+        if matches!(first.as_str(), "all" | "set" | "style" | "background")
+            || containers.iter().any(|c| c.eq_ignore_ascii_case(&first))
+        {
+            return complete_from_pairs(&p, BorderChars::STYLE_NAMES, None);
+        }
+        if BorderChars::PROPERTY_SPECS
+            .iter()
+            .any(|&(k, _)| k != "style" && k == first)
+        {
+            return complete_from_pairs(&p, suggested_chars_for_property(&first), None);
+        }
+    }
+
+    Vec::new()
+}
+
 fn complete_container(
     prev_args: &[String],
     current: &str,
@@ -602,6 +671,7 @@ fn complete_container(
                 ("border.color", "Border color override"),
                 ("border.style", "rounded | plain | double | thick | ascii | none"),
                 ("effects", "exclude | allow | isolated"),
+                ("animation", "Assign an animation/effect to this container canvas"),
             ],
             None,
         );
@@ -628,6 +698,27 @@ fn complete_container(
                 ],
                 None,
             ),
+            "animation" | "anim" | "script" => {
+                let mut items = complete_from_pairs(
+                    &p,
+                    &[("none", "Disable animation on this container canvas")],
+                    None,
+                );
+                for name in crate::lua::list_all_canvas_animations() {
+                    let l = name.to_ascii_lowercase();
+                    if (l.starts_with(&p) || (!p.is_empty() && l.contains(&p)))
+                        && !items.iter().any(|i| i.insert_text.eq_ignore_ascii_case(&name))
+                    {
+                        items.push(CompletionItem {
+                            insert_text: name.clone(),
+                            label: name,
+                            description: "Canvas animation script".to_string(),
+                            expected_arg: None,
+                        });
+                    }
+                }
+                items
+            }
             _ => Vec::new(),
         };
     }

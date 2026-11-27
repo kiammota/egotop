@@ -80,6 +80,7 @@ pub enum ComponentAnimState {
 #[derive(Default)]
 pub struct ComponentAnimationStore {
     states: HashMap<String, ComponentAnimState>,
+    canvas_overlays: HashMap<String, LuaCanvasState>,
 }
 
 impl ComponentAnimationStore {
@@ -89,10 +90,15 @@ impl ComponentAnimationStore {
 
     pub fn clear(&mut self) {
         self.states.clear();
+        self.canvas_overlays.clear();
     }
 
     pub fn get(&self, name: &str) -> Option<&ComponentAnimState> {
         self.states.get(name)
+    }
+
+    pub fn canvas_overlay(&self, name: &str) -> Option<&LuaCanvasState> {
+        self.canvas_overlays.get(name)
     }
 
     pub fn update_all(
@@ -109,6 +115,36 @@ impl ComponentAnimationStore {
             let w = placed.inner_rect.width.max(1);
             let h = placed.inner_rect.height.max(1);
 
+            let override_anim = config
+                .container_styles
+                .get(&cont.name)
+                .and_then(|s| s.animation.as_deref())
+                .map(str::trim);
+
+            if matches!(override_anim, Some("" | "none" | "off")) {
+                self.canvas_overlays.remove(&cont.name);
+            } else if let Some(anim_name) = override_anim {
+                let fps = anim_cfg
+                    .fps
+                    .unwrap_or(config.general.animation_fps)
+                    .clamp(1, 60);
+                let density = anim_cfg.density.unwrap_or(0.65);
+                let theme = Theme::from_config(&config.theme);
+                upsert_lua_canvas_entry(
+                    &mut self.canvas_overlays,
+                    cont,
+                    anim_name,
+                    None,
+                    w,
+                    h,
+                    fps,
+                    speed,
+                    density,
+                    dt_secs,
+                    theme,
+                );
+            }
+
             if cont.inline_lua.is_some() || cont.kind == ComponentKind::Canvas {
                 let fps = anim_cfg
                     .fps
@@ -117,14 +153,27 @@ impl ComponentAnimationStore {
                 let density = anim_cfg.density.unwrap_or(0.65);
                 let theme = Theme::from_config(&config.theme);
 
-                if let Some(inline) = &cont.inline_lua {
-                    let key = format!("inline:{}", cont.name);
-                    let needs_recreate = match self.states.get(&cont.name) {
-                        Some(ComponentAnimState::LuaCanvas(st)) => st.script_key != key,
-                        _ => true,
-                    };
-                    if needs_recreate {
-                        let mut instance = LuaCanvasInstance::from_inline_named(
+                let (script_key, inline_ref) = if let Some(inline) = &cont.inline_lua {
+                    (format!("inline:{}", cont.name), Some(inline))
+                } else {
+                    let sname = cont
+                        .content
+                        .script
+                        .as_deref()
+                        .or(cont.content.preset.as_deref())
+                        .or(anim_cfg.style.as_deref())
+                        .unwrap_or("christmas_tree")
+                        .to_string();
+                    (sname, None)
+                };
+
+                let needs_recreate = match self.states.get(&cont.name) {
+                    Some(ComponentAnimState::LuaCanvas(st)) => st.script_key != script_key,
+                    _ => true,
+                };
+                if needs_recreate {
+                    let mut instance = if let Some(inline) = inline_ref {
+                        LuaCanvasInstance::from_inline_named(
                             &cont.name,
                             &cont.description,
                             inline,
@@ -132,74 +181,40 @@ impl ComponentAnimationStore {
                             h,
                             fps,
                             theme,
-                        );
-                        instance.update(dt_secs, speed);
-                        self.states.insert(
-                            cont.name.clone(),
-                            ComponentAnimState::LuaCanvas(LuaCanvasState {
-                                instance,
-                                script_key: key,
-                                width: w,
-                                height: h,
-                            }),
-                        );
-                    } else if let Some(ComponentAnimState::LuaCanvas(st)) =
-                        self.states.get_mut(&cont.name)
-                    {
-                        st.instance.set_theme(theme);
-                        if st.width != w || st.height != h {
-                            st.instance.resize(w, h);
-                            st.width = w;
-                            st.height = h;
-                        }
-                        st.instance.update(dt_secs, speed);
-                    }
-                } else {
-                    let script_name = cont
-                        .content
-                        .script
-                        .as_deref()
-                        .or(cont.content.preset.as_deref())
-                        .or(anim_cfg.style.as_deref())
-                        .unwrap_or("effects.christmas_tree")
-                        .to_string();
-                    let needs_recreate = match self.states.get(&cont.name) {
-                        Some(ComponentAnimState::LuaCanvas(st)) => st.script_key != script_name,
-                        _ => true,
-                    };
-                    if needs_recreate {
-                        let mut instance = LuaCanvasInstance::from_script_name_named(
+                        )
+                    } else {
+                        LuaCanvasInstance::from_script_name_named(
                             &cont.name,
                             &cont.description,
-                            &script_name,
+                            &script_key,
                             w,
                             h,
                             fps,
                             speed,
                             density,
                             theme,
-                        );
-                        instance.update(dt_secs, speed);
-                        self.states.insert(
-                            cont.name.clone(),
-                            ComponentAnimState::LuaCanvas(LuaCanvasState {
-                                instance,
-                                script_key: script_name,
-                                width: w,
-                                height: h,
-                            }),
-                        );
-                    } else if let Some(ComponentAnimState::LuaCanvas(st)) =
-                        self.states.get_mut(&cont.name)
-                    {
-                        st.instance.set_theme(theme);
-                        if st.width != w || st.height != h {
-                            st.instance.resize(w, h);
-                            st.width = w;
-                            st.height = h;
-                        }
-                        st.instance.update(dt_secs, speed);
+                        )
+                    };
+                    instance.update(dt_secs, speed);
+                    self.states.insert(
+                        cont.name.clone(),
+                        ComponentAnimState::LuaCanvas(LuaCanvasState {
+                            instance,
+                            script_key,
+                            width: w,
+                            height: h,
+                        }),
+                    );
+                } else if let Some(ComponentAnimState::LuaCanvas(st)) =
+                    self.states.get_mut(&cont.name)
+                {
+                    st.instance.set_theme(theme);
+                    if st.width != w || st.height != h {
+                        st.instance.resize(w, h);
+                        st.width = w;
+                        st.height = h;
                     }
+                    st.instance.update(dt_secs, speed);
                 }
                 continue;
             }
@@ -347,6 +362,69 @@ impl ComponentAnimationStore {
                 _ => {}
             }
         }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn upsert_lua_canvas_entry(
+    map: &mut HashMap<String, LuaCanvasState>,
+    cont: &ContainerConfig,
+    script_key: &str,
+    inline: Option<&crate::ui::container::InlineLuaScript>,
+    w: u16,
+    h: u16,
+    fps: u32,
+    speed: f32,
+    density: f32,
+    dt_secs: f32,
+    theme: Theme,
+) {
+    let needs_recreate = match map.get(&cont.name) {
+        Some(st) => st.script_key != script_key,
+        None => true,
+    };
+    if needs_recreate {
+        let mut instance = if let Some(in_lua) = inline {
+            LuaCanvasInstance::from_inline_named(
+                &cont.name,
+                &cont.description,
+                in_lua,
+                w,
+                h,
+                fps,
+                theme,
+            )
+        } else {
+            LuaCanvasInstance::from_script_name_named(
+                &cont.name,
+                &cont.description,
+                script_key,
+                w,
+                h,
+                fps,
+                speed,
+                density,
+                theme,
+            )
+        };
+        instance.update(dt_secs, speed);
+        map.insert(
+            cont.name.clone(),
+            LuaCanvasState {
+                instance,
+                script_key: script_key.to_string(),
+                width: w,
+                height: h,
+            },
+        );
+    } else if let Some(st) = map.get_mut(&cont.name) {
+        st.instance.set_theme(theme);
+        if st.width != w || st.height != h {
+            st.instance.resize(w, h);
+            st.width = w;
+            st.height = h;
+        }
+        st.instance.update(dt_secs, speed);
     }
 }
 

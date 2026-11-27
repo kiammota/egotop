@@ -185,8 +185,20 @@ fn render_placed_container(
 
     // Render all container content strictly into its own isolated [0..inner.w, 0..inner.h) canvas.
     blit_isolated_canvas(dest, inner, |canvas_buf, local_inner| {
+        if let Some(overlay) = anim_store.canvas_overlay(&cont.name) {
+            overlay.instance.render(canvas_buf, local_inner, ctx.theme);
+        }
         if cont.inline_lua.is_some() || cont.kind == ComponentKind::Canvas {
-            render_animated_to_canvas(canvas_buf, local_inner, &cont, anim_store, ctx.config, ctx.theme);
+            if anim_store.canvas_overlay(&cont.name).is_none() {
+                render_animated_to_canvas(
+                    canvas_buf,
+                    local_inner,
+                    &cont,
+                    anim_store,
+                    ctx.config,
+                    ctx.theme,
+                );
+            }
         } else {
             match cont.category {
                 ComponentCategory::Static => {
@@ -288,7 +300,7 @@ pub fn render_gradient_bg_with_opacity(
     }
 }
 
-fn render_border_block_to_buf(
+pub(crate) fn render_border_block_to_buf(
     buf: &mut Buffer,
     area: Rect,
     border: &ContainerBorderConfig,
@@ -678,7 +690,7 @@ fn render_header_to_canvas(buf: &mut Buffer, area: Rect, ctx: &RenderContext) {
         let anim_label = if ctx.paused {
             "paused".to_string()
         } else {
-            ctx.config.background.effect.label().to_lowercase()
+            ctx.config.background.active_effect_label()
         };
         let anim_color = if ctx.paused {
             ctx.theme.accent

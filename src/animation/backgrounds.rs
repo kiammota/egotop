@@ -132,6 +132,11 @@ impl Default for BackgroundLayerSpec {
 /// Stateful runtime instance for an animated background layer.
 pub enum BackgroundLayerRuntime {
     Legacy(Box<dyn BackgroundEffect>),
+    Lua {
+        name: String,
+        spec: Box<BackgroundLayerSpec>,
+        adapter: Box<crate::lua::LuaEffectAdapter>,
+    },
     Procedural {
         spec: Box<BackgroundLayerSpec>,
         elapsed: f32,
@@ -169,6 +174,91 @@ impl BackgroundLayerRuntime {
         cfg: &BackgroundConfig,
         assets: &BTreeMap<String, String>,
     ) -> Self {
+        Self::from_spec_with_theme(spec, width, height, cfg, assets, None)
+    }
+
+    pub fn from_lua_spec(
+        lua_spec: &crate::lua::LuaEffectSpec,
+        width: u16,
+        height: u16,
+        theme: &Theme,
+    ) -> Self {
+        let layer_kind =
+            BackgroundLayerKind::parse(&lua_spec.name).unwrap_or(BackgroundLayerKind::CustomAscii);
+        let spec = BackgroundLayerSpec {
+            effect: layer_kind,
+            speed: lua_spec.speed,
+            density: lua_spec.density,
+            color: lua_spec.color.clone(),
+            secondary_color: lua_spec.head_color.clone(),
+            chars: lua_spec.charset.clone(),
+            asset: Some(lua_spec.name.clone()),
+            ..Default::default()
+        };
+        let adapter = crate::lua::LuaEffectAdapter::from_spec(
+            lua_spec.clone(),
+            width,
+            height,
+            theme.clone(),
+        );
+        Self::Lua {
+            name: lua_spec.name.to_ascii_lowercase(),
+            spec: Box::new(spec),
+            adapter: Box::new(adapter),
+        }
+    }
+
+    pub fn from_spec_with_theme(
+        spec: BackgroundLayerSpec,
+        width: u16,
+        height: u16,
+        cfg: &BackgroundConfig,
+        assets: &BTreeMap<String, String>,
+        theme_opt: Option<&Theme>,
+    ) -> Self {
+        let candidate = spec
+            .asset
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| spec.effect.label());
+
+        if spec.effect == BackgroundLayerKind::None {
+            return Self::Legacy(Box::new(NoneEffect));
+        }
+
+        // Unified Lua canvas resolution for all named animations/effects without special-casing any effect.
+        if !matches!(
+            spec.effect,
+            BackgroundLayerKind::Gradient | BackgroundLayerKind::CustomAscii
+        ) || spec.asset.as_deref().is_some_and(|a| crate::lua::resolve_canvas_module_name(a).is_some())
+        {
+            if let Some(mod_name) = crate::lua::resolve_canvas_module_name(candidate) {
+                let _ = mod_name;
+                let lua_spec = crate::lua::LuaEffectSpec {
+                    name: candidate.to_string(),
+                    fps: 30,
+                    density: spec.density,
+                    speed: spec.speed,
+                    color: spec.color.clone(),
+                    head_color: spec.secondary_color.clone(),
+                    charset: spec.chars.clone(),
+                    spacing: None,
+                    char_glyph: None,
+                    count: None,
+                };
+                let theme = theme_opt
+                    .cloned()
+                    .unwrap_or_else(|| Theme::from_config(&crate::config::ThemeConfig::default()));
+                let adapter =
+                    crate::lua::LuaEffectAdapter::from_spec(lua_spec, width, height, theme);
+                return Self::Lua {
+                    name: candidate.to_ascii_lowercase(),
+                    spec: Box::new(spec),
+                    adapter: Box::new(adapter),
+                };
+            }
+        }
+
         match spec.effect {
             BackgroundLayerKind::MatrixRain => {
                 let mut m_cfg = cfg.clone();
@@ -284,6 +374,7 @@ impl BackgroundLayerRuntime {
     pub fn resize(&mut self, width: u16, height: u16, cfg: &BackgroundConfig) {
         match self {
             Self::Legacy(eff) => eff.resize(width, height, cfg),
+            Self::Lua { adapter, .. } => adapter.resize(width, height, cfg),
             Self::Procedural {
                 spec,
                 stars,
@@ -302,6 +393,12 @@ impl BackgroundLayerRuntime {
     pub fn update(&mut self, dt_secs: f32, cfg: &BackgroundConfig) {
         match self {
             Self::Legacy(eff) => eff.update(dt_secs, cfg),
+            Self::Lua { spec, adapter, .. } => {
+                let mut lcfg = cfg.clone();
+                lcfg.speed = (cfg.speed * spec.speed).clamp(0.05, 10.0);
+                lcfg.density = spec.density.clamp(0.05, 1.0);
+                adapter.update(dt_secs, &lcfg);
+            }
             Self::Procedural {
                 spec,
                 elapsed,
@@ -351,6 +448,16 @@ impl BackgroundLayerRuntime {
     ) {
         match self {
             Self::Legacy(eff) => eff.render(buf, area, cfg, theme),
+            Self::Lua { spec, adapter, .. } => {
+                if !spec.visible || spec.opacity <= 0.01 {
+                    return;
+                }
+                let reg = resolve_region(area, spec.region.as_ref(), cfg.region.as_ref());
+                if reg.width == 0 || reg.height == 0 {
+                    return;
+                }
+                adapter.render(buf, reg, cfg, theme);
+            }
             Self::Procedural {
                 spec,
                 elapsed,
@@ -422,8 +529,10 @@ impl BackgroundLayerRuntime {
     }
 }
 
-/// Composable stack of animated background layers that runs independently behind UI panels.
+/// Global Background controller owning a single shared `CanvasBuffer` and composing
+/// ordered internal layers behind all UI containers.
 pub struct BackgroundPipeline {
+    pub canvas: crate::lua::CanvasBuffer,
     pub layers: Vec<(i32, BackgroundLayerRuntime)>,
     pub paused: bool,
     pub speed: f32,
@@ -432,36 +541,162 @@ pub struct BackgroundPipeline {
 
 impl BackgroundPipeline {
     pub fn from_config(cfg: &BackgroundConfig, width: u16, height: u16) -> Self {
+        Self::from_config_and_lua(cfg, &[], width, height, None)
+    }
+
+    pub fn from_config_and_lua(
+        cfg: &BackgroundConfig,
+        lua_specs: &[crate::lua::LuaEffectSpec],
+        width: u16,
+        height: u16,
+        theme_opt: Option<&Theme>,
+    ) -> Self {
         let mut layers = Vec::new();
         if cfg.enabled {
-            if !cfg.layers.is_empty() {
+            if !lua_specs.is_empty() {
+                let default_theme =
+                    Theme::from_config(&crate::config::ThemeConfig::default());
+                let theme = theme_opt.unwrap_or(&default_theme);
+                for (idx, lspec) in lua_specs.iter().enumerate() {
+                    if !lspec.name.eq_ignore_ascii_case("none") {
+                        layers.push((
+                            idx as i32,
+                            BackgroundLayerRuntime::from_lua_spec(lspec, width, height, theme),
+                        ));
+                    }
+                }
+            } else if !cfg.layers.is_empty() {
                 let empty_assets = BTreeMap::new();
                 for spec in &cfg.layers {
-                    if spec.effect != BackgroundLayerKind::None {
+                    if spec.effect != BackgroundLayerKind::None
+                        || spec.asset.as_deref().is_some_and(|a| !a.eq_ignore_ascii_case("none"))
+                    {
                         layers.push((
                             spec.z_index,
-                            BackgroundLayerRuntime::from_spec(
+                            BackgroundLayerRuntime::from_spec_with_theme(
                                 spec.clone(),
                                 width,
                                 height,
                                 cfg,
                                 &empty_assets,
+                                theme_opt,
                             ),
                         ));
                     }
                 }
                 layers.sort_by_key(|(z, _)| *z);
+            } else if let Some(preset) = cfg.preset.as_deref().filter(|p| !p.is_empty() && !p.eq_ignore_ascii_case("none")) {
+                let spec = BackgroundLayerSpec {
+                    effect: BackgroundLayerKind::parse(preset)
+                        .unwrap_or(BackgroundLayerKind::CustomAscii),
+                    speed: cfg.speed,
+                    density: cfg.density,
+                    asset: Some(preset.to_string()),
+                    ..BackgroundLayerSpec::default()
+                };
+                layers.push((
+                    0,
+                    BackgroundLayerRuntime::from_spec_with_theme(
+                        spec,
+                        width,
+                        height,
+                        cfg,
+                        &BTreeMap::new(),
+                        theme_opt,
+                    ),
+                ));
             } else if cfg.effect != EffectKind::None {
-                let eff = crate::animation::create_effect(cfg.effect, width, height, cfg);
-                layers.push((0, BackgroundLayerRuntime::from_legacy(eff)));
+                let spec = BackgroundLayerSpec {
+                    effect: BackgroundLayerKind::from_effect_kind(cfg.effect),
+                    speed: cfg.speed,
+                    density: cfg.density,
+                    asset: Some(cfg.effect.label().to_ascii_lowercase()),
+                    ..BackgroundLayerSpec::default()
+                };
+                layers.push((
+                    0,
+                    BackgroundLayerRuntime::from_spec_with_theme(
+                        spec,
+                        width,
+                        height,
+                        cfg,
+                        &BTreeMap::new(),
+                        theme_opt,
+                    ),
+                ));
             }
         }
         Self {
+            canvas: crate::lua::CanvasBuffer::new_named(
+                "background",
+                "Global background canvas",
+                width,
+                height,
+            ),
             layers,
             paused: false,
             speed: cfg.speed.clamp(0.1, 10.0),
             truecolor: terminal_supports_truecolor(),
         }
+    }
+
+    pub fn set_theme(&mut self, theme: &Theme) {
+        for (_, layer) in &mut self.layers {
+            if let BackgroundLayerRuntime::Lua { adapter, .. } = layer {
+                adapter.set_theme(theme.clone());
+            }
+        }
+    }
+
+    pub fn set_single_with_theme(
+        &mut self,
+        spec: BackgroundLayerSpec,
+        width: u16,
+        height: u16,
+        cfg: &BackgroundConfig,
+        assets: &BTreeMap<String, String>,
+        theme_opt: Option<&Theme>,
+    ) {
+        self.layers.clear();
+        let has_asset = spec
+            .asset
+            .as_deref()
+            .is_some_and(|a| !a.eq_ignore_ascii_case("none"));
+        if spec.effect != BackgroundLayerKind::None || has_asset {
+            let z = spec.z_index;
+            self.layers.push((
+                z,
+                BackgroundLayerRuntime::from_spec_with_theme(
+                    spec, width, height, cfg, assets, theme_opt,
+                ),
+            ));
+        }
+    }
+
+    pub fn add_layer_with_theme(
+        &mut self,
+        spec: BackgroundLayerSpec,
+        width: u16,
+        height: u16,
+        cfg: &BackgroundConfig,
+        assets: &BTreeMap<String, String>,
+        theme_opt: Option<&Theme>,
+    ) {
+        let has_asset = spec
+            .asset
+            .as_deref()
+            .is_some_and(|a| !a.eq_ignore_ascii_case("none"));
+        if spec.effect == BackgroundLayerKind::None && !has_asset {
+            return;
+        }
+        let z = spec.z_index;
+        self.layers.push((
+            z,
+            BackgroundLayerRuntime::from_spec_with_theme(
+                spec, width, height, cfg, assets, theme_opt,
+            ),
+        ));
+        self.layers.sort_by_key(|(layer_z, _)| *layer_z);
     }
 
     pub fn set_single(
@@ -472,14 +707,7 @@ impl BackgroundPipeline {
         cfg: &BackgroundConfig,
         assets: &BTreeMap<String, String>,
     ) {
-        self.layers.clear();
-        if spec.effect != BackgroundLayerKind::None {
-            let z = spec.z_index;
-            self.layers.push((
-                z,
-                BackgroundLayerRuntime::from_spec(spec, width, height, cfg, assets),
-            ));
-        }
+        self.set_single_with_theme(spec, width, height, cfg, assets, None);
     }
 
     pub fn add_layer(
@@ -490,15 +718,7 @@ impl BackgroundPipeline {
         cfg: &BackgroundConfig,
         assets: &BTreeMap<String, String>,
     ) {
-        if spec.effect == BackgroundLayerKind::None {
-            return;
-        }
-        let z = spec.z_index;
-        self.layers.push((
-            z,
-            BackgroundLayerRuntime::from_spec(spec, width, height, cfg, assets),
-        ));
-        self.layers.sort_by_key(|(layer_z, _)| *layer_z);
+        self.add_layer_with_theme(spec, width, height, cfg, assets, None);
     }
 
     pub fn set_specs(
@@ -524,24 +744,29 @@ impl BackgroundPipeline {
 
     pub fn clear(&mut self) {
         self.layers.clear();
+        self.canvas.begin_frame();
     }
 
     pub fn remove_layer(&mut self, index_or_name: &str) -> bool {
-        if let Ok(idx) = index_or_name.parse::<usize>() {
-            if idx > 0 && idx <= self.layers.len() {
-                self.layers.remove(idx - 1);
-                return true;
-            }
+        if let Ok(idx) = index_or_name.parse::<usize>()
+            && idx > 0
+            && idx <= self.layers.len()
+        {
+            self.layers.remove(idx - 1);
+            return true;
         }
-        let target = index_or_name.trim().to_ascii_lowercase().replace('-', "_");
-        if let Some(pos) = self.layers.iter().position(|(_, layer)| {
-            match layer {
-                BackgroundLayerRuntime::Procedural { spec, .. } => {
-                    spec.effect.label().eq_ignore_ascii_case(&target)
-                }
-                BackgroundLayerRuntime::Legacy(eff) => {
-                    eff.kind().label().eq_ignore_ascii_case(&target)
-                }
+        let target = crate::lua::normalize_animation_alias(index_or_name);
+        if let Some(pos) = self.layers.iter().position(|(_, layer)| match layer {
+            BackgroundLayerRuntime::Procedural { spec, .. } => {
+                spec.effect.label().eq_ignore_ascii_case(index_or_name.trim())
+                    || crate::lua::normalize_animation_alias(spec.effect.label()) == target
+            }
+            BackgroundLayerRuntime::Lua { name, .. } => {
+                name.eq_ignore_ascii_case(index_or_name.trim())
+                    || crate::lua::normalize_animation_alias(name) == target
+            }
+            BackgroundLayerRuntime::Legacy(eff) => {
+                eff.kind().label().eq_ignore_ascii_case(index_or_name.trim())
             }
         }) {
             self.layers.remove(pos);
@@ -564,13 +789,14 @@ impl BackgroundPipeline {
     }
 
     pub fn resize(&mut self, width: u16, height: u16, cfg: &BackgroundConfig) {
+        self.canvas.resize(width, height);
         for (_, layer) in &mut self.layers {
             layer.resize(width, height, cfg);
         }
     }
 
     pub fn update(&mut self, dt_secs: f32, cfg: &BackgroundConfig) {
-        if self.paused {
+        if self.paused || !cfg.enabled {
             return;
         }
         let scaled = dt_secs.max(0.0) * self.speed;
@@ -580,8 +806,27 @@ impl BackgroundPipeline {
     }
 
     pub fn render(&self, buf: &mut Buffer, area: Rect, cfg: &BackgroundConfig, theme: &Theme) {
+        if !cfg.enabled || area.width == 0 || area.height == 0 {
+            return;
+        }
+        // Compose all internal background layers sequentially into an isolated local surface
+        let local = Rect::new(0, 0, area.width, area.height);
+        let mut layer_buf = Buffer::empty(local);
         for (_, layer) in &self.layers {
-            layer.render(buf, area, cfg, theme, self.truecolor);
+            layer.render(&mut layer_buf, local, cfg, theme, self.truecolor);
+        }
+        for dy in 0..area.height {
+            for dx in 0..area.width {
+                let s = &layer_buf[(dx, dy)];
+                if s.symbol() == " " && s.bg == Color::Reset {
+                    continue;
+                }
+                if let Some(d) = buf.cell_mut((area.x + dx, area.y + dy)) {
+                    let preserved_bg = if s.bg == Color::Reset { d.bg } else { s.bg };
+                    *d = s.clone();
+                    d.set_bg(preserved_bg);
+                }
+            }
         }
     }
 
@@ -594,6 +839,7 @@ impl BackgroundPipeline {
             .first()
             .map(|(_, l)| match l {
                 BackgroundLayerRuntime::Legacy(eff) => eff.kind(),
+                BackgroundLayerRuntime::Lua { adapter, .. } => adapter.kind(),
                 BackgroundLayerRuntime::Procedural { spec, .. } => match spec.effect {
                     BackgroundLayerKind::MatrixRain => EffectKind::Matrix,
                     BackgroundLayerKind::Waves => EffectKind::Water,

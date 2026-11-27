@@ -130,7 +130,7 @@ pub fn layout_items_summary(cfg: &Config) -> Vec<(String, String)> {
         ),
         (
             "Background Effect".to_string(),
-            cfg.background.effect.label().to_string(),
+            cfg.background.active_effect_label(),
         ),
     ];
     let mut names = Vec::new();

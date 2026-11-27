@@ -964,6 +964,7 @@ fn check_unknown_fields(
                     "region",
                     "preset",
                     "layers",
+                    "border",
                     "matrix",
                     "water",
                     "particles",

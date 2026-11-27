@@ -1,15 +1,15 @@
 use crate::animation::{AnimationCatalog, BackgroundEffect, TransitionPlayer};
 use crate::command::CommandLineState;
 use crate::config::schema::BackgroundBaseType;
-use crate::config::{Config, ThemeEntry};
+use crate::config::{BorderStyle, Config, ThemeEntry};
 use crate::lua::{AnimationLayer, LuaAnimationRuntime};
 use crate::ui::components::ComponentAnimationStore;
 use crate::ui::customizer::{CustomizerState, render_customizer, render_help_overlay};
 use crate::ui::layout::{ExclusionMask, compute_dashboard_layout};
 use crate::ui::theme::parse_color;
 use crate::ui::widgets::{
-    RenderContext, apply_color_opacity, render_command_line, render_containers,
-    render_gradient_bg_with_opacity,
+    RenderContext, apply_color_opacity, render_border_block_to_buf, render_command_line,
+    render_containers, render_gradient_bg_with_opacity,
 };
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
@@ -78,20 +78,22 @@ pub fn draw_frame(
 
     render_background_base(frame, area, config, ctx);
 
+    let bg_area = render_background_canvas_border(frame, area, config, ctx);
+
     if startup.pending {
-        render_cursor_startup(frame, area, config, startup, ctx);
+        render_cursor_startup(frame, bg_area, config, startup, ctx);
         return;
     }
 
     let layout = compute_dashboard_layout(area, config, ctx.view_mode);
     let mask = ExclusionMask::from_layout_with_styles(&layout, &config.container_styles);
 
-    render_background_canvas_with_mask(frame, area, &mask, |buf, a| {
+    render_background_canvas_with_mask(frame, bg_area, &mask, |buf, a| {
         effect.render(buf, a, &config.background, ctx.theme);
     });
 
     if !transition.finished && transition.has_scene_tracks() {
-        render_background_canvas_with_mask(frame, area, &mask, |buf, a| {
+        render_background_canvas_with_mask(frame, bg_area, &mask, |buf, a| {
             transition.render_scene(buf, a, ctx.theme);
         });
     }
@@ -151,6 +153,28 @@ pub fn render_lua_animation_background(
     render_background_canvas_with_mask(frame, area, &mask, |buf, a| {
         lua_anim.render(buf, a);
     });
+}
+
+fn render_background_canvas_border(
+    frame: &mut Frame,
+    area: Rect,
+    config: &Config,
+    ctx: &RenderContext,
+) -> Rect {
+    let border = &config.background.border;
+    let eff_style = border.style.unwrap_or(config.theme.border_type);
+    if !border.enabled || eff_style == BorderStyle::None || area.width < 2 || area.height < 2 {
+        return area;
+    }
+    let mut b_cfg = border.clone();
+    b_cfg.style = Some(eff_style);
+    render_border_block_to_buf(frame.buffer_mut(), area, &b_cfg, Color::Reset, false, ctx);
+    Rect::new(
+        area.x.saturating_add(1),
+        area.y.saturating_add(1),
+        area.width.saturating_sub(2),
+        area.height.saturating_sub(2),
+    )
 }
 
 fn render_background_base(frame: &mut Frame, area: Rect, config: &Config, ctx: &RenderContext) {

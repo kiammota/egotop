@@ -407,21 +407,36 @@ fn apply_background_config(tbl: &Table, bundle: &mut LuaConfigBundle) {
                 bundle.effect_specs.push(spec);
             }
         }
-        if let Some(first) = bundle.effect_specs.first() {
-            bg.enabled = !first.name.eq_ignore_ascii_case("none");
+        if let Some(first) = bundle
+            .effect_specs
+            .iter()
+            .find(|s| !s.name.eq_ignore_ascii_case("none"))
+        {
+            bg.enabled = true;
             bg.speed = first.speed;
             bg.density = first.density;
-            bg.effect = match first.name.to_ascii_lowercase().as_str() {
-                "matrix" | "matrix_rain" => crate::config::EffectKind::Matrix,
-                "water" | "waves" => crate::config::EffectKind::Water,
-                "particles" => crate::config::EffectKind::Particles,
-                "scanlines" => crate::config::EffectKind::Scanlines,
-                _ => crate::config::EffectKind::None,
+            let mapped = match first.name.to_ascii_lowercase().as_str() {
+                "matrix" | "matrix_rain" => Some(crate::config::EffectKind::Matrix),
+                "water" | "waves" => Some(crate::config::EffectKind::Water),
+                "particles" => Some(crate::config::EffectKind::Particles),
+                "scanlines" => Some(crate::config::EffectKind::Scanlines),
+                _ => None,
             };
+            if let Some(k) = mapped {
+                bg.effect = k;
+                bg.preset = None;
+            } else {
+                bg.effect = crate::config::EffectKind::None;
+                bg.preset = Some(first.name.clone());
+            }
         } else {
             bg.enabled = false;
+            bg.preset = None;
             bg.effect = crate::config::EffectKind::None;
         }
+    }
+    if let Ok(btbl) = tbl.get::<Table>("border") {
+        bg.border = parse_border_table(&btbl);
     }
     if let Ok(layers_tbl) = tbl.get::<Table>("layers") {
         bg.layers.clear();
@@ -601,6 +616,9 @@ fn parse_container_style_table(tbl: &Table) -> crate::ui::container::ContainerSt
             _ => EffectPolicy::Exclude,
         };
     }
+    if let Ok(anim) = tbl.get::<Option<String>>("animation") {
+        style.animation = anim;
+    }
     style
 }
 
@@ -734,7 +752,13 @@ fn parse_container_table(tbl: &Table, index: usize) -> mlua::Result<ContainerCon
             c.content.fields = Some(vec);
         }
     }
-    if let Ok(atbl) = tbl.get::<Table>("animation") {
+    if let Ok(anim_str) = tbl.get::<String>("animation") {
+        c.content.script = Some(anim_str.clone());
+        c.animation = Some(ComponentAnimationConfig {
+            style: Some(anim_str),
+            ..Default::default()
+        });
+    } else if let Ok(atbl) = tbl.get::<Table>("animation") {
         let mut anim = ComponentAnimationConfig::default();
         if let Ok(fps) = atbl.get::<u32>("fps") {
             anim.fps = Some(fps);

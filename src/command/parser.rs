@@ -12,6 +12,7 @@ pub enum ContainerProperty {
     BorderColor(Option<String>),
     BorderStyle(BorderStyle),
     Effects(EffectPolicy),
+    Animation(Option<String>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -61,6 +62,14 @@ pub enum BackgroundCommand {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BorderCommand {
+    GlobalStyle(BorderStyle),
+    TargetStyle { id: String, style: BorderStyle },
+    TargetColor { id: String, color: Option<String> },
+    CharProp { prop: String, value: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LayoutSelection {
     View(ViewMode),
     Preset(String),
@@ -85,6 +94,7 @@ pub enum ParsedCommand {
         name: Option<String>,
     },
     Background(BackgroundCommand),
+    Border(BorderCommand),
     Layout(Option<LayoutSelection>),
     Container(ContainerCommand),
     Set {
@@ -135,6 +145,7 @@ pub fn parse_command(raw: &str) -> Result<ParsedCommand, String> {
         )),
         "animation" | "anim" => parse_animation_command(&rest),
         "background" | "bg" => parse_background_command(&rest),
+        "border" | "borders" => parse_border_command(&rest),
         "layout" => parse_layout_command(&rest),
         "container" => parse_container_command(&rest),
         "set" => parse_set_command(&rest),
@@ -209,6 +220,72 @@ fn parse_animation_command(args: &[&str]) -> Result<ParsedCommand, String> {
             name: Some(name.to_string()),
         }),
     }
+}
+
+fn parse_border_command(args: &[&str]) -> Result<ParsedCommand, String> {
+    let Some(first) = args.first() else {
+        return Err(
+            "Usage: :border <style> | :border <canvas_id> <style> | :border <canvas_id> color <color>"
+                .to_string(),
+        );
+    };
+    let low = first.trim().to_ascii_lowercase();
+
+    // `:border <style>`
+    if args.len() == 1 {
+        return Ok(ParsedCommand::Border(BorderCommand::GlobalStyle(
+            parse_border_style(first)?,
+        )));
+    }
+
+    // `:border all|set|style <style>`
+    if matches!(low.as_str(), "all" | "set" | "style") {
+        let style_arg = args
+            .get(1)
+            .ok_or_else(|| "Usage: :border style <rounded|plain|double|thick|ascii|none>".to_string())?;
+        return Ok(ParsedCommand::Border(BorderCommand::GlobalStyle(
+            parse_border_style(style_arg)?,
+        )));
+    }
+
+    // `:border <char_prop> <char>` (e.g. `:border horizontal ═`)
+    if args.len() == 2
+        && crate::ui::borders::BorderChars::PROPERTY_SPECS
+            .iter()
+            .any(|&(k, _)| k != "style" && k == low.as_str())
+    {
+        return Ok(ParsedCommand::Border(BorderCommand::CharProp {
+            prop: low,
+            value: args[1].to_string(),
+        }));
+    }
+
+    // `:border <target> color <color|inherit|none>`
+    if args.get(1).is_some_and(|s| s.eq_ignore_ascii_case("color")) {
+        let color_arg = args
+            .get(2)
+            .ok_or_else(|| "Usage: :border <canvas_id> color <color|inherit|none>".to_string())?;
+        let col_low = color_arg.trim().to_ascii_lowercase();
+        let color = if matches!(col_low.as_str(), "inherit" | "none" | "reset") {
+            None
+        } else {
+            if !is_valid_color_spec(color_arg) {
+                return Err(format!("Invalid border color '{color_arg}'"));
+            }
+            Some((*color_arg).to_string())
+        };
+        return Ok(ParsedCommand::Border(BorderCommand::TargetColor {
+            id: (*first).to_string(),
+            color,
+        }));
+    }
+
+    // `:border <target> <style>`
+    let second = args[1];
+    Ok(ParsedCommand::Border(BorderCommand::TargetStyle {
+        id: (*first).to_string(),
+        style: parse_border_style(second)?,
+    }))
 }
 
 fn parse_background_command(args: &[&str]) -> Result<ParsedCommand, String> {
@@ -403,9 +480,17 @@ fn parse_container_command(args: &[&str]) -> Result<ParsedCommand, String> {
                     };
                     ContainerProperty::Effects(policy)
                 }
+                "animation" | "anim" | "script" => {
+                    let low = val.trim().to_ascii_lowercase();
+                    if matches!(low.as_str(), "none" | "off" | "clear") {
+                        ContainerProperty::Animation(None)
+                    } else {
+                        ContainerProperty::Animation(Some((*val).to_string()))
+                    }
+                }
                 other => {
                     return Err(format!(
-                        "Unknown container property '{other}' (expected background, foreground, border.color, border.style, or effects)"
+                        "Unknown container property '{other}' (expected background, foreground, border.color, border.style, effects, or animation)"
                     ));
                 }
             };

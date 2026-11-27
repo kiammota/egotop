@@ -64,6 +64,7 @@ pub struct ContainerStyle {
     pub gradient: Option<ContainerGradient>,
     pub opacity: Option<f32>,
     pub effects: EffectPolicy,
+    pub animation: Option<String>,
 }
 
 /// Interface region in which a container is placed by the automatic layout engine.
@@ -193,6 +194,10 @@ impl ContainerBorderConfig {
             color: None,
             title: Some(title.into()),
         }
+    }
+
+    pub fn is_default(&self) -> bool {
+        !self.enabled && self.style.is_none() && self.color.is_none() && self.title.is_none()
     }
 }
 

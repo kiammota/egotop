@@ -810,8 +810,8 @@ fn completion_excludes_exact_matches_and_preserves_alternatives() {
     }
     let res_bg = CompletionEngine::complete("bg", 2, &registry, &ctx);
     assert!(res_bg.items.iter().any(|i| i.insert_text == "background"));
-    let res_fx = CompletionEngine::complete("fx", 2, &registry, &ctx);
-    assert!(res_fx.items.iter().any(|i| i.insert_text == "effect"));
+    let res_bo = CompletionEngine::complete("bo", 2, &registry, &ctx);
+    assert!(res_bo.items.iter().any(|i| i.insert_text == "border"));
 
     // Tab navigation completes "anim" -> "animation"
     let mut cli = CommandLineState::default();
@@ -2627,6 +2627,7 @@ fn container_styling_system_commands_gradient_effects_and_toml() {
             }),
             opacity: None,
             effects: EffectPolicy::Allow,
+            animation: None,
         },
     );
 
@@ -3416,12 +3417,12 @@ fn lua_canvas_api_zbuffer_clipping_christmas_tree_and_layout_alignment() {
     );
     let footer_comp = layout.find_container("status_spinner").unwrap();
     assert!(footer_comp.outer_rect.height >= 3, "footer should be bordered");
-    let footer_inner: String = (footer_comp.inner_rect.x..footer_comp.inner_rect.right())
-        .map(|x| rendered[(x, footer_comp.inner_rect.y)].symbol())
+    let cmd_row: String = (area.x..area.right())
+        .map(|x| rendered[(x, area.bottom() - 1)].symbol())
         .collect();
     assert!(
-        footer_inner.contains(":theme bamboo"),
-        "Command line should render inside bordered footer container: {footer_inner:?}"
+        cmd_row.contains(":theme bamboo"),
+        "Command line should render cleanly on reserved bottom row: {cmd_row:?}"
     );
 
     // 4. Standalone `christmas` Lua animation uses Boxed layer & renders cleanly
@@ -3578,4 +3579,179 @@ fn flat_layout_linear_queue_lua_isolation_and_animation_resize() {
             rt.last_error
         );
     }
+}
+
+#[test]
+fn unified_background_canvas_layers_borders_and_per_container_canvas_isolation() {
+    use egotop::animation::BackgroundPipeline;
+    use egotop::command::{CompletionEngine, parse_command};
+    use egotop::lua::{list_all_canvas_animations, resolve_canvas_module_name};
+
+    // 1. Unified resolution & BackgroundPipeline execution across EVERY registered animation
+    let anims = list_all_canvas_animations();
+    for expected in [
+        "matrix",
+        "water",
+        "particles",
+        "scanlines",
+        "starfield",
+        "noise",
+        "floating_chars",
+        "christmas_tree",
+        "christmas",
+    ] {
+        assert!(
+            anims.iter().any(|a| a == expected),
+            "Missing animation '{expected}' in unified list: {anims:?}"
+        );
+        assert!(
+            resolve_canvas_module_name(expected).is_some(),
+            "Unified resolver failed on '{expected}'"
+        );
+    }
+
+    let theme = Theme::from_config(&Config::default().theme);
+    for anim_name in [
+        "matrix",
+        "water",
+        "particles",
+        "scanlines",
+        "starfield",
+        "noise",
+        "floating_chars",
+        "christmas_tree",
+        "christmas",
+    ] {
+        let mut cfg = Config::default();
+        cfg.background.enabled = true;
+        cfg.background.preset = Some(anim_name.to_string());
+        cfg.background.effect = EffectKind::None; // Even when legacy enum is None, unified resolver runs!
+        let mut pipe = BackgroundPipeline::from_config_and_lua(&cfg.background, &[], 60, 20, Some(&theme));
+        assert_eq!(pipe.layer_count(), 1, "Background '{anim_name}' should load 1 layer");
+        pipe.update(0.1, &cfg.background);
+        pipe.update(0.1, &cfg.background);
+        let mut out = ratatui::buffer::Buffer::empty(Rect::new(0, 0, 60, 20));
+        pipe.render(&mut out, Rect::new(0, 0, 60, 20), &cfg.background, &theme);
+        assert_eq!(pipe.canvas.owner_name, "background");
+    }
+
+    // 2. Global Background border + per-container border overrides reflect in layout and rendering
+    let mut cfg = Config::default();
+    cfg.background.enabled = true;
+    cfg.background.border = ContainerBorderConfig {
+        enabled: true,
+        style: Some(BorderStyle::Thick),
+        color: None,
+        title: Some("bg".to_string()),
+    };
+    cfg.container_styles.insert(
+        "system".to_string(),
+        ContainerStyle {
+            border_style: Some(BorderStyle::Double),
+            animation: Some("water".to_string()),
+            ..ContainerStyle::default()
+        },
+    );
+    cfg.container_styles.insert(
+        "greeting".to_string(),
+        ContainerStyle {
+            border_style: Some(BorderStyle::None),
+            ..ContainerStyle::default()
+        },
+    );
+
+    let area = Rect::new(0, 0, 100, 36);
+    let layout = compute_dashboard_layout(area, &cfg, ViewMode::Dashboard);
+    let sys_placed = layout.find_container("system").unwrap();
+    assert!(sys_placed.config.border.enabled);
+    assert_eq!(sys_placed.config.border.style, Some(BorderStyle::Double));
+    assert!(sys_placed.inner_rect.x > sys_placed.outer_rect.x);
+    let greet_placed = layout.find_container("greeting").unwrap();
+    assert!(!greet_placed.config.border.enabled);
+
+    let mut anim_store = ComponentAnimationStore::new();
+    let catalog = AnimationCatalog::load();
+    anim_store.update_all(0.1, &layout, &cfg, &catalog);
+    assert!(anim_store.canvas_overlay("system").is_some());
+    assert!(anim_store.canvas_overlay("hardware").is_none());
+
+    let mut collector = SystemCollector::new();
+    let snap = collector.collect(area.width, area.height);
+    let pipe = BackgroundPipeline::from_config_and_lua(
+        &cfg.background,
+        &[],
+        area.width,
+        area.height,
+        Some(&theme),
+    );
+    let transition = TransitionPlayer::new("none", &catalog, 0);
+    let mut customizer = CustomizerState::default();
+    let cmd_line = CommandLineState::default();
+    let startup = CursorStartupState::new(false);
+    let reveal = RevealState::complete();
+    let themes = vec![];
+    let rctx = RenderContext {
+        config: &cfg,
+        theme: &theme,
+        snapshot: &snap,
+        reveal: &reveal,
+        view_mode: ViewMode::Dashboard,
+        paused: false,
+        show_help: false,
+        fps: 30.0,
+        status_toast: None,
+        transparent_bg: false,
+        config_error_count: 0,
+    };
+
+    let mut term = Terminal::new(TestBackend::new(area.width, area.height)).unwrap();
+    term.draw(|frame| {
+        draw_frame(
+            frame,
+            &cfg,
+            &pipe,
+            &transition,
+            &anim_store,
+            &mut customizer,
+            &cmd_line,
+            &startup,
+            &themes,
+            &catalog,
+            &rctx,
+        );
+    })
+    .unwrap();
+    let buf = term.backend().buffer();
+    // Global background Canvas drew its thick top-left border at (0, 0)
+    assert_eq!(buf[(0, 0)].symbol(), "┏");
+    // System container Canvas drew Double border ('╔') while other bordered panels kept Rounded ('╭')
+    assert_eq!(buf[(sys_placed.outer_rect.x, sys_placed.outer_rect.y)].symbol(), "╔");
+    let hw_placed = layout.find_container("hardware").unwrap();
+    assert_eq!(buf[(hw_placed.outer_rect.x, hw_placed.outer_rect.y)].symbol(), "╭");
+
+    // 3. Parse and complete `:border` & `:container set <id> animation <name>`
+    assert!(matches!(
+        parse_command(":border double"),
+        Ok(egotop::command::ParsedCommand::Border(_))
+    ));
+    assert!(matches!(
+        parse_command(":border system thick"),
+        Ok(egotop::command::ParsedCommand::Border(_))
+    ));
+    assert!(matches!(
+        parse_command(":container set system animation starfield"),
+        Ok(egotop::command::ParsedCommand::Container(_))
+    ));
+    let reg = CommandRegistry::new();
+    let cctx = CompletionContext {
+        themes: &themes,
+        animations: &catalog,
+        layouts: &Vec::new(),
+        containers: &vec!["system".to_string(), "hardware".to_string()],
+    };
+    let border_comp = CompletionEngine::complete("border d", 8, &reg, &cctx);
+    assert!(border_comp.items.iter().any(|i| i.insert_text == "double"));
+    let anim_comp = CompletionEngine::complete("container set system animation ", 31, &reg, &cctx);
+    assert!(anim_comp.items.iter().any(|i| i.insert_text == "water"));
+    assert!(anim_comp.items.iter().any(|i| i.insert_text == "christmas_tree"));
 }

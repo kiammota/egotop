@@ -3,14 +3,15 @@ use crate::animation::{
     BackgroundPipeline, TransitionPlayer,
 };
 use crate::command::{
-    AnimationAction, BackgroundCommand, CommandLineState, CommandRegistry, CompletionContext,
-    ContainerCommand, ContainerProperty, LayoutSelection, ParsedCommand, WriteTarget,
-    parse_command,
+    AnimationAction, BackgroundCommand, BorderCommand, CommandLineState, CommandRegistry,
+    CompletionContext, ContainerCommand, ContainerProperty, LayoutSelection, ParsedCommand,
+    WriteTarget, parse_command,
 };
 use crate::config::{
-    Config, EffectKind, StartupMode, StartupTrigger, ThemeEntry, ViewMode, save_config_to_path,
+    BorderStyle, Config, EffectKind, StartupMode, StartupTrigger, ThemeEntry, ViewMode,
+    save_config_to_path,
 };
-use crate::lua::{LuaAnimationRuntime, LuaEffectAdapter};
+use crate::lua::LuaAnimationRuntime;
 use crate::runtime::{
     ConfigurationRuntime, LayoutPreset, ManagedAppTarget, RuntimeCommit, RuntimePaths,
     RuntimeResourceManager,
@@ -58,7 +59,6 @@ pub struct App {
     collector: SystemCollector,
     snapshot: SystemSnapshot,
     effect: BackgroundPipeline,
-    lua_effect: Option<LuaEffectAdapter>,
     lua_anim: Option<LuaAnimationRuntime>,
     anim_store: ComponentAnimationStore,
     reveal: RevealState,
@@ -137,22 +137,10 @@ impl App {
         } else {
             None
         };
-        let lua_effect = lua_bundle
+        let lua_specs = lua_bundle
             .as_ref()
-            .and_then(|b| b.effect_specs.first().cloned())
-            .map(|spec| LuaEffectAdapter::from_spec(spec, width, height, theme.clone()))
-            .or_else(|| {
-                (config.background.enabled && config.background.effect != EffectKind::None)
-                    .then(|| {
-                        LuaEffectAdapter::from_effect_name(
-                            config.background.effect.label(),
-                            width,
-                            height,
-                            &config.background,
-                            theme.clone(),
-                        )
-                    })
-            });
+            .map(|b| b.effect_specs.clone())
+            .unwrap_or_default();
         let lua_anim = if !wait_init
             && !config.general.startup_animation.trim().is_empty()
             && !config
@@ -172,7 +160,13 @@ impl App {
 
         let mut collector = SystemCollector::new();
         let snapshot = collector.collect(width, height);
-        let effect = BackgroundPipeline::from_config(&config.background, width, height);
+        let effect = BackgroundPipeline::from_config_and_lua(
+            &config.background,
+            &lua_specs,
+            width,
+            height,
+            Some(&theme),
+        );
         let view_mode = config.general.view_mode;
         let fps = config.general.animation_fps as f32;
 
@@ -192,7 +186,6 @@ impl App {
             collector,
             snapshot,
             effect,
-            lua_effect,
             lua_anim,
             anim_store: ComponentAnimationStore::new(),
             reveal: if is_cursor_startup {
@@ -225,9 +218,6 @@ impl App {
         let initial_size = guard.terminal.size()?;
         self.effect
             .resize(initial_size.width, initial_size.height, &self.config.background);
-        if let Some(le) = &mut self.lua_effect {
-            le.resize(initial_size.width, initial_size.height, &self.config.background);
-        }
         if let Some(la) = &mut self.lua_anim {
             la.resize(initial_size.width, initial_size.height);
         }
@@ -275,11 +265,7 @@ impl App {
                 let sz = guard.terminal.size()?;
                 let vp = Rect::new(0, 0, sz.width, sz.height);
                 let layout = compute_dashboard_layout(vp, &self.config, self.view_mode);
-                if let Some(le) = &mut self.lua_effect {
-                    le.update(dt, &self.config.background);
-                } else {
-                    self.effect.update(dt, &self.config.background);
-                }
+                self.effect.update(dt, &self.config.background);
                 self.anim_store
                     .update_all(dt, &layout, &self.config, &self.animations);
                 self.transition.update(dt);
@@ -313,11 +299,7 @@ impl App {
             };
 
             let config_ref = &self.config;
-            let effect_ref: &dyn BackgroundEffect = self
-                .lua_effect
-                .as_ref()
-                .map(|e| e as &dyn BackgroundEffect)
-                .unwrap_or(&self.effect);
+            let effect_ref: &dyn BackgroundEffect = &self.effect;
             let transition_ref = &self.transition;
             let lua_anim_ref = self.lua_anim.as_ref();
             let anim_store_ref = &self.anim_store;
@@ -445,9 +427,6 @@ impl App {
         match ev {
             InputEvent::Resize(w, h) => {
                 self.effect.resize(w, h, &self.config.background);
-                if let Some(le) = &mut self.lua_effect {
-                    le.resize(w, h, &self.config.background);
-                }
                 if let Some(la) = &mut self.lua_anim {
                     la.resize(w, h);
                 }
@@ -585,6 +564,7 @@ impl App {
         match parsed {
             ParsedCommand::Colorscheme(Some(_))
             | ParsedCommand::Set { .. }
+            | ParsedCommand::Border(_)
             | ParsedCommand::Layout(Some(_)) => true,
             ParsedCommand::Background(bcmd) => matches!(
                 bcmd,
@@ -621,10 +601,12 @@ impl App {
         self.view_mode = backup.view_mode;
         self.status_toast = backup.status_toast.clone();
         if bg_changed {
-            self.effect = BackgroundPipeline::from_config(
+            self.effect = BackgroundPipeline::from_config_and_lua(
                 &self.config.background,
+                &[],
                 viewport.width,
                 viewport.height,
+                Some(&self.theme),
             );
         }
         if self.transition.active_id != backup.transition_active_id
@@ -680,6 +662,9 @@ impl App {
             }
             ParsedCommand::Set { key, value } => {
                 self.execute_set_option(&key, &value);
+            }
+            ParsedCommand::Border(bcmd) => {
+                self.execute_border_command(bcmd);
             }
             ParsedCommand::Layout(Some(sel)) => match sel {
                 LayoutSelection::View(view) => self.view_mode = view,
@@ -1041,6 +1026,9 @@ impl App {
             ParsedCommand::Set { key, value } => {
                 self.execute_set_option(&key, &value);
             }
+            ParsedCommand::Border(bcmd) => {
+                self.execute_border_command(bcmd);
+            }
             ParsedCommand::Animation { action, name } => match action {
                 AnimationAction::OpenPicker => {
                     self.customizer.open_tab(CustomizerTab::Animations);
@@ -1268,11 +1256,38 @@ impl App {
                     }
                     ContainerProperty::BorderStyle(st) => {
                         entry.border_style = Some(st);
+                        if let Some(c) = self
+                            .config
+                            .ui
+                            .containers
+                            .iter_mut()
+                            .find(|c| c.name == id)
+                        {
+                            c.border.enabled = st != BorderStyle::None;
+                            c.border.style = Some(st);
+                        }
                         self.set_toast(format!("Updated {id}.border.style = {}", st.label()));
                     }
                     ContainerProperty::Effects(policy) => {
                         entry.effects = policy;
                         self.set_toast(format!("Updated {id}.effects = {policy:?}"));
+                    }
+                    ContainerProperty::Animation(anim_opt) => {
+                        if let Some(ref anim_name) = anim_opt {
+                            if crate::lua::resolve_canvas_module_name(anim_name).is_none() {
+                                self.set_toast(format!(
+                                    "Unknown canvas animation '{anim_name}'"
+                                ));
+                                return;
+                            }
+                            entry.animation = Some(anim_name.clone());
+                            self.set_toast(format!(
+                                "Assigned animation '{anim_name}' to '{id}' canvas"
+                            ));
+                        } else {
+                            entry.animation = Some("none".to_string());
+                            self.set_toast(format!("Cleared animation on '{id}' canvas"));
+                        }
                     }
                 }
             }
@@ -1392,8 +1407,7 @@ impl App {
         if k == "border.style" || k == "borders.style" {
             match parse_border_style(value) {
                 Ok(style) => {
-                    self.config.theme.border_type = style;
-                    self.theme.set_border_style(style);
+                    self.apply_global_border_style(style);
                     self.set_toast(format!("Border style set to '{}'", style.label()));
                 }
                 Err(err) => self.set_toast(err),
@@ -1418,6 +1432,79 @@ impl App {
         }
 
         self.set_toast(format!("Unknown property '{key}'"));
+    }
+
+    fn apply_global_border_style(&mut self, style: BorderStyle) {
+        self.config.theme.border_type = style;
+        self.theme.set_border_style(style);
+        self.config.theme.borders = self.theme.borders.to_config();
+        for st in self.config.container_styles.values_mut() {
+            st.border_style = None;
+        }
+        for c in &mut self.config.ui.containers {
+            if c.border.enabled || c.border.style.is_some() {
+                c.border.style = if style == BorderStyle::None {
+                    None
+                } else {
+                    Some(style)
+                };
+            }
+        }
+        if self.config.background.border.enabled {
+            self.config.background.border.style = Some(style);
+        }
+    }
+
+    fn execute_border_command(&mut self, cmd: BorderCommand) {
+        match cmd {
+            BorderCommand::GlobalStyle(style) => {
+                self.apply_global_border_style(style);
+                self.set_toast(format!("Border style set to '{}'", style.label()));
+            }
+            BorderCommand::TargetStyle { id, style } => {
+                if id.eq_ignore_ascii_case("background") {
+                    self.config.background.border.enabled = style != BorderStyle::None;
+                    self.config.background.border.style = Some(style);
+                    self.set_toast(format!("Updated background.border.style = {}", style.label()));
+                } else if has_container(&self.config.ui.containers, &id) {
+                    let entry = self
+                        .config
+                        .container_styles
+                        .entry(id.clone())
+                        .or_default();
+                    entry.border_style = Some(style);
+                    if let Some(c) = self.config.ui.containers.iter_mut().find(|c| c.name == id) {
+                        c.border.enabled = style != BorderStyle::None;
+                        c.border.style = Some(style);
+                    }
+                    self.set_toast(format!("Updated {id}.border.style = {}", style.label()));
+                } else {
+                    self.set_toast(format!("Unknown canvas '{id}'"));
+                }
+            }
+            BorderCommand::TargetColor { id, color } => {
+                if id.eq_ignore_ascii_case("background") {
+                    self.config.background.border.color = color;
+                    self.set_toast("Updated background.border.color");
+                } else if has_container(&self.config.ui.containers, &id) {
+                    let entry = self
+                        .config
+                        .container_styles
+                        .entry(id.clone())
+                        .or_default();
+                    entry.border_color = color.clone();
+                    if let Some(c) = self.config.ui.containers.iter_mut().find(|c| c.name == id) {
+                        c.border.color = color;
+                    }
+                    self.set_toast(format!("Updated {id}.border.color"));
+                } else {
+                    self.set_toast(format!("Unknown canvas '{id}'"));
+                }
+            }
+            BorderCommand::CharProp { prop, value } => {
+                self.execute_set_option(&format!("border.{prop}"), &value);
+            }
+        }
     }
 
     fn execute_write(&mut self, target: WriteTarget) {
@@ -1485,6 +1572,7 @@ impl App {
 
     fn apply_theme_entry(&mut self, entry: &ThemeEntry) {
         self.theme = entry.theme.clone();
+        self.effect.set_theme(&self.theme);
         self.config.theme.name = entry.name.clone();
         if entry.source_path.is_some() {
             self.config.theme.background.clear();
@@ -1510,7 +1598,11 @@ impl App {
         self.config.background.effect = kind;
         self.config.background.enabled = kind != EffectKind::None;
         self.config.background.layers.clear();
-        self.config.background.preset = None;
+        self.config.background.preset = if kind == EffectKind::None {
+            None
+        } else {
+            Some(kind.label().to_ascii_lowercase())
+        };
         match kind {
             EffectKind::Matrix => self.config.background.matrix.enabled = true,
             EffectKind::Water => self.config.background.water.enabled = true,
@@ -1518,18 +1610,13 @@ impl App {
             EffectKind::Scanlines => self.config.background.scanlines.enabled = true,
             EffectKind::None => {}
         }
-        self.effect = BackgroundPipeline::from_config(&self.config.background, width, height);
-        self.lua_effect = if kind == EffectKind::None {
-            None
-        } else {
-            Some(LuaEffectAdapter::from_effect_name(
-                kind.label(),
-                width,
-                height,
-                &self.config.background,
-                self.theme.clone(),
-            ))
-        };
+        self.effect = BackgroundPipeline::from_config_and_lua(
+            &self.config.background,
+            &[],
+            width,
+            height,
+            Some(&self.theme),
+        );
     }
 
     fn execute_background_command(
@@ -1570,18 +1657,36 @@ impl App {
                 self.config.background.enabled = target;
                 if target {
                     if self.effect.layer_count() == 0 {
+                        let fallback = self
+                            .config
+                            .background
+                            .preset
+                            .clone()
+                            .filter(|p| !p.is_empty() && !p.eq_ignore_ascii_case("none"))
+                            .or_else(|| {
+                                (self.config.background.effect != EffectKind::None)
+                                    .then(|| self.config.background.effect.label().to_ascii_lowercase())
+                            })
+                            .or_else(|| crate::lua::list_all_canvas_animations().into_iter().next())
+                            .unwrap_or_else(|| "particles".to_string());
+                        let kind = BackgroundLayerKind::parse(&fallback)
+                            .unwrap_or(BackgroundLayerKind::CustomAscii);
                         let spec = BackgroundLayerSpec {
-                            effect: BackgroundLayerKind::MatrixRain,
+                            effect: kind,
+                            asset: Some(fallback.clone()),
                             ..BackgroundLayerSpec::default()
                         };
+                        self.config.background.preset = Some(fallback);
                         self.config.background.layers = vec![spec.clone()];
-                        self.effect.set_single(
+                        self.effect.set_single_with_theme(
                             spec,
                             width,
                             height,
                             &self.config.background,
                             &BTreeMap::new(),
+                            Some(&self.theme),
                         );
+                        self.config.background.effect = self.effect.primary_effect_kind();
                     }
                     self.effect.resume();
                     self.set_toast("Background enabled");
@@ -1598,14 +1703,29 @@ impl App {
                             self.config.background.layers.remove(idx - 1);
                         }
                     } else {
-                        let target_clean = target.trim().to_ascii_lowercase().replace('-', "_");
+                        let target_clean = crate::lua::normalize_animation_alias(&target);
                         if let Some(pos) = self.config.background.layers.iter().position(|l| {
-                            l.effect.label().eq_ignore_ascii_case(&target_clean)
+                            l.asset.as_deref().is_some_and(|a| {
+                                crate::lua::normalize_animation_alias(a) == target_clean
+                            }) || crate::lua::normalize_animation_alias(l.effect.label())
+                                == target_clean
                         }) {
                             self.config.background.layers.remove(pos);
                         }
                     }
                     self.config.background.enabled = self.effect.layer_count() > 0;
+                    if !self.config.background.enabled {
+                        self.config.background.preset = None;
+                        self.config.background.effect = EffectKind::None;
+                    } else {
+                        self.config.background.preset = self
+                            .config
+                            .background
+                            .layers
+                            .first()
+                            .and_then(|l| l.asset.clone().or_else(|| Some(l.effect.label().to_string())));
+                        self.config.background.effect = self.effect.primary_effect_kind();
+                    }
                     self.set_toast(format!(
                         "Removed background layer '{target}' ({} active)",
                         self.effect.layer_count()
@@ -1623,33 +1743,50 @@ impl App {
                 }
             }
             BackgroundCommand::List => {
+                let avail = crate::lua::list_all_canvas_animations();
                 self.set_toast(format!(
-                    "Background layers active: {} (matrix_rain, starfield, particles, waves, noise, gradient, floating_chars, scanlines)",
-                    self.effect.layer_count()
+                    "Background layers active: {} (available: {})",
+                    self.effect.layer_count(),
+                    avail.join(", ")
                 ));
             }
             BackgroundCommand::Set(name) => {
-                if let Some(kind) = BackgroundLayerKind::parse(&name) {
+                let norm = name.trim().to_ascii_lowercase();
+                if matches!(norm.as_str(), "none" | "off") {
+                    self.effect.clear();
+                    self.config.background.enabled = false;
+                    self.config.background.preset = None;
+                    self.config.background.layers.clear();
+                    self.config.background.effect = EffectKind::None;
+                    self.set_toast("Background set to 'none'");
+                    return;
+                }
+
+                let lua_resolved = crate::lua::resolve_canvas_module_name(&name);
+                let parsed_kind = BackgroundLayerKind::parse(&name);
+                if lua_resolved.is_some() || parsed_kind.is_some() {
+                    let kind = parsed_kind.unwrap_or(BackgroundLayerKind::CustomAscii);
+                    let canon = crate::lua::normalize_animation_alias(&name);
                     let spec = BackgroundLayerSpec {
                         effect: kind,
+                        speed: self.config.background.speed,
+                        density: self.config.background.density,
+                        asset: Some(canon.clone()),
                         ..BackgroundLayerSpec::default()
                     };
-                    self.config.background.enabled = kind != BackgroundLayerKind::None;
-                    self.config.background.preset = None;
-                    self.config.background.layers = if kind == BackgroundLayerKind::None {
-                        Vec::new()
-                    } else {
-                        vec![spec.clone()]
-                    };
-                    self.effect.set_single(
+                    self.config.background.enabled = true;
+                    self.config.background.preset = Some(canon.clone());
+                    self.config.background.layers = vec![spec.clone()];
+                    self.effect.set_single_with_theme(
                         spec,
                         width,
                         height,
                         &self.config.background,
                         &BTreeMap::new(),
+                        Some(&self.theme),
                     );
                     self.config.background.effect = self.effect.primary_effect_kind();
-                    self.set_toast(format!("Background set to '{}'", kind.label()));
+                    self.set_toast(format!("Background set to '{canon}'"));
                 } else {
                     let pkg = self.animations.resolve_package(&name);
                     if !pkg.definition.backgrounds.is_empty() {
@@ -1675,24 +1812,39 @@ impl App {
                 }
             }
             BackgroundCommand::Add(name) => {
-                if let Some(kind) = BackgroundLayerKind::parse(&name) {
+                let lua_resolved = crate::lua::resolve_canvas_module_name(&name);
+                let parsed_kind = BackgroundLayerKind::parse(&name);
+                if lua_resolved.is_some() || parsed_kind.is_some() {
+                    let kind = parsed_kind.unwrap_or(BackgroundLayerKind::CustomAscii);
+                    if kind == BackgroundLayerKind::None {
+                        self.set_toast("Use ':background stop' to disable background layers");
+                        return;
+                    }
+                    let canon = crate::lua::normalize_animation_alias(&name);
                     let spec = BackgroundLayerSpec {
                         effect: kind,
                         z_index: self.effect.layer_count() as i32,
+                        speed: self.config.background.speed,
+                        density: self.config.background.density,
+                        asset: Some(canon.clone()),
                         ..BackgroundLayerSpec::default()
                     };
                     self.config.background.enabled = true;
+                    if self.config.background.preset.is_none() {
+                        self.config.background.preset = Some(canon.clone());
+                    }
                     self.config.background.layers.push(spec.clone());
-                    self.effect.add_layer(
+                    self.effect.add_layer_with_theme(
                         spec,
                         width,
                         height,
                         &self.config.background,
                         &BTreeMap::new(),
+                        Some(&self.theme),
                     );
+                    self.config.background.effect = self.effect.primary_effect_kind();
                     self.set_toast(format!(
-                        "Added background layer '{}' ({} active)",
-                        kind.label(),
+                        "Added background layer '{canon}' ({} active)",
                         self.effect.layer_count()
                     ));
                 } else {
@@ -1852,5 +2004,105 @@ mod tests {
             app.config.container_styles.get("system").unwrap().background,
             BackgroundFill::Solid("#112233".to_string())
         );
+    }
+
+    #[test]
+    fn runtime_borders_background_all_animations_and_container_assignment_work() {
+        let mut app = test_app();
+
+        // 1. Global border change updates theme AND container border configs + live preview/Esc
+        let orig_border = app.config.theme.border_type;
+        app.execute_border_command(BorderCommand::GlobalStyle(BorderStyle::Double));
+        assert_eq!(app.config.theme.border_type, BorderStyle::Double);
+        assert_eq!(app.theme.borders.top_left, "╔");
+        assert_eq!(
+            app.config
+                .ui
+                .containers
+                .iter()
+                .find(|c| c.name == "system")
+                .unwrap()
+                .border
+                .style,
+            Some(BorderStyle::Double)
+        );
+
+        // Per-canvas border style & background border style update only target canvas
+        app.execute_border_command(BorderCommand::TargetStyle {
+            id: "system".to_string(),
+            style: BorderStyle::Thick,
+        });
+        assert_eq!(
+            app.config.container_styles.get("system").unwrap().border_style,
+            Some(BorderStyle::Thick)
+        );
+        app.execute_border_command(BorderCommand::TargetStyle {
+            id: "background".to_string(),
+            style: BorderStyle::Ascii,
+        });
+        assert!(app.config.background.border.enabled);
+        assert_eq!(app.config.background.border.style, Some(BorderStyle::Ascii));
+
+        // Reset back to original
+        app.execute_border_command(BorderCommand::GlobalStyle(orig_border));
+        assert_eq!(app.config.theme.border_type, orig_border);
+
+        // `:border` preview with Tab + Esc rollback
+        app.command_line.buffer = "border double".to_string();
+        app.maybe_preview_command_from_cmdline(Rect::new(0, 0, 100, 36));
+        assert_eq!(app.config.theme.border_type, BorderStyle::Double);
+        app.restore_command_preview(Rect::new(0, 0, 100, 36));
+        assert_eq!(app.config.theme.border_type, orig_border);
+
+        // 2. Switching Background across ALL animations updates the single global BackgroundPipeline
+        for anim in [
+            "matrix",
+            "water",
+            "particles",
+            "scanlines",
+            "starfield",
+            "noise",
+            "floating_chars",
+            "christmas_tree",
+        ] {
+            app.execute_background_command_with_size(
+                BackgroundCommand::Set(anim.to_string()),
+                80,
+                24,
+            );
+            assert!(app.config.background.enabled);
+            assert_eq!(app.effect.layer_count(), 1, "Failed to switch bg to '{anim}'");
+            assert_eq!(app.config.background.active_effect_label(), anim);
+        }
+
+        // Stacking multiple layers on the single Background Canvas + removing one
+        app.execute_background_command_with_size(
+            BackgroundCommand::Add("starfield".to_string()),
+            80,
+            24,
+        );
+        assert_eq!(app.effect.layer_count(), 2);
+        app.execute_background_command_with_size(
+            BackgroundCommand::Remove("starfield".to_string()),
+            80,
+            24,
+        );
+        assert_eq!(app.effect.layer_count(), 1);
+
+        // 3. Assigning animation to an isolated Container Canvas
+        app.execute_container_command(ContainerCommand::Set {
+            id: "system".to_string(),
+            property: ContainerProperty::Animation(Some("water".to_string())),
+        });
+        assert_eq!(
+            app.config
+                .container_styles
+                .get("system")
+                .unwrap()
+                .animation
+                .as_deref(),
+            Some("water")
+        );
+        assert!(!app.config.container_styles.contains_key("hardware"));
     }
 }

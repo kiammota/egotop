@@ -4,6 +4,7 @@ pub enum CompletionProviderKind {
     Colorscheme,
     Animation,
     Background,
+    Border,
     Layout,
     Container,
     SetOption,
@@ -90,6 +91,18 @@ impl CommandRegistry {
                         description: "set, add, remove, toggle, stop, pause, resume, speed, or effect name",
                     }],
                     provider: CompletionProviderKind::Background,
+                },
+                CommandDescriptor {
+                    name: "border",
+                    aliases: &["borders"],
+                    description: "Configure border style or color globally or for a specific Canvas",
+                    usage: ":border [target|style] [style|color]",
+                    args: &[CommandArgSpec {
+                        name: "<style|target>",
+                        required: false,
+                        description: "Style (rounded, plain, double, thick, ascii, none) or Canvas ID",
+                    }],
+                    provider: CompletionProviderKind::Border,
                 },
                 CommandDescriptor {
                     name: "layout",

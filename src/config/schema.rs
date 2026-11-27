@@ -418,6 +418,8 @@ pub struct BackgroundConfig {
     pub preset: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub layers: Vec<BackgroundLayerSpec>,
+    #[serde(default, skip_serializing_if = "crate::ui::container::ContainerBorderConfig::is_default")]
+    pub border: crate::ui::container::ContainerBorderConfig,
     pub matrix: MatrixConfig,
     pub water: WaterConfig,
     pub particles: ParticlesConfig,
@@ -437,11 +439,35 @@ impl Default for BackgroundConfig {
             region: None,
             preset: None,
             layers: Vec::new(),
+            border: crate::ui::container::ContainerBorderConfig::default(),
             matrix: MatrixConfig::default(),
             water: WaterConfig::default(),
             particles: ParticlesConfig::default(),
             scanlines: ScanlinesConfig::default(),
         }
+    }
+}
+
+impl BackgroundConfig {
+    /// Returns the human-readable name of the active background animation/effect layer.
+    pub fn active_effect_label(&self) -> String {
+        if !self.enabled {
+            return "none".to_string();
+        }
+        if let Some(p) = self.preset.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+            return p.to_ascii_lowercase();
+        }
+        if let Some(first) = self
+            .layers
+            .iter()
+            .find(|l| l.visible && l.effect != crate::animation::BackgroundLayerKind::None)
+        {
+            if let Some(asset) = first.asset.as_deref().filter(|s| !s.is_empty()) {
+                return asset.to_ascii_lowercase();
+            }
+            return first.effect.label().to_ascii_lowercase();
+        }
+        self.effect.label().to_ascii_lowercase()
     }
 }
 

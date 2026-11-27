@@ -231,8 +231,22 @@ impl LuaCanvasInstance {
             ),
         ) {
             let _ = ctx.set("state", st);
+            if !inner.init_called {
+                inner.init_called = true;
+                if let Ok(Value::Function(init_fn)) = fx.get::<Value>("init") {
+                    let _ = init_fn.call::<()>(ctx.clone());
+                }
+            }
             if let Ok(Value::Function(resize_fn)) = fx.get::<Value>("resize")
-                && let Err(e) = resize_fn.call::<()>(ctx)
+                && let Err(e) = resize_fn.call::<()>(ctx.clone())
+            {
+                inner.last_error = Some(e.to_string());
+            }
+            self.canvas_buf.lock().unwrap().begin_frame();
+            let canvas_handle =
+                LuaCanvasHandle::new(Arc::clone(&self.canvas_buf), self.theme_snapshot.clone());
+            if let Ok(Value::Function(render_fn)) = fx.get::<Value>("render")
+                && let Err(e) = render_fn.call::<()>((canvas_handle, ctx))
             {
                 inner.last_error = Some(e.to_string());
             }
@@ -387,11 +401,9 @@ impl LuaCanvasInstance {
             return;
         }
 
-        let normalized = spec.name.trim().to_ascii_lowercase().replace('-', "_");
-        let mod_name = if normalized.contains('.') {
-            normalized.clone()
-        } else {
-            format!("effects.{normalized}")
+        let Some(mod_name) = crate::lua::resolve_canvas_module_name(&spec.name) else {
+            self.inner = None;
+            return;
         };
 
         let Ok(opts) = lua.create_table() else {
@@ -418,6 +430,23 @@ impl LuaCanvasInstance {
         if let Some(cnt) = spec.count {
             let _ = opts.set("count", cnt);
         }
+        // Provide compatible animation-API stubs (`ui.reveal`, `screen`, `math`) so both
+        // `effects.*` and `animations.*` modules execute uniformly on any target Canvas.
+        if let Ok(ui_tbl) = lua.create_table() {
+            if let Ok(f) = lua.create_function(|_, _p: f32| Ok(())) {
+                let _ = ui_tbl.set("reveal", f);
+            }
+            if let Ok(f) = lua.create_function(|_, _cb: Option<Function>| Ok(())) {
+                let _ = ui_tbl.set("set_greeting_transform", f);
+            }
+            let _ = opts.set("ui", ui_tbl);
+        }
+        if let Ok(screen_tbl) = lua.create_table() {
+            let _ = screen_tbl.set("width", lua.create_function(move |_, ()| Ok(width)).unwrap());
+            let _ = screen_tbl.set("height", lua.create_function(move |_, ()| Ok(height)).unwrap());
+            let _ = opts.set("screen", screen_tbl);
+        }
+        let _ = crate::lua::canvas::attach_math_helpers(&lua, &opts);
 
         let load_fn: mlua::Result<Table> = (|| {
             let require: Function = lua.globals().get("require")?;

@@ -269,6 +269,77 @@ pub fn list_lua_effects() -> Vec<String> {
     names
 }
 
+/// Maps well-known effect/preset aliases to their canonical script stem without special-casing runtime playback.
+pub fn normalize_animation_alias(raw: &str) -> String {
+    let norm = raw
+        .trim()
+        .to_ascii_lowercase()
+        .replace([' ', '-'], "_");
+    let stripped = norm
+        .strip_prefix("effects.")
+        .or_else(|| norm.strip_prefix("animations."))
+        .unwrap_or(&norm);
+    match stripped {
+        "matrix_rain" => "matrix".to_string(),
+        "waves" | "wave" => "water".to_string(),
+        "stars" => "starfield".to_string(),
+        "crt" => "scanlines".to_string(),
+        "floating" | "chars" => "floating_chars".to_string(),
+        "particle" => "particles".to_string(),
+        other => other.to_string(),
+    }
+}
+
+/// Resolves any canvas animation/effect name uniformly across disk overrides and built-in Lua modules
+/// (`effects.*` and `animations.*`).
+pub fn resolve_canvas_module_name(name: &str) -> Option<String> {
+    let trimmed = name.trim().to_ascii_lowercase().replace([' ', '-'], "_");
+    if trimmed.is_empty() || matches!(trimmed.as_str(), "none" | "off") {
+        return None;
+    }
+
+    if let Some((ns, stem)) = trimmed.split_once('.') {
+        let dir = if ns == "animations" {
+            paths::animations_path()
+        } else {
+            paths::effects_path()
+        };
+        if dir.join(format!("{stem}.lua")).exists()
+            || builtins::find_builtin_source(&format!("{ns}.{stem}")).is_some()
+        {
+            return Some(format!("{ns}.{stem}"));
+        }
+    }
+
+    let canon = normalize_animation_alias(&trimmed);
+    for (dir, ns) in [
+        (paths::effects_path(), "effects"),
+        (paths::animations_path(), "animations"),
+    ] {
+        if dir.join(format!("{canon}.lua")).exists() {
+            return Some(format!("{ns}.{canon}"));
+        }
+        let mod_path = format!("{ns}.{canon}");
+        if builtins::find_builtin_source(&mod_path).is_some() {
+            return Some(mod_path);
+        }
+    }
+    None
+}
+
+/// Returns the unified list of all registered Lua canvas animations across `effects/` and `animations/`.
+pub fn list_all_canvas_animations() -> Vec<String> {
+    let mut names = list_lua_effects();
+    for anim in list_lua_animations() {
+        if !names.iter().any(|n| n.eq_ignore_ascii_case(&anim)) {
+            names.push(anim);
+        }
+    }
+    names.retain(|n| !n.eq_ignore_ascii_case("none"));
+    names.sort();
+    names
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
