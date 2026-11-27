@@ -145,6 +145,14 @@ fn write_container(out: &mut String, c: &ContainerConfig, indent: usize, is_root
                     if comp.visual.padding > 0 {
                         let _ = writeln!(out, "{cip}padding = {},", comp.visual.padding);
                     }
+                    if comp.visual.align != crate::config::Align::Left {
+                        let al = match comp.visual.align {
+                            crate::config::Align::Center => "center",
+                            crate::config::Align::Right => "right",
+                            crate::config::Align::Left => "left",
+                        };
+                        let _ = writeln!(out, "{cip}align = \"{al}\",");
+                    }
                     if let Some(f) = &comp.visual.font {
                         let _ = writeln!(out, "{cip}font = {},", lua_str(f));
                     }
@@ -154,6 +162,22 @@ fn write_container(out: &mut String, c: &ContainerConfig, indent: usize, is_root
                             crate::config::GraphStyle::Sparkline => "sparkline",
                         };
                         let _ = writeln!(out, "{cip}graph_style = \"{gs_s}\",");
+                    }
+                    if let Some(t) = &comp.content.text {
+                        let _ = writeln!(out, "{cip}text = {},", lua_str(t));
+                    }
+                    if let Some(anim) = &comp.animation {
+                        let fps = anim.fps.unwrap_or(12);
+                        let st = anim
+                            .style
+                            .as_deref()
+                            .map(|s| format!(", style = {}", lua_str(s)))
+                            .unwrap_or_default();
+                        let _ = writeln!(
+                            out,
+                            "{cip}animation = {{ fps = {fps}, speed = {:.2}{st} }},",
+                            anim.speed
+                        );
                     }
                     if let Some(bg) = &comp.visual.background {
                         let _ = writeln!(out, "{cip}background = {},", lua_str(bg));
@@ -295,24 +319,22 @@ pub fn serialize_config_to_lua(cfg: &Config) -> String {
         "transparent"
     } else if cfg.background.base.kind == BackgroundBaseType::Gradient {
         "gradient"
-    } else {
+    } else if cfg.background.base.kind == BackgroundBaseType::Solid {
         "solid"
+    } else {
+        "theme"
     };
     let fx_mod = cfg.background.effect.label().to_ascii_lowercase();
     let _ = writeln!(out, "egotop.background({{");
+    let _ = writeln!(out, "    enabled = {},", cfg.background.enabled);
+    if let Some(preset) = &cfg.background.preset {
+        let _ = writeln!(out, "    preset = {},", lua_str(preset));
+    }
     let _ = writeln!(out, "    base = {{");
     let _ = writeln!(out, "        type = \"{base_kind}\",");
-    let _ = writeln!(
-        out,
-        "        color = {},",
-        lua_str(
-            cfg.background
-                .base
-                .color
-                .as_deref()
-                .unwrap_or(&cfg.theme.background)
-        )
-    );
+    if let Some(col) = &cfg.background.base.color {
+        let _ = writeln!(out, "        color = {},", lua_str(col));
+    }
     let _ = writeln!(out, "        opacity = {:.2},", cfg.background.base.opacity);
     let _ = writeln!(out, "    }},");
     let _ = writeln!(out, "    effects = {{");
@@ -324,6 +346,26 @@ pub fn serialize_config_to_lua(cfg: &Config) -> String {
         );
     }
     let _ = writeln!(out, "    }},");
+    if !cfg.background.layers.is_empty() {
+        let _ = writeln!(out, "    layers = {{");
+        for l in &cfg.background.layers {
+            let asset_str = l
+                .asset
+                .as_deref()
+                .map(|a| format!(", asset = {}", lua_str(a)))
+                .unwrap_or_default();
+            let _ = writeln!(
+                out,
+                "        {{ effect = \"{}\", speed = {:.2}, density = {:.2}, z_index = {}{} }},",
+                l.effect.label(),
+                l.speed,
+                l.density,
+                l.z_index,
+                asset_str
+            );
+        }
+        let _ = writeln!(out, "    }},");
+    }
     let _ = writeln!(out, "}})\n");
 
     let _ = writeln!(out, "egotop.footer({{");
@@ -335,8 +377,67 @@ pub fn serialize_config_to_lua(cfg: &Config) -> String {
     if let Some(col) = &cfg.footer.color {
         let _ = writeln!(out, "    color = {},", lua_str(col));
     }
+    let f_align = match cfg.footer.align {
+        crate::config::Align::Center => "center",
+        crate::config::Align::Right => "right",
+        crate::config::Align::Left => "left",
+    };
+    let _ = writeln!(out, "    align = \"{f_align}\",");
+    if let Some(anim) = &cfg.footer.animation {
+        let _ = writeln!(out, "    animation = {},", lua_str(anim));
+    }
     let _ = writeln!(out, "    fps = {},", cfg.footer.fps);
     let _ = writeln!(out, "}})\n");
+
+    if !cfg.container_styles.is_empty() {
+        let _ = writeln!(out, "egotop.container_styles({{");
+        for (id, st) in &cfg.container_styles {
+            let _ = writeln!(out, "    [{}] = {{", lua_str(id));
+            match &st.background {
+                crate::ui::container::BackgroundFill::Inherit => {
+                    let _ = writeln!(out, "        background = \"inherit\",");
+                }
+                crate::ui::container::BackgroundFill::Transparent => {
+                    let _ = writeln!(out, "        background = \"transparent\",");
+                }
+                crate::ui::container::BackgroundFill::Solid(c) => {
+                    let _ = writeln!(out, "        background = {},", lua_str(c));
+                }
+            }
+            if let Some(fg) = &st.foreground {
+                let _ = writeln!(out, "        foreground = {},", lua_str(fg));
+            }
+            if let Some(bc) = &st.border_color {
+                let _ = writeln!(out, "        border_color = {},", lua_str(bc));
+            }
+            if let Some(bs) = st.border_style {
+                let _ = writeln!(out, "        border_style = \"{}\",", bs.label());
+            }
+            if let Some(grad) = &st.gradient {
+                let dir = match grad.direction {
+                    crate::ui::container::GradientDirection::Horizontal => "horizontal",
+                    crate::ui::container::GradientDirection::Vertical => "vertical",
+                };
+                let cols: Vec<String> = grad.colors.iter().map(|c| lua_str(c)).collect();
+                let _ = writeln!(
+                    out,
+                    "        gradient = {{ direction = \"{dir}\", colors = {{ {} }} }},",
+                    cols.join(", ")
+                );
+            }
+            if let Some(op) = st.opacity {
+                let _ = writeln!(out, "        opacity = {op:.2},");
+            }
+            let ef = match st.effects {
+                crate::ui::container::EffectPolicy::Allow => "allow",
+                crate::ui::container::EffectPolicy::Isolated => "isolated",
+                crate::ui::container::EffectPolicy::Exclude => "exclude",
+            };
+            let _ = writeln!(out, "        effects = \"{ef}\",");
+            let _ = writeln!(out, "    }},");
+        }
+        let _ = writeln!(out, "}})\n");
+    }
 
     write_container(&mut out, &cfg.ui.root, 0, true);
     out

@@ -56,49 +56,49 @@ fn temp_config_path(suffix: &str) -> std::path::PathBuf {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    std::env::temp_dir().join(format!("egotop_test_{suffix}_{nanos}.toml"))
+    std::env::temp_dir().join(format!("egotop_test_{suffix}_{nanos}.lua"))
 }
 
 #[test]
-fn config_creates_default_and_loads_valid_toml_in_english() {
+fn config_creates_default_and_loads_valid_lua_in_english() {
     let path = temp_config_path("create_default");
     if path.exists() {
         let _ = std::fs::remove_file(&path);
     }
 
-    let first = load_or_create(Some(&path)).expect("should create default config");
+    let first = load_or_create(Some(&path)).expect("should create default egotop.lua");
     assert!(first.created_default);
     assert!(path.exists());
     assert_eq!(first.config.general.name, "egotop");
     assert_eq!(first.config.general.greeting, "Hello, {user}!");
     assert_eq!(first.config.startup.mode, StartupMode::Normal);
+    assert_eq!(first.config.footer.text, "Monitoring system telemetry");
 
-    let second = load_or_create(Some(&path)).expect("should load existing config");
+    let second = load_or_create(Some(&path)).expect("should load existing egotop.lua");
     assert!(!second.created_default);
     assert_eq!(first.config, second.config);
-    assert_eq!(first.config, Config::default());
 
     let _ = std::fs::remove_file(&path);
 }
 
 #[test]
-fn config_rejects_invalid_toml_and_out_of_range_values() {
+fn config_rejects_invalid_lua_and_out_of_range_values() {
     let path = temp_config_path("invalid");
-    std::fs::write(&path, "[general]\nanimation_fps = 0\n").unwrap();
+    std::fs::write(&path, "egotop.config({ animation_fps = 0 })\n").unwrap();
     let err = load_from_path(&path).unwrap_err();
     assert!(err.to_string().contains("animation_fps"));
 
-    std::fs::write(&path, "[theme]\nprimary = \"not-a-color\"\n").unwrap();
+    std::fs::write(&path, "egotop.theme({ primary = \"not-a-color\" })\n").unwrap();
     let err = load_from_path(&path).unwrap_err();
     assert!(err.to_string().contains("theme.primary"));
 
-    std::fs::write(&path, "[theme.borders]\nhorizontal = \"❌\"\n").unwrap();
+    std::fs::write(&path, "egotop.theme({ borders = { horizontal = \"❌\" } })\n").unwrap();
     let err = load_from_path(&path).unwrap_err();
     assert!(err.to_string().contains("theme.borders.horizontal"));
 
-    std::fs::write(&path, "[[widgets]\nmissing_bracket = true\n").unwrap();
+    std::fs::write(&path, "egotop.config({ broken = \n").unwrap();
     let err = load_from_path(&path).unwrap_err();
-    assert!(err.to_string().contains("Invalid TOML syntax"));
+    assert!(err.to_string().contains("Lua"));
 
     let _ = std::fs::remove_file(&path);
 }
@@ -1863,7 +1863,7 @@ fn cli_commands_parse_and_execute_with_appropriate_exit_codes() {
     assert!(String::from_utf8_lossy(&ver_out.stdout).contains("egotop"));
 
     let cfg_path = temp_config_path("cli_subcmds");
-    std::fs::write(&cfg_path, toml::to_string_pretty(&Config::default()).unwrap()).unwrap();
+    std::fs::write(&cfg_path, egotop::lua::serialize_config_to_lua(&Config::default())).unwrap();
 
     let summary_out = Command::new(bin)
         .args(["config", "--config", cfg_path.to_str().unwrap()])
@@ -1877,7 +1877,7 @@ fn cli_commands_parse_and_execute_with_appropriate_exit_codes() {
         .output()
         .unwrap();
     assert!(show_out.status.success());
-    assert!(String::from_utf8_lossy(&show_out.stdout).contains("[general]"));
+    assert!(String::from_utf8_lossy(&show_out.stdout).contains("egotop.config"));
 
     let path_out = Command::new(bin)
         .args(["--config", cfg_path.to_str().unwrap(), "config", "path"])
@@ -1898,7 +1898,7 @@ fn cli_commands_parse_and_execute_with_appropriate_exit_codes() {
 
     // Invalid config must return non-zero exit code and structured diagnostics
     let bad_cfg_path = temp_config_path("cli_bad");
-    std::fs::write(&bad_cfg_path, "[theme]\nprimary = \"not-a-color\"\n").unwrap();
+    std::fs::write(&bad_cfg_path, "egotop.theme({ primary = \"not-a-color\" })\n").unwrap();
     let val_bad = Command::new(bin)
         .args(["--config", bad_cfg_path.to_str().unwrap(), "config", "validate"])
         .output()
@@ -3108,25 +3108,91 @@ fn column_alignment_and_normal_casing_across_sections() {
 }
 
 #[test]
-fn theme_toml_controls_solid_and_transparent_backgrounds_for_app_and_containers() {
-    let themes_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("themes");
+fn lua_themes_and_full_lua_architecture_controls_backgrounds_footer_wait_and_animations() {
+    let themes = egotop::lua::load_all_lua_themes();
     let expected = [
-        ("obsidian-solid.toml", Color::Rgb(0x0D, 0x0F, 0x14), Color::Rgb(0x16, 0x19, 0x22)),
-        ("glass-neon.toml", Color::Reset, Color::Reset),
-        ("frosted-slate.toml", Color::Reset, Color::Rgb(0x1E, 0x24, 0x30)),
-        ("solar-amber.toml", Color::Rgb(0x12, 0x0C, 0x06), Color::Reset),
-        ("cyber-void.toml", Color::Rgb(0x09, 0x06, 0x12), Color::Rgb(0x14, 0x0E, 0x24)),
+        ("obsidian-solid", Color::Rgb(0x0D, 0x0F, 0x14), Color::Rgb(0x16, 0x19, 0x22)),
+        ("glass-neon", Color::Reset, Color::Reset),
+        ("frosted-slate", Color::Reset, Color::Rgb(0x1E, 0x24, 0x30)),
+        ("solar-amber", Color::Rgb(0x12, 0x0C, 0x06), Color::Reset),
+        ("cyber-void", Color::Rgb(0x09, 0x06, 0x12), Color::Rgb(0x14, 0x0E, 0x24)),
+        ("bamboo", Color::Rgb(0x1B, 0x21, 0x18), Color::Rgb(0x23, 0x2B, 0x1F)),
     ];
 
-    for (file, exp_bg, exp_panel) in expected {
-        let raw = std::fs::read_to_string(themes_dir.join(file)).unwrap();
-        #[derive(serde::Deserialize)]
-        struct Wrapped {
-            theme: egotop::config::ThemeConfig,
-        }
-        let parsed: Wrapped = toml::from_str(&raw).unwrap();
-        let theme = Theme::from_config(&parsed.theme);
-        assert_eq!(theme.background, exp_bg, "background mismatch in {file}");
-        assert_eq!(theme.panel_background, exp_panel, "panel_background mismatch in {file}");
+    for (name, exp_bg, exp_panel) in expected {
+        let entry = &themes[name];
+        assert_eq!(entry.theme.background, exp_bg, "background mismatch in {name}");
+        assert_eq!(
+            entry.theme.panel_background, exp_panel,
+            "panel_background mismatch in {name}"
+        );
     }
+
+    // Full Lua composition with optional egotop.wait(), theme.setup override,
+    // gradient background base + independent Lua effect, custom footer, and explicit container opacity.
+    let lua_script = r##"
+local bamboo = require("themes.bamboo")
+egotop.config({ name = "egotop", animation_fps = 30 })
+egotop.wait({
+    trigger = "key",
+    message = "Ready...",
+    cursor = { character = "█", color = "#39FF88", blink = false },
+})
+egotop.theme({
+    theme = bamboo.setup,
+    panel_background = "transparent",
+})
+egotop.background({
+    base = {
+        type = "gradient",
+        opacity = 0.85,
+        gradient = { from = "#050A07", to = "#08110C", direction = "vertical" },
+    },
+    effects = {
+        require("effects.particles").setup({ speed = 1.2, density = 0.5 }),
+    },
+})
+egotop.footer({
+    enabled = true,
+    text = "Custom Lua telemetry",
+    icon = "activity",
+    color = "#FFC857",
+    align = "center",
+})
+egotop.layout({
+    id = "root",
+    direction = "vertical",
+    width = "100%",
+    height = "100%",
+    transparent = true,
+    children = {
+        egotop.component({
+            id = "status_spinner",
+            kind = "spinner",
+            category = "animated",
+            width = "fill",
+            height = 1,
+        }),
+    },
+})
+"##;
+    let bundle = egotop::lua::load_lua_config_str(lua_script, "test.lua", None).unwrap();
+    assert!(bundle.config.init.wait_for_input);
+    assert_eq!(bundle.config.init.message, "Ready...");
+    assert_eq!(bundle.theme.panel_background, Color::Reset);
+    assert_eq!(
+        bundle.config.background.base.kind,
+        egotop::config::schema::BackgroundBaseType::Gradient
+    );
+    assert_eq!(bundle.effect_specs[0].name, "particles");
+    assert_eq!(bundle.config.footer.text, "Custom Lua telemetry");
+    assert_eq!(bundle.config.footer.align, egotop::config::Align::Center);
+
+    // Lua Greeting Fire character animation
+    let mut fire = egotop::lua::LuaAnimationRuntime::start("greeting_fire", 80, 24, 30);
+    for _ in 0..4 {
+        fire.update(0.05);
+    }
+    let cell_tr = fire.transform_greeting_char('E', 2, 1);
+    assert!(cell_tr.is_some());
 }

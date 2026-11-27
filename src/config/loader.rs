@@ -1,10 +1,7 @@
-use crate::config::animation_loader::ensure_sample_animations;
 use crate::config::paths;
 use crate::config::schema::{Config, ConfigError};
 use std::fs;
 use std::path::{Path, PathBuf};
-
-pub const DEFAULT_CONFIG_TOML: &str = include_str!("../../config/default.toml");
 
 #[derive(Debug, Clone)]
 pub struct ConfigLoadResult {
@@ -14,18 +11,11 @@ pub struct ConfigLoadResult {
 }
 
 pub fn default_config_path() -> PathBuf {
-    let lua_path = paths::main_lua_path();
-    let toml_path = paths::main_config_path();
-    if lua_path.exists() || !toml_path.exists() {
-        lua_path
-    } else {
-        toml_path
-    }
+    paths::main_lua_path()
 }
 
 pub fn ensure_config_dirs() {
     crate::lua::ensure_lua_config_tree();
-    ensure_sample_animations();
 }
 
 pub fn load_or_create(custom_path: Option<&Path>) -> Result<ConfigLoadResult, ConfigError> {

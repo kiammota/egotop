@@ -652,12 +652,40 @@ fn render_greeting_component(
         .enumerate()
         .map(|(i, l)| {
             let shown = if is_marquee { l } else { ctx.reveal.mask_line(&l, i) };
-            Line::from(Span::styled(
-                shown,
-                Style::default()
-                    .fg(accent_color)
-                    .add_modifier(Modifier::BOLD),
-            ))
+            if ctx.reveal.greeting_transforms.is_empty() {
+                Line::from(Span::styled(
+                    shown,
+                    Style::default()
+                        .fg(accent_color)
+                        .add_modifier(Modifier::BOLD),
+                ))
+            } else {
+                let spans: Vec<Span<'static>> = shown
+                    .chars()
+                    .enumerate()
+                    .map(|(col, ch)| {
+                        if let Some(tr) = ctx.reveal.greeting_transforms.get(&(i, col)) {
+                            let mut s = ch.to_string();
+                            if let Some(rep) = &tr.ch {
+                                s = rep.clone();
+                            }
+                            let mut st = Style::default().fg(tr.fg.unwrap_or(accent_color));
+                            if tr.bold {
+                                st = st.add_modifier(Modifier::BOLD);
+                            }
+                            Span::styled(s, st)
+                        } else {
+                            Span::styled(
+                                ch.to_string(),
+                                Style::default()
+                                    .fg(accent_color)
+                                    .add_modifier(Modifier::BOLD),
+                            )
+                        }
+                    })
+                    .collect();
+                Line::from(spans)
+            }
         })
         .collect();
 

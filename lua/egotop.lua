@@ -41,8 +41,7 @@ egotop.theme({
 -- 4. Background (base layer + independent visual effects)
 egotop.background({
     base = {
-        type = "solid", -- "transparent", "solid", or "gradient"
-        color = "#050A07",
+        type = "theme", -- "theme", "transparent", "solid", or "gradient"
         opacity = 1.0,
         gradient = {
             from = "#050A07",
@@ -210,6 +209,8 @@ egotop.layout({
             category = "animated",
             width = "fill",
             height = 1,
+            text = "Monitoring system telemetry",
+            animation = { fps = 12, speed = 1.0, style = "braille" },
         }),
     },
 })

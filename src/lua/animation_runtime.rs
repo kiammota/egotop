@@ -364,8 +364,8 @@ impl LuaAnimationRuntime {
                         .get::<Option<String>>("bg")
                         .unwrap_or(None)
                         .map(|s| parse_color(&s, Color::Reset));
-                    let bold = spec.get::<bool>("bold").unwrap_or(false);
-                    let visible = spec.get::<bool>("visible").unwrap_or(true);
+                    let bold = spec.get::<Option<bool>>("bold").ok().flatten().unwrap_or(false);
+                    let visible = spec.get::<Option<bool>>("visible").ok().flatten().unwrap_or(true);
 
                     els.lock().unwrap().push(LuaSceneElement {
                         id: id.clone(),
@@ -560,7 +560,7 @@ impl LuaAnimationRuntime {
             .unwrap_or(None)
             .map(|c| parse_color(&c, Color::White));
         let dy = tbl.get::<i16>("dy").unwrap_or(0);
-        let bold = tbl.get::<bool>("bold").unwrap_or(false);
+        let bold = tbl.get::<Option<bool>>("bold").ok().flatten().unwrap_or(false);
         Some(GreetingCellTransform {
             ch: out_ch,
             fg,

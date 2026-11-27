@@ -285,6 +285,27 @@ impl App {
                 if let Some(la) = &mut self.lua_anim {
                     la.update(dt);
                     self.reveal.progress = la.reveal_progress();
+                    self.reveal.greeting_transforms.clear();
+                    for row in 0..8usize {
+                        for col in 0..80usize {
+                            if let Some(tr) = la.transform_greeting_char('#', col, row)
+                                && (tr.fg.is_some() || tr.bold)
+                            {
+                                // Sample transform palette per cell coordinate
+                                self.reveal.greeting_transforms.insert(
+                                    (row, col),
+                                    crate::lua::GreetingCellTransform {
+                                        ch: None,
+                                        fg: tr.fg,
+                                        dy: tr.dy,
+                                        bold: tr.bold,
+                                    },
+                                );
+                            } else {
+                                break;
+                            }
+                        }
+                    }
                     if la.is_finished() {
                         self.reveal = RevealState::complete();
                         self.lua_anim = None;

@@ -95,6 +95,23 @@ pub fn register_egotop_api(lua: &Lua, state: Arc<Mutex<LuaConfigBundle>>) -> mlu
         )?;
     }
 
+    // egotop.container_styles({ [id] = { background = ..., foreground = ..., ... } })
+    {
+        let st = Arc::clone(&state);
+        egotop.set(
+            "container_styles",
+            lua.create_function(move |_, tbl: Table| {
+                let mut bundle = st.lock().unwrap();
+                for pair in tbl.pairs::<String, Table>().flatten() {
+                    let (id, stbl) = pair;
+                    let cs = parse_container_style_table(&stbl);
+                    bundle.config.container_styles.insert(id, cs);
+                }
+                Ok(())
+            })?,
+        )?;
+    }
+
     // Helper constructors: egotop.container(tbl) & egotop.component(tbl)
     egotop.set(
         "container",
@@ -130,14 +147,14 @@ fn apply_general_config(tbl: &Table, bundle: &mut LuaConfigBundle) {
         g.message = v;
     }
     if let Ok(v) = tbl.get::<u64>("refresh_rate_ms") {
-        g.refresh_rate_ms = v.max(100);
+        g.refresh_rate_ms = v;
     } else if let Ok(v) = tbl.get::<u64>("refresh_rate") {
-        g.refresh_rate_ms = v.max(100);
+        g.refresh_rate_ms = v;
     }
     if let Ok(v) = tbl.get::<u32>("animation_fps") {
-        g.animation_fps = v.clamp(1, 120);
+        g.animation_fps = v;
     } else if let Ok(v) = tbl.get::<u32>("fps") {
-        g.animation_fps = v.clamp(1, 120);
+        g.animation_fps = v;
     }
     if let Ok(v) = tbl.get::<String>("time_format") {
         g.time_format = v;
@@ -145,7 +162,7 @@ fn apply_general_config(tbl: &Table, bundle: &mut LuaConfigBundle) {
     if let Ok(v) = tbl.get::<String>("date_format") {
         g.date_format = v;
     }
-    if let Ok(v) = tbl.get::<bool>("hide_unavailable") {
+    if let Some(v) = tbl.get::<Option<bool>>("hide_unavailable").ok().flatten() {
         g.hide_unavailable = v;
     }
     if let Ok(v) = tbl.get::<u8>("default_page") {
@@ -167,10 +184,10 @@ fn apply_general_config(tbl: &Table, bundle: &mut LuaConfigBundle) {
     if let Ok(v) = tbl.get::<String>("font") {
         bundle.config.typography.font = v;
     }
-    if let Ok(v) = tbl.get::<bool>("ascii_fallback") {
+    if let Some(v) = tbl.get::<Option<bool>>("ascii_fallback").ok().flatten() {
         bundle.config.typography.ascii_fallback = v;
     }
-    if let Ok(v) = tbl.get::<bool>("use_nerd_fonts") {
+    if let Some(v) = tbl.get::<Option<bool>>("use_nerd_fonts").ok().flatten() {
         bundle.config.typography.use_nerd_fonts = v;
     }
     if let Ok(v) = tbl.get::<f32>("marquee_speed") {
@@ -179,7 +196,7 @@ fn apply_general_config(tbl: &Table, bundle: &mut LuaConfigBundle) {
 }
 
 fn apply_wait_config(tbl: &Table, bundle: &mut LuaConfigBundle) {
-    let enabled = tbl.get::<bool>("enabled").unwrap_or(true);
+    let enabled = tbl.get::<Option<bool>>("enabled").ok().flatten().unwrap_or(true);
     bundle.config.init.wait_for_input = enabled;
     if let Ok(msg) = tbl.get::<String>("message") {
         bundle.config.init.message = msg;
@@ -196,14 +213,18 @@ fn apply_wait_config(tbl: &Table, bundle: &mut LuaConfigBundle) {
         bundle.wait_animation = Some(anim);
     }
     if let Ok(cursor_tbl) = tbl.get::<Table>("cursor") {
-        bundle.config.init.cursor = cursor_tbl.get::<bool>("enabled").unwrap_or(true);
+        bundle.config.init.cursor = cursor_tbl
+            .get::<Option<bool>>("enabled")
+            .ok()
+            .flatten()
+            .unwrap_or(true);
         if let Ok(ch) = cursor_tbl.get::<String>("character") {
             bundle.config.startup.cursor.character = ch;
         }
         if let Ok(col) = cursor_tbl.get::<String>("color") {
             bundle.config.startup.cursor.color = col;
         }
-        if let Ok(blink) = cursor_tbl.get::<bool>("blink") {
+        if let Some(blink) = cursor_tbl.get::<Option<bool>>("blink").ok().flatten() {
             bundle.config.startup.cursor.blink = blink;
         }
         if let Ok(ms) = cursor_tbl.get::<u64>("blink_interval_ms") {
@@ -250,7 +271,7 @@ pub fn apply_theme_table(tbl: &Table, cfg: &mut ThemeConfig) {
     if let Ok(v) = tbl.get::<String>("name") {
         cfg.name = v;
     }
-    if let Ok(v) = tbl.get::<bool>("background_transparent") {
+    if let Some(v) = tbl.get::<Option<bool>>("background_transparent").ok().flatten() {
         cfg.background_transparent = v;
     }
     if let Ok(v) = tbl.get::<String>("background") {
@@ -354,6 +375,8 @@ fn apply_background_config(tbl: &Table, bundle: &mut LuaConfigBundle) {
         }
         if let Some(first) = bundle.effect_specs.first() {
             bg.enabled = !first.name.eq_ignore_ascii_case("none");
+            bg.speed = first.speed;
+            bg.density = first.density;
             bg.effect = match first.name.to_ascii_lowercase().as_str() {
                 "matrix" | "matrix_rain" => crate::config::EffectKind::Matrix,
                 "water" | "waves" => crate::config::EffectKind::Water,
@@ -366,11 +389,43 @@ fn apply_background_config(tbl: &Table, bundle: &mut LuaConfigBundle) {
             bg.effect = crate::config::EffectKind::None;
         }
     }
+    if let Ok(layers_tbl) = tbl.get::<Table>("layers") {
+        bg.layers.clear();
+        for lt in layers_tbl.sequence_values::<Table>().flatten() {
+            if let Ok(ef) = lt.get::<String>("effect")
+                && let Some(kind) = crate::animation::BackgroundLayerKind::parse(&ef)
+            {
+                let mut spec = crate::animation::BackgroundLayerSpec {
+                    effect: kind,
+                    ..Default::default()
+                };
+                if let Ok(sp) = lt.get::<f32>("speed") {
+                    spec.speed = sp;
+                }
+                if let Ok(den) = lt.get::<f32>("density") {
+                    spec.density = den;
+                }
+                if let Ok(zi) = lt.get::<i32>("z_index") {
+                    spec.z_index = zi;
+                }
+                if let Ok(asset) = lt.get::<Option<String>>("asset") {
+                    spec.asset = asset;
+                }
+                bg.layers.push(spec);
+            }
+        }
+    }
+    if let Some(en) = tbl.get::<Option<bool>>("enabled").ok().flatten() {
+        bg.enabled = en;
+    }
+    if let Ok(preset) = tbl.get::<Option<String>>("preset") {
+        bg.preset = preset;
+    }
 }
 
 fn apply_footer_config(tbl: &Table, bundle: &mut LuaConfigBundle) {
     let f = &mut bundle.config.footer;
-    if let Ok(v) = tbl.get::<bool>("enabled") {
+    if let Some(v) = tbl.get::<Option<bool>>("enabled").ok().flatten() {
         f.enabled = v;
     }
     if let Ok(v) = tbl.get::<String>("text") {
@@ -452,7 +507,11 @@ fn parse_gradient_table(tbl: &Table) -> Option<ContainerGradient> {
 }
 
 fn parse_border_table(tbl: &Table) -> ContainerBorderConfig {
-    let enabled = tbl.get::<bool>("enabled").unwrap_or(true);
+    let enabled = tbl
+        .get::<Option<bool>>("enabled")
+        .ok()
+        .flatten()
+        .unwrap_or(true);
     let style = tbl
         .get::<String>("style")
         .ok()
@@ -468,15 +527,48 @@ fn parse_border_table(tbl: &Table) -> ContainerBorderConfig {
     }
 }
 
+fn parse_container_style_table(tbl: &Table) -> crate::ui::container::ContainerStyle {
+    let mut style = crate::ui::container::ContainerStyle::default();
+    if let Ok(bg) = tbl.get::<String>("background") {
+        let low = bg.trim().to_ascii_lowercase();
+        style.background = match low.as_str() {
+            "inherit" => crate::ui::container::BackgroundFill::Inherit,
+            "transparent" | "reset" => crate::ui::container::BackgroundFill::Transparent,
+            _ => crate::ui::container::BackgroundFill::Solid(bg),
+        };
+    }
+    style.foreground = tbl.get::<Option<String>>("foreground").unwrap_or(None);
+    style.border_color = tbl.get::<Option<String>>("border_color").unwrap_or(None);
+    if let Ok(bs) = tbl.get::<String>("border_style")
+        && let Ok(parsed) = parse_border_style(&bs)
+    {
+        style.border_style = Some(parsed);
+    }
+    if let Ok(gtbl) = tbl.get::<Table>("gradient") {
+        style.gradient = parse_gradient_table(&gtbl);
+    }
+    if let Ok(op) = tbl.get::<f32>("opacity") {
+        style.opacity = Some(op.clamp(0.0, 1.0));
+    }
+    if let Ok(ef) = tbl.get::<String>("effects") {
+        style.effects = match ef.trim().to_ascii_lowercase().as_str() {
+            "allow" => EffectPolicy::Allow,
+            "isolated" => EffectPolicy::Isolated,
+            _ => EffectPolicy::Exclude,
+        };
+    }
+    style
+}
+
 fn parse_container_table(tbl: &Table) -> ContainerConfig {
     let mut c = ContainerConfig::default();
     if let Ok(id) = tbl.get::<String>("id") {
         c.id = id;
     }
-    if let Ok(v) = tbl.get::<bool>("visible") {
+    if let Some(v) = tbl.get::<Option<bool>>("visible").ok().flatten() {
         c.visible = v;
     }
-    if let Ok(v) = tbl.get::<bool>("transparent") {
+    if let Some(v) = tbl.get::<Option<bool>>("transparent").ok().flatten() {
         c.transparent = v;
     }
     if let Ok(d) = tbl.get::<String>("direction") {
@@ -547,7 +639,7 @@ fn parse_component_table(tbl: &Table) -> ComponentConfig {
     if let Ok(id) = tbl.get::<String>("id") {
         comp.id = id;
     }
-    if let Ok(v) = tbl.get::<bool>("visible") {
+    if let Some(v) = tbl.get::<Option<bool>>("visible").ok().flatten() {
         comp.visible = v;
     }
     if let Ok(cat) = tbl.get::<String>("category") {
@@ -608,6 +700,19 @@ fn parse_component_table(tbl: &Table) -> ComponentConfig {
         if !vec.is_empty() {
             comp.content.fields = Some(vec);
         }
+    }
+    if let Ok(atbl) = tbl.get::<Table>("animation") {
+        let mut anim = crate::ui::container::ComponentAnimationConfig::default();
+        if let Ok(fps) = atbl.get::<u32>("fps") {
+            anim.fps = Some(fps);
+        }
+        if let Ok(st) = atbl.get::<Option<String>>("style") {
+            anim.style = st;
+        }
+        if let Ok(sp) = atbl.get::<f32>("speed") {
+            anim.speed = sp;
+        }
+        comp.animation = Some(anim);
     }
     // Note: `Function` unused warning safeguard if additional callbacks are passed
     let _: Option<Function> = tbl.get::<Function>("on_render").ok();
