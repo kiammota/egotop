@@ -1712,3 +1712,148 @@ fn real_notify_filesystem_watcher_detects_atomic_writes_and_edits() {
 
     let _ = std::fs::remove_dir_all(&root);
 }
+
+#[test]
+fn cli_commands_parse_and_execute_with_appropriate_exit_codes() {
+    use clap::Parser;
+    use egotop::cli::{Cli, Commands};
+    use std::process::Command;
+
+    // 1. Clap derive parsing covers all required administrative subcommands
+    assert!(Cli::try_parse_from(["egotop"]).unwrap().command.is_none());
+    assert!(matches!(
+        Cli::try_parse_from(["egotop", "config"]).unwrap().command,
+        Some(Commands::Config(_))
+    ));
+    assert!(matches!(
+        Cli::try_parse_from(["egotop", "config", "show"])
+            .unwrap()
+            .command,
+        Some(Commands::Config(_))
+    ));
+    assert!(matches!(
+        Cli::try_parse_from(["egotop", "config", "path"])
+            .unwrap()
+            .command,
+        Some(Commands::Config(_))
+    ));
+    assert!(matches!(
+        Cli::try_parse_from(["egotop", "config", "validate"])
+            .unwrap()
+            .command,
+        Some(Commands::Config(_))
+    ));
+    assert!(matches!(
+        Cli::try_parse_from(["egotop", "fonts", "list"])
+            .unwrap()
+            .command,
+        Some(Commands::Fonts(_))
+    ));
+    assert!(matches!(
+        Cli::try_parse_from(["egotop", "context", "list"])
+            .unwrap()
+            .command,
+        Some(Commands::Context(_))
+    ));
+    assert!(matches!(
+        Cli::try_parse_from(["egotop", "doctor"]).unwrap().command,
+        Some(Commands::Doctor)
+    ));
+
+    // 2. End-to-end subprocess checks against compiled binary
+    let bin = env!("CARGO_BIN_EXE_egotop");
+
+    let help_out = Command::new(bin).arg("--help").output().unwrap();
+    assert!(help_out.status.success());
+    let help_str = String::from_utf8_lossy(&help_out.stdout);
+    assert!(help_str.contains("config"));
+    assert!(help_str.contains("fonts"));
+    assert!(help_str.contains("context"));
+    assert!(help_str.contains("doctor"));
+
+    let ver_out = Command::new(bin).arg("--version").output().unwrap();
+    assert!(ver_out.status.success());
+    assert!(String::from_utf8_lossy(&ver_out.stdout).contains("egotop"));
+
+    let cfg_path = temp_config_path("cli_subcmds");
+    std::fs::write(&cfg_path, toml::to_string_pretty(&Config::default()).unwrap()).unwrap();
+
+    let summary_out = Command::new(bin)
+        .args(["config", "--config", cfg_path.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(summary_out.status.success());
+    assert!(String::from_utf8_lossy(&summary_out.stdout).contains("egotop configuration summary"));
+
+    let show_out = Command::new(bin)
+        .args(["--config", cfg_path.to_str().unwrap(), "config", "show"])
+        .output()
+        .unwrap();
+    assert!(show_out.status.success());
+    assert!(String::from_utf8_lossy(&show_out.stdout).contains("[general]"));
+
+    let path_out = Command::new(bin)
+        .args(["--config", cfg_path.to_str().unwrap(), "config", "path"])
+        .output()
+        .unwrap();
+    assert!(path_out.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&path_out.stdout).trim(),
+        cfg_path.to_str().unwrap()
+    );
+
+    let val_ok = Command::new(bin)
+        .args(["--config", cfg_path.to_str().unwrap(), "config", "validate"])
+        .output()
+        .unwrap();
+    assert!(val_ok.status.success());
+    assert!(String::from_utf8_lossy(&val_ok.stdout).contains("Configuration OK"));
+
+    // Invalid config must return non-zero exit code and structured diagnostics
+    let bad_cfg_path = temp_config_path("cli_bad");
+    std::fs::write(&bad_cfg_path, "[theme]\nprimary = \"not-a-color\"\n").unwrap();
+    let val_bad = Command::new(bin)
+        .args(["--config", bad_cfg_path.to_str().unwrap(), "config", "validate"])
+        .output()
+        .unwrap();
+    assert!(!val_bad.status.success());
+    assert!(String::from_utf8_lossy(&val_bad.stderr).contains("E1004"));
+
+    // Missing config file must return non-zero exit code cleanly
+    let missing_cfg = temp_config_path("cli_missing_file");
+    let _ = std::fs::remove_file(&missing_cfg);
+    let val_missing = Command::new(bin)
+        .args(["--config", missing_cfg.to_str().unwrap(), "config", "validate"])
+        .output()
+        .unwrap();
+    assert!(!val_missing.status.success());
+
+    let fonts_out = Command::new(bin).args(["fonts", "list"]).output().unwrap();
+    assert!(fonts_out.status.success());
+    assert!(String::from_utf8_lossy(&fonts_out.stdout).contains("ANSI Shadow"));
+
+    let ctx_out = Command::new(bin).args(["context", "list"]).output().unwrap();
+    assert!(ctx_out.status.success());
+    assert!(
+        String::from_utf8_lossy(&ctx_out.stdout)
+            .to_ascii_lowercase()
+            .contains("not implemented")
+    );
+
+    let doc_ok = Command::new(bin)
+        .args(["--config", cfg_path.to_str().unwrap(), "doctor"])
+        .output()
+        .unwrap();
+    assert!(doc_ok.status.success());
+    assert!(String::from_utf8_lossy(&doc_ok.stdout).contains("egotop doctor"));
+
+    let doc_bad = Command::new(bin)
+        .args(["--config", bad_cfg_path.to_str().unwrap(), "doctor"])
+        .output()
+        .unwrap();
+    assert!(!doc_bad.status.success());
+    assert!(String::from_utf8_lossy(&doc_bad.stdout).contains("[FAIL]"));
+
+    let _ = std::fs::remove_file(&cfg_path);
+    let _ = std::fs::remove_file(&bad_cfg_path);
+}

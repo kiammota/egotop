@@ -1,5 +1,6 @@
 pub mod animation;
 pub mod app;
+pub mod cli;
 pub mod command;
 pub mod config;
 pub mod runtime;
