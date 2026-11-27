@@ -3196,3 +3196,174 @@ egotop.layout({
     let cell_tr = fire.transform_greeting_char('E', 2, 1);
     assert!(cell_tr.is_some());
 }
+
+#[test]
+fn lua_canvas_api_zbuffer_clipping_christmas_tree_and_layout_alignment() {
+    use egotop::lua::{AnimationLayer, CanvasBuffer, LuaAnimationRuntime, LuaCanvasHandle};
+    use egotop::lua::load_lua_font;
+    use egotop::ui::container::{ComponentContent, ComponentVisual};
+    use egotop::ui::theme::Theme;
+    use mlua::Lua;
+    use std::sync::{Arc, Mutex};
+
+    // 1. CanvasBuffer clipping, intensity & Z-buffer precedence
+    let lua = Lua::new();
+    let buf_arc = Arc::new(Mutex::new(CanvasBuffer::new(10, 5)));
+    let handle = LuaCanvasHandle::new(Arc::clone(&buf_arc), Theme::from_config(&Config::default().theme));
+    lua.globals().set("canvas", handle).unwrap();
+    let math_tbl = egotop::lua::canvas::create_math_table(&lua).unwrap();
+    lua.globals().set("emath", math_tbl).unwrap();
+    lua.load(
+        r##"
+        assert(canvas.width == 10 and canvas.height == 5)
+        canvas:clear(" ", nil, nil)
+        -- Out-of-bounds puts clip cleanly without panicking
+        canvas:put(-5, 0, "X", "#FF0000", nil, 1.0)
+        canvas:put(10, 4, "Y", "#00FF00", nil, 1.0)
+        -- Z-buffer: closer z (5.0) wins over back z (-2.0) regardless of draw order
+        canvas:put_z(3, 2, 5.0, "@", "#39FF88", nil, 1.0)
+        canvas:put_z(3, 2, -2.0, ".", "#112233", nil, 0.5)
+        canvas:text(0, 0, "HI!", emath.hsv_to_rgb(0.3, 0.9, 1.0), nil, 0.85)
+        assert(emath.clamp(5, 0, 3) == 3)
+        assert(emath.lerp(0, 10, 0.5) == 5)
+        local sc = emath.rgb_scale({200, 100, 50}, 0.5)
+        assert(sc.r == 100 and sc.g == 50)
+        local n = emath.noise(1.2, 3.4, 0.5)
+        assert(n >= 0.0 and n <= 1.0)
+        "##,
+    )
+    .exec()
+    .unwrap();
+
+    {
+        let guard = buf_arc.lock().unwrap();
+        assert_eq!(guard.get_cell(3, 2).unwrap().ch, "@");
+        assert_eq!(guard.get_cell(0, 0).unwrap().ch, "H");
+        assert!(guard.get_cell(9, 4).is_none());
+    }
+
+    // 2. ANSI Shadow Lua font keeps clean comma-space gap in "HELLO, KIMAS!"
+    let ansi = load_lua_font("ANSI Shadow").expect("ANSI Shadow lua font must load");
+    let lines = ansi.render_lines("HELLO, KIMAS!");
+    assert_eq!(lines.len(), 6);
+    // "HELLO," ends before ", " space gap; verify total width includes proper word spacing
+    let without_space = ansi.render_lines("HELLO,KIMAS!");
+    assert!(
+        lines[0].chars().count() > without_space[0].chars().count(),
+        "comma + space must add visible gap rather than collapsing"
+    );
+
+    // 3. Dedicated ComponentKind::Canvas (Christmas tree) & boxed animation respect strict bounds
+    let mut cfg = Config::default();
+    cfg.background.effect = EffectKind::Matrix;
+    cfg.ui.root.children.insert(
+        2,
+        ContainerNode::Component(ComponentConfig {
+            id: "tree_box".to_string(),
+            visible: true,
+            category: ComponentCategory::Animated,
+            kind: ComponentKind::Canvas,
+            width: ContainerSize::Fill(1),
+            height: ContainerSize::Fixed(14),
+            content: ComponentContent {
+                script: Some("effects.christmas_tree".to_string()),
+                ..ComponentContent::default()
+            },
+            visual: ComponentVisual {
+                border: ContainerBorderConfig::titled("Christmas Tree"),
+                ..ComponentVisual::default()
+            },
+            ..ComponentConfig::default()
+        }),
+    );
+
+    let area = Rect::new(0, 0, 120, 44);
+    let layout = compute_dashboard_layout(area, &cfg, ViewMode::Dashboard);
+    let mut anim_store = ComponentAnimationStore::new();
+    let catalog = AnimationCatalog::load();
+    anim_store.update_all(0.1, &layout, &cfg, &catalog);
+    let mut collector = SystemCollector::new();
+    let snapshot = collector.collect(area.width, area.height);
+    let effect = create_effect(EffectKind::Matrix, area.width, area.height, &cfg.background);
+    let transition = TransitionPlayer::new("none", &catalog, 0);
+    let mut customizer = CustomizerState::default();
+    let theme = Theme::from_config(&cfg.theme);
+    let themes = vec![ThemeEntry {
+        name: "matrix".to_string(),
+        theme: theme.clone(),
+        source_path: None,
+    }];
+    let registry = CommandRegistry::new();
+    let layouts_vec = Vec::new();
+    let containers_vec = Vec::new();
+    let cctx = CompletionContext {
+        themes: &themes,
+        animations: &catalog,
+        layouts: &layouts_vec,
+        containers: &containers_vec,
+    };
+    let mut cmd_line = CommandLineState::default();
+    cmd_line.open(&registry, &cctx);
+    for ch in "theme bamboo".chars() {
+        cmd_line.insert_char(ch, &registry, &cctx);
+    }
+    let startup = CursorStartupState::new(false);
+    let reveal = RevealState::complete();
+    let render_ctx = RenderContext {
+        config: &cfg,
+        theme: &theme,
+        snapshot: &snapshot,
+        reveal: &reveal,
+        view_mode: ViewMode::Dashboard,
+        paused: false,
+        show_help: false,
+        fps: 30.0,
+        status_toast: None,
+        transparent_bg: false,
+        config_error_count: 0,
+    };
+
+    let mut terminal = Terminal::new(TestBackend::new(area.width, area.height)).unwrap();
+    terminal
+        .draw(|frame| {
+            draw_frame(
+                frame,
+                &cfg,
+                effect.as_ref(),
+                &transition,
+                &anim_store,
+                &mut customizer,
+                &cmd_line,
+                &startup,
+                &themes,
+                &catalog,
+                &render_ctx,
+            );
+        })
+        .unwrap();
+
+    let rendered = terminal.backend().buffer();
+    let tree_comp = layout.find_component("tree_box").unwrap();
+    let tree_top_row: String = (tree_comp.outer_rect.x..tree_comp.outer_rect.right())
+        .map(|x| rendered[(x, tree_comp.outer_rect.y)].symbol())
+        .collect();
+    assert!(
+        tree_top_row.contains(" christmas tree "),
+        "Christmas Canvas border/title corrupted: {tree_top_row:?}"
+    );
+    let footer_comp = layout.find_component("status_spinner").unwrap();
+    assert!(footer_comp.outer_rect.height >= 3, "footer should be bordered");
+    let footer_inner: String = (footer_comp.inner_rect.x..footer_comp.inner_rect.right())
+        .map(|x| rendered[(x, footer_comp.inner_rect.y)].symbol())
+        .collect();
+    assert!(
+        footer_inner.contains(":theme bamboo"),
+        "Command line should render inside bordered footer container: {footer_inner:?}"
+    );
+
+    // 4. Standalone `christmas` Lua animation uses Boxed layer & renders cleanly
+    let mut xmas = LuaAnimationRuntime::start("christmas", 100, 36, 30);
+    assert_eq!(xmas.layer(), AnimationLayer::Boxed);
+    xmas.update(0.1);
+    assert!(xmas.last_error.is_none(), "{:?}", xmas.last_error);
+}
