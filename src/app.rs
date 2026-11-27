@@ -234,7 +234,8 @@ impl App {
             }
 
             let toast_text = self.status_toast.as_ref().map(|(s, _)| s.as_str());
-            let transparent_bg = self.theme.background == ratatui::style::Color::Reset;
+            let transparent_bg = self.config.background.transparent
+                || self.theme.background == ratatui::style::Color::Reset;
             let ctx = RenderContext {
                 config: &self.config,
                 theme: &self.theme,
@@ -1235,18 +1236,84 @@ impl App {
 
     fn execute_set_option(&mut self, key: &str, value: &str) {
         let k = key.trim().to_ascii_lowercase();
+        if k == "background.transparent" {
+            match parse_bool_flag(value) {
+                Some(flag) => {
+                    self.config.background.transparent = flag;
+                    self.set_toast(format!(
+                        "Background transparency set to {}",
+                        if flag { "transparent" } else { "solid" }
+                    ));
+                }
+                None => self.set_toast(format!(
+                    "Invalid boolean '{value}' (expected true or false)"
+                )),
+            }
+            return;
+        }
+
+        if k == "containers.transparent" {
+            match parse_bool_flag(value) {
+                Some(true) => {
+                    self.config.theme.panel_background = "transparent".to_string();
+                    self.theme.panel_background = ratatui::style::Color::Reset;
+                    self.set_toast("All containers set to transparent (individual overrides preserved)");
+                }
+                Some(false) => {
+                    let fallback = crate::ui::theme::preset_theme(&self.config.theme.name).panel_background;
+                    let resolved = if fallback == ratatui::style::Color::Reset {
+                        ratatui::style::Color::Rgb(8, 17, 12)
+                    } else {
+                        fallback
+                    };
+                    self.config.theme.panel_background.clear();
+                    self.theme.panel_background = resolved;
+                    self.set_toast("All containers set to solid (individual overrides preserved)");
+                }
+                None => self.set_toast(format!(
+                    "Invalid boolean '{value}' (expected true or false)"
+                )),
+            }
+            return;
+        }
+
+        if k == "containers.background" {
+            let trimmed = value.trim();
+            if trimmed.eq_ignore_ascii_case("transparent") || trimmed.eq_ignore_ascii_case("reset") {
+                self.config.theme.panel_background = "transparent".to_string();
+                self.theme.panel_background = ratatui::style::Color::Reset;
+                self.set_toast("All containers background set to transparent");
+            } else {
+                let parsed = crate::ui::theme::parse_color(trimmed, self.theme.panel_background);
+                self.config.theme.panel_background = trimmed.to_string();
+                self.theme.panel_background = parsed;
+                self.set_toast(format!("All containers background set to {trimmed}"));
+            }
+            return;
+        }
+
         if k == "background" {
             match value.trim().to_ascii_lowercase().as_str() {
+                "transparent" | "reset" => {
+                    self.config.background.transparent = true;
+                    self.set_toast("Background set to transparent (runtime)");
+                }
+                "solid" => {
+                    self.config.background.transparent = false;
+                    self.set_toast("Background set to solid (runtime)");
+                }
                 "dark" => {
+                    self.config.background.transparent = false;
                     self.theme.set_brightness_mode(true);
                     self.set_toast("Background set to dark (runtime)");
                 }
                 "light" => {
+                    self.config.background.transparent = false;
                     self.theme.set_brightness_mode(false);
                     self.set_toast("Background set to light (runtime)");
                 }
                 other => self.set_toast(format!(
-                    "Invalid background value '{other}' (expected dark or light)"
+                    "Invalid background value '{other}' (expected transparent, solid, dark, or light)"
                 )),
             }
             return;
@@ -1510,6 +1577,14 @@ impl App {
     }
 }
 
+fn parse_bool_flag(raw: &str) -> Option<bool> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "true" | "on" | "yes" | "1" => Some(true),
+        "false" | "off" | "no" | "0" => Some(false),
+        _ => None,
+    }
+}
+
 fn adapt_theme_colors(theme: &mut Theme) {
     use crate::ui::theme::adapt_color;
     theme.primary = adapt_color(theme.primary, false);
@@ -1537,6 +1612,7 @@ fn resolve_active_theme(cfg: &Config, themes_map: &BTreeMap<String, ThemeEntry>)
 mod tests {
     use super::*;
     use crate::config::BorderStyle;
+    use crate::ui::BackgroundFill;
 
     fn test_app() -> App {
         let tmp = std::env::temp_dir().join(format!(
@@ -1610,5 +1686,43 @@ mod tests {
         assert_eq!(app.config.theme.name, "nord");
         app.restore_command_preview(vp);
         assert_eq!(app.config.theme.name, orig_theme_name);
+    }
+
+    #[test]
+    fn background_and_container_transparency_are_independent_and_preserve_overrides() {
+        let mut app = test_app();
+
+        // 1. Background transparency is independent of visual effects
+        assert!(!app.config.background.transparent);
+        let orig_effect = app.config.background.effect;
+        app.execute_set_option("background.transparent", "true");
+        assert!(app.config.background.transparent);
+        assert_eq!(app.config.background.effect, orig_effect);
+
+        app.execute_set_option("background", "solid");
+        assert!(!app.config.background.transparent);
+        assert_eq!(app.config.background.effect, orig_effect);
+
+        // 2. Individual container override + global container update preserves individual override
+        app.execute_container_command(ContainerCommand::Set {
+            id: "system".to_string(),
+            property: ContainerProperty::Background(BackgroundFill::Solid("#112233".to_string())),
+        });
+        app.execute_set_option("containers.transparent", "true");
+        assert_eq!(app.theme.panel_background, ratatui::style::Color::Reset);
+        assert_eq!(
+            app.config.container_styles.get("system").unwrap().background,
+            BackgroundFill::Solid("#112233".to_string())
+        );
+
+        app.execute_set_option("containers.background", "#223344");
+        assert_eq!(
+            app.theme.panel_background,
+            ratatui::style::Color::Rgb(0x22, 0x33, 0x44)
+        );
+        assert_eq!(
+            app.config.container_styles.get("system").unwrap().background,
+            BackgroundFill::Solid("#112233".to_string())
+        );
     }
 }

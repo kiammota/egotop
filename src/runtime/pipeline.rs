@@ -876,6 +876,7 @@ fn check_unknown_fields(
                 root,
                 "background",
                 &[
+                    "transparent",
                     "effect",
                     "enabled",
                     "speed",

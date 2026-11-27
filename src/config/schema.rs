@@ -334,6 +334,8 @@ impl Default for HeaderConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct BackgroundConfig {
+    #[serde(default)]
+    pub transparent: bool,
     pub effect: EffectKind,
     pub enabled: bool,
     pub speed: f32,
@@ -353,6 +355,7 @@ pub struct BackgroundConfig {
 impl Default for BackgroundConfig {
     fn default() -> Self {
         Self {
+            transparent: false,
             effect: EffectKind::Matrix,
             enabled: true,
             speed: 1.0,
