@@ -60,6 +60,7 @@ pub struct App {
     should_quit: bool,
     fps: f32,
     status_toast: Option<(String, Instant)>,
+    theme_preview_backup: Option<(Theme, crate::config::ThemeConfig)>,
 }
 
 impl App {
@@ -133,6 +134,7 @@ impl App {
             should_quit: false,
             fps,
             status_toast: initial_toast.map(|m| (m, Instant::now() + Duration::from_secs(4))),
+            theme_preview_backup: None,
         }
     }
 
@@ -395,22 +397,32 @@ impl App {
         let ctx = self.completion_ctx();
 
         let mut execute_str: Option<String> = None;
+        let mut preview_theme = false;
+        let mut restore_preview = false;
         match key.code {
             KeyCode::Esc => {
                 if cmd_state.popup_open {
                     cmd_state.close_popup();
                 } else {
                     cmd_state.cancel();
+                    restore_preview = true;
                 }
             }
             KeyCode::Enter => {
+                self.theme_preview_backup = None;
                 let cmd = cmd_state.submit();
                 if !cmd.is_empty() {
                     execute_str = Some(cmd);
                 }
             }
-            KeyCode::Tab => cmd_state.next_suggestion(&self.registry, &ctx),
-            KeyCode::BackTab => cmd_state.prev_suggestion(&self.registry, &ctx),
+            KeyCode::Tab => {
+                cmd_state.next_suggestion(&self.registry, &ctx);
+                preview_theme = true;
+            }
+            KeyCode::BackTab => {
+                cmd_state.prev_suggestion(&self.registry, &ctx);
+                preview_theme = true;
+            }
             KeyCode::Up => cmd_state.handle_up(&self.registry, &ctx),
             KeyCode::Down => cmd_state.handle_down(&self.registry, &ctx),
             KeyCode::Left => cmd_state.move_left(&self.registry, &ctx),
@@ -430,10 +442,40 @@ impl App {
         }
 
         self.command_line = cmd_state;
+        if restore_preview
+            && let Some((prev_theme, prev_cfg)) = self.theme_preview_backup.take()
+        {
+            self.theme = prev_theme;
+            self.config.theme = prev_cfg;
+        }
+        if preview_theme {
+            self.maybe_preview_colorscheme_from_cmdline();
+        }
         if let Some(cmd) = execute_str {
             self.execute_command_str(&cmd, guard, viewport)?;
         }
         Ok(())
+    }
+
+    fn maybe_preview_colorscheme_from_cmdline(&mut self) {
+        let trimmed = self.command_line.buffer.trim_start();
+        let mut parts = trimmed.split_whitespace();
+        let Some(head) = parts.next() else {
+            return;
+        };
+        if !matches!(head.to_ascii_lowercase().as_str(), "colorscheme" | "theme") {
+            return;
+        }
+        let Some(arg) = parts.next() else {
+            return;
+        };
+        let key = arg.trim().to_ascii_lowercase();
+        if let Some(entry) = self.themes_map.get(&key).cloned() {
+            if self.theme_preview_backup.is_none() {
+                self.theme_preview_backup = Some((self.theme.clone(), self.config.theme.clone()));
+            }
+            self.apply_theme_entry(&entry);
+        }
     }
 
     fn handle_diagnostics_key(&mut self, key: KeyEvent) {
