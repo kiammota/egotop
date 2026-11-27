@@ -1464,7 +1464,8 @@ fn live_configuration_runtime_validation_diagnostics_and_last_known_good() {
         .unwrap()
         .as_nanos();
     let root = std::env::temp_dir().join(format!("egotop_runtime_test_{nanos}"));
-    let paths = RuntimePaths::from_root_dir(root.clone());
+    let mut paths = RuntimePaths::from_root_dir(root.clone());
+    paths.config_path = root.join("egotop.toml");
     std::fs::create_dir_all(&paths.themes_dir).unwrap();
     std::fs::create_dir_all(&paths.animations_dir).unwrap();
     std::fs::create_dir_all(&paths.layouts_dir).unwrap();
@@ -1756,7 +1757,8 @@ fn real_notify_filesystem_watcher_detects_atomic_writes_and_edits() {
         .unwrap()
         .as_nanos();
     let root = std::env::temp_dir().join(format!("egotop_notify_live_{nanos}"));
-    let paths = RuntimePaths::from_root_dir(root.clone());
+    let mut paths = RuntimePaths::from_root_dir(root.clone());
+    paths.config_path = root.join("egotop.toml");
     std::fs::create_dir_all(&paths.themes_dir).unwrap();
     std::fs::create_dir_all(&paths.animations_dir).unwrap();
 

@@ -35,8 +35,15 @@ impl RuntimePaths {
     }
 
     pub fn from_root_dir(root: PathBuf) -> Self {
+        let lua_cfg = root.join("egotop.lua");
+        let toml_cfg = root.join("egotop.toml");
+        let config_path = if lua_cfg.exists() || !toml_cfg.exists() {
+            lua_cfg
+        } else {
+            toml_cfg
+        };
         Self {
-            config_path: root.join("egotop.toml"),
+            config_path,
             themes_dir: root.join("themes"),
             animations_dir: root.join("animations"),
             layouts_dir: root.join("layouts"),
@@ -193,7 +200,19 @@ impl ConfigurationRuntime {
         );
 
         let mut batch = Vec::new();
-        collect_toml_entries(&self.paths.themes_dir, &mut batch);
+        if let Ok(entries) = fs::read_dir(&self.paths.themes_dir) {
+            for entry in entries.flatten() {
+                let p = entry.path();
+                if matches!(p.extension().and_then(|e| e.to_str()), Some("lua" | "toml")) {
+                    batch.push(PendingChange {
+                        path: p,
+                        kind: WatchEventKind::Modified,
+                        last_event_at: Instant::now(),
+                        event_count: 1,
+                    });
+                }
+            }
+        }
         collect_animation_entries(&self.paths.animations_dir, &mut batch);
         collect_toml_entries(&self.paths.layouts_dir, &mut batch);
         if self.paths.config_path.is_file() {

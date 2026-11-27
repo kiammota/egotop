@@ -98,8 +98,12 @@ fn show_command(config_override: Option<&Path>) -> Result<i32> {
         Config::default()
     };
 
-    let serialized = toml::to_string_pretty(&cfg).context("failed to serialize configuration")?;
-    print!("{serialized}");
+    if path.extension().and_then(|e| e.to_str()) == Some("toml") {
+        let serialized = toml::to_string_pretty(&cfg).context("failed to serialize configuration")?;
+        print!("{serialized}");
+    } else {
+        print!("{}", crate::lua::serialize_config_to_lua(&cfg));
+    }
     Ok(0)
 }
 

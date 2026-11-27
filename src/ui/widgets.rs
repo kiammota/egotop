@@ -79,22 +79,31 @@ fn render_container_box(frame: &mut Frame, container: &PlacedContainer, ctx: &Re
     }
 
     let style_override = ctx.config.container_styles.get(&container.id);
-    if let Some(grad) = style_override.and_then(|s| s.gradient.as_ref()) {
-        render_gradient_bg(frame, area, grad, ctx.theme.panel_background);
+    let eff_grad = style_override
+        .and_then(|s| s.gradient.as_ref())
+        .or(container.gradient.as_ref());
+    let opacity = style_override
+        .and_then(|s| s.opacity)
+        .or(container.opacity)
+        .unwrap_or(1.0)
+        .clamp(0.0, 1.0);
+    if let Some(grad) = eff_grad {
+        render_gradient_bg_with_opacity(frame.buffer_mut(), area, grad, ctx.theme.panel_background, opacity);
     }
 
     let bg = match style_override.map(|s| &s.background) {
         Some(BackgroundFill::Transparent) => Color::Reset,
-        Some(BackgroundFill::Solid(c)) => parse_color(c, ctx.theme.panel_background),
+        Some(BackgroundFill::Solid(c)) => apply_color_opacity(parse_color(c, ctx.theme.panel_background), opacity),
         Some(BackgroundFill::Inherit) | None => {
             if container.transparent {
                 Color::Reset
             } else {
-                container
+                let base = container
                     .background
                     .as_deref()
                     .map(|c| parse_color(c, ctx.theme.panel_background))
-                    .unwrap_or(ctx.theme.panel_background)
+                    .unwrap_or(ctx.theme.panel_background);
+                apply_color_opacity(base, opacity)
             }
         }
     };
@@ -113,7 +122,7 @@ fn render_container_box(frame: &mut Frame, container: &PlacedContainer, ctx: &Re
     let show_border = border.enabled
         && border.style != BorderStyle::None
         && ctx.config.theme.border_type != BorderStyle::None;
-    let has_grad = style_override.and_then(|s| s.gradient.as_ref()).is_some();
+    let has_grad = eff_grad.is_some();
     if show_border && area.width >= 2 && area.height >= 2 {
         render_border_block(frame, area, &border, bg, !has_grad, ctx);
     } else {
@@ -136,6 +145,24 @@ fn render_placed_component(
     }
 
     let mut comp = placed.config.clone();
+    if comp.id == "status_spinner" {
+        if !ctx.config.footer.enabled {
+            return;
+        }
+        comp.content.text = Some(ctx.config.footer.text.clone());
+        comp.visual.align = ctx.config.footer.align;
+        if let Some(col) = &ctx.config.footer.color {
+            comp.visual.color = Some(col.clone());
+        }
+        let anim = comp.animation.get_or_insert_with(Default::default);
+        anim.style = ctx
+            .config
+            .footer
+            .icon
+            .clone()
+            .or_else(|| ctx.config.footer.animation.clone());
+        anim.fps = Some(ctx.config.footer.fps);
+    }
     let style_override = ctx.config.container_styles.get(&placed.id);
     if let Some(ov) = style_override {
         if let Some(fg) = &ov.foreground {
@@ -151,19 +178,33 @@ fn render_placed_component(
     }
 
     let has_grad = style_override.and_then(|s| s.gradient.as_ref()).is_some();
+    let opacity = style_override
+        .and_then(|s| s.opacity)
+        .unwrap_or(1.0)
+        .clamp(0.0, 1.0);
     if let Some(grad) = style_override.and_then(|s| s.gradient.as_ref()) {
-        render_gradient_bg(frame, outer, grad, ctx.theme.panel_background);
+        render_gradient_bg_with_opacity(
+            frame.buffer_mut(),
+            outer,
+            grad,
+            ctx.theme.panel_background,
+            opacity,
+        );
     }
 
     let bg = match style_override.map(|s| &s.background) {
         Some(BackgroundFill::Transparent) => Color::Reset,
-        Some(BackgroundFill::Solid(c)) => parse_color(c, ctx.theme.panel_background),
-        Some(BackgroundFill::Inherit) | None => comp
-            .visual
-            .background
-            .as_deref()
-            .map(|c| parse_color(c, ctx.panel_bg()))
-            .unwrap_or_else(|| ctx.panel_bg()),
+        Some(BackgroundFill::Solid(c)) => {
+            apply_color_opacity(parse_color(c, ctx.theme.panel_background), opacity)
+        }
+        Some(BackgroundFill::Inherit) | None => apply_color_opacity(
+            comp.visual
+                .background
+                .as_deref()
+                .map(|c| parse_color(c, ctx.panel_bg()))
+                .unwrap_or_else(|| ctx.panel_bg()),
+            opacity,
+        ),
     };
 
     let mut border = comp.visual.border.clone();
@@ -200,11 +241,27 @@ fn render_placed_component(
     }
 }
 
-fn render_gradient_bg(
-    frame: &mut Frame,
+pub fn apply_color_opacity(c: Color, opacity: f32) -> Color {
+    let op = opacity.clamp(0.0, 1.0);
+    if op >= 0.999 {
+        return c;
+    }
+    match c {
+        Color::Rgb(r, g, b) => Color::Rgb(
+            ((r as f32) * op).round() as u8,
+            ((g as f32) * op).round() as u8,
+            ((b as f32) * op).round() as u8,
+        ),
+        other => other,
+    }
+}
+
+pub fn render_gradient_bg_with_opacity(
+    buf: &mut ratatui::buffer::Buffer,
     area: Rect,
     grad: &ContainerGradient,
     fallback: Color,
+    opacity: f32,
 ) {
     if grad.colors.len() < 2 || area.width == 0 || area.height == 0 {
         return;
@@ -215,7 +272,6 @@ fn render_gradient_bg(
         .map(|c| parse_color(c, fallback))
         .collect();
     let segments = parsed.len() - 1;
-    let buf = frame.buffer_mut();
 
     for dy in 0..area.height {
         for dx in 0..area.width {
@@ -238,7 +294,7 @@ fn render_gradient_bg(
             let scaled = (t.clamp(0.0, 1.0)) * segments as f32;
             let idx = (scaled.floor() as usize).min(segments - 1);
             let local_t = scaled - idx as f32;
-            let color = blend_color(parsed[idx], parsed[idx + 1], local_t);
+            let color = apply_color_opacity(blend_color(parsed[idx], parsed[idx + 1], local_t), opacity);
             if let Some(cell) = buf.cell_mut((area.x + dx, area.y + dy)) {
                 cell.set_bg(color);
             }

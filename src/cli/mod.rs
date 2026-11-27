@@ -9,8 +9,8 @@ use crossterm::terminal;
 use egotop_app_launch::launch_tui;
 use std::path::PathBuf;
 
-use crate::config::loader::DEFAULT_CONFIG_TOML;
 use crate::config::{EffectKind, StartupMode, load_or_create};
+use crate::lua::builtins::DEFAULT_EGOTOP_LUA;
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
 pub enum CliStartup {
@@ -70,7 +70,7 @@ pub struct Cli {
     #[command(subcommand)]
     pub command: Option<Commands>,
 
-    /// Path to TOML configuration file (defaults to ~/.config/egotop/egotop.toml)
+    /// Path to configuration file (defaults to ~/.config/egotop/egotop.lua)
     #[arg(short, long, global = true, value_name = "PATH")]
     pub config: Option<PathBuf>,
 
@@ -90,7 +90,7 @@ pub struct Cli {
     #[arg(long)]
     pub check_config: bool,
 
-    /// Print the default TOML configuration to stdout and exit
+    /// Print the default Lua configuration to stdout and exit
     #[arg(long)]
     pub print_default_config: bool,
 }
@@ -100,7 +100,7 @@ pub fn run() -> Result<i32> {
     let cli = Cli::parse();
 
     if cli.print_default_config {
-        print!("{DEFAULT_CONFIG_TOML}");
+        print!("{DEFAULT_EGOTOP_LUA}");
         return Ok(0);
     }
 

@@ -10,6 +10,7 @@ use crate::command::{
 use crate::config::{
     Config, EffectKind, StartupMode, StartupTrigger, ThemeEntry, ViewMode, save_config_to_path,
 };
+use crate::lua::{LuaAnimationRuntime, LuaEffectAdapter};
 use crate::runtime::{
     ConfigurationRuntime, LayoutPreset, ManagedAppTarget, RuntimeCommit, RuntimePaths,
     RuntimeResourceManager,
@@ -18,7 +19,7 @@ use crate::system::{SystemCollector, SystemSnapshot};
 use crate::terminal::TerminalGuard;
 use crate::terminal::diagnostics::TerminalDiagnostics;
 use crate::terminal::input::{InputEvent, poll_event};
-use crate::terminal::renderer::{CursorStartupState, draw_frame};
+use crate::terminal::renderer::{CursorStartupState, draw_frame, render_lua_animation_overlay};
 use crate::ui::borders::parse_border_style;
 use crate::ui::customizer::{
     CustomizerState, CustomizerTab, DiagnosticsOverlayState, DiagnosticsViewMode,
@@ -56,6 +57,8 @@ pub struct App {
     collector: SystemCollector,
     snapshot: SystemSnapshot,
     effect: BackgroundPipeline,
+    lua_effect: Option<LuaEffectAdapter>,
+    lua_anim: Option<LuaAnimationRuntime>,
     anim_store: ComponentAnimationStore,
     reveal: RevealState,
     command_line: CommandLineState,
@@ -126,6 +129,46 @@ impl App {
             )
         };
 
+        let lua_bundle = if config_path.extension().and_then(|e| e.to_str()) == Some("lua")
+            && config_path.is_file()
+        {
+            crate::lua::load_lua_config_from_path(&config_path).ok()
+        } else {
+            None
+        };
+        let lua_effect = lua_bundle
+            .as_ref()
+            .and_then(|b| b.effect_specs.first().cloned())
+            .map(|spec| LuaEffectAdapter::from_spec(spec, width, height, theme.clone()))
+            .or_else(|| {
+                (config.background.enabled && config.background.effect != EffectKind::None)
+                    .then(|| {
+                        LuaEffectAdapter::from_effect_name(
+                            config.background.effect.label(),
+                            width,
+                            height,
+                            &config.background,
+                            theme.clone(),
+                        )
+                    })
+            });
+        let lua_anim = if !wait_init
+            && !config.general.startup_animation.trim().is_empty()
+            && !config
+                .general
+                .startup_animation
+                .eq_ignore_ascii_case("none")
+        {
+            Some(LuaAnimationRuntime::start(
+                &config.general.startup_animation,
+                width,
+                height,
+                config.general.animation_fps,
+            ))
+        } else {
+            None
+        };
+
         let mut collector = SystemCollector::new();
         let snapshot = collector.collect(width, height);
         let effect = BackgroundPipeline::from_config(&config.background, width, height);
@@ -148,6 +191,8 @@ impl App {
             collector,
             snapshot,
             effect,
+            lua_effect,
+            lua_anim,
             anim_store: ComponentAnimationStore::new(),
             reveal: if is_cursor_startup {
                 RevealState::complete()
@@ -179,9 +224,12 @@ impl App {
         let initial_size = guard.terminal.size()?;
         self.effect
             .resize(initial_size.width, initial_size.height, &self.config.background);
-        self.snapshot = self
-            .collector
-            .collect(initial_size.width, initial_size.height);
+        if let Some(le) = &mut self.lua_effect {
+            le.resize(initial_size.width, initial_size.height, &self.config.background);
+        }
+        if let Some(la) = &mut self.lua_anim {
+            la.resize(initial_size.width, initial_size.height);
+        }
 
         let mut last_frame = Instant::now();
         let mut last_sys_refresh = Instant::now();
@@ -226,11 +274,24 @@ impl App {
                 let sz = guard.terminal.size()?;
                 let vp = Rect::new(0, 0, sz.width, sz.height);
                 let layout = compute_dashboard_layout(vp, &self.config, self.view_mode);
-                self.effect.update(dt, &self.config.background);
+                if let Some(le) = &mut self.lua_effect {
+                    le.update(dt, &self.config.background);
+                } else {
+                    self.effect.update(dt, &self.config.background);
+                }
                 self.anim_store
                     .update_all(dt, &layout, &self.config, &self.animations);
                 self.transition.update(dt);
-                self.reveal.advance(dt);
+                if let Some(la) = &mut self.lua_anim {
+                    la.update(dt);
+                    self.reveal.progress = la.reveal_progress();
+                    if la.is_finished() {
+                        self.reveal = RevealState::complete();
+                        self.lua_anim = None;
+                    }
+                } else {
+                    self.reveal.advance(dt);
+                }
             }
 
             let toast_text = self.status_toast.as_ref().map(|(s, _)| s.as_str());
@@ -251,8 +312,13 @@ impl App {
             };
 
             let config_ref = &self.config;
-            let effect_ref: &dyn BackgroundEffect = &self.effect;
+            let effect_ref: &dyn BackgroundEffect = self
+                .lua_effect
+                .as_ref()
+                .map(|e| e as &dyn BackgroundEffect)
+                .unwrap_or(&self.effect);
             let transition_ref = &self.transition;
+            let lua_anim_ref = self.lua_anim.as_ref();
             let anim_store_ref = &self.anim_store;
             let customizer_ref = &mut self.customizer;
             let diagnostics_ui_ref = &mut self.diagnostics_ui;
@@ -276,6 +342,9 @@ impl App {
                     anim_ref,
                     &ctx,
                 );
+                if let Some(la) = lua_anim_ref {
+                    render_lua_animation_overlay(frame, frame.area(), la);
+                }
                 if diagnostics_ui_ref.open {
                     render_diagnostics_overlay(
                         frame,
@@ -968,60 +1037,64 @@ impl App {
                 }
                 AnimationAction::Play => {
                     if let Some(anim_name) = name {
+                        let sz = guard.terminal.size()?;
+                        self.lua_anim = Some(LuaAnimationRuntime::start(
+                            &anim_name,
+                            sz.width,
+                            sz.height,
+                            self.config.general.animation_fps,
+                        ));
                         self.transition.restart(
                             &anim_name,
                             &self.animations,
                             self.config.general.startup_duration_ms,
                         );
-                        if !self.transition.package_backgrounds().is_empty() {
-                            let sz = guard.terminal.size()?;
-                            self.effect.set_specs(
-                                self.transition.package_backgrounds(),
-                                sz.width,
-                                sz.height,
-                                &self.config.background,
-                                &self.transition.package.assets,
-                            );
-                        }
                         self.reveal = RevealState::new(0.65);
-                        self.set_toast(format!("Playing animation '{}'", self.transition.active_id));
+                        self.set_toast(format!("Playing Lua animation '{anim_name}'"));
                     }
                 }
                 AnimationAction::SetStartup => {
                     if let Some(anim_name) = name {
                         self.config.general.startup_animation = anim_name.clone();
+                        let sz = guard.terminal.size()?;
+                        self.lua_anim = Some(LuaAnimationRuntime::start(
+                            &anim_name,
+                            sz.width,
+                            sz.height,
+                            self.config.general.animation_fps,
+                        ));
                         self.transition.restart(
                             &anim_name,
                             &self.animations,
                             self.config.general.startup_duration_ms,
                         );
-                        if !self.transition.package_backgrounds().is_empty() {
-                            let sz = guard.terminal.size()?;
-                            self.effect.set_specs(
-                                self.transition.package_backgrounds(),
-                                sz.width,
-                                sz.height,
-                                &self.config.background,
-                                &self.transition.package.assets,
-                            );
-                        }
                         self.reveal = RevealState::new(0.65);
                         self.set_toast(format!(
-                            "Startup animation set to '{}' (use :write to persist)",
-                            self.transition.active_id
+                            "Startup animation set to '{anim_name}' (use :write to persist)"
                         ));
                     }
                 }
                 AnimationAction::Pause => {
                     self.transition.pause();
+                    if let Some(la) = &mut self.lua_anim {
+                        la.pause();
+                    }
                     self.set_toast("Animation playback paused");
                 }
                 AnimationAction::Resume => {
                     self.transition.resume();
+                    if let Some(la) = &mut self.lua_anim {
+                        la.resume();
+                    }
                     self.set_toast("Animation playback resumed");
                 }
                 AnimationAction::Stop => {
                     self.transition.stop();
+                    if let Some(la) = &mut self.lua_anim {
+                        la.stop();
+                    }
+                    self.lua_anim = None;
+                    self.reveal = RevealState::complete();
                     self.set_toast("Animation playback stopped");
                 }
                 AnimationAction::Restart => {
@@ -1449,6 +1522,17 @@ impl App {
             EffectKind::None => {}
         }
         self.effect = BackgroundPipeline::from_config(&self.config.background, width, height);
+        self.lua_effect = if kind == EffectKind::None {
+            None
+        } else {
+            Some(LuaEffectAdapter::from_effect_name(
+                kind.label(),
+                width,
+                height,
+                &self.config.background,
+                self.theme.clone(),
+            ))
+        };
     }
 
     fn execute_background_command(

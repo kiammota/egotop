@@ -93,17 +93,35 @@ impl CompletionEngine {
                 CompletionProviderKind::SetOption => complete_set_option(&prev_args, &current_token),
                 CompletionProviderKind::Effect => {
                     if prev_args.is_empty() {
-                        complete_from_pairs(
-                            &current_token,
-                            &[
-                                ("matrix", "Matrix falling glyphs background"),
-                                ("water", "Animated sine wave surface"),
-                                ("particles", "Floating glowing particles"),
-                                ("scanlines", "CRT horizontal scanline bands"),
-                                ("none", "Static background with no ambient effect"),
-                            ],
-                            None,
-                        )
+                        let lua_effects = crate::lua::list_lua_effects();
+                        let mut cands: Vec<(&str, &str)> = vec![
+                            ("matrix", "Lua matrix falling glyphs background"),
+                            ("water", "Lua animated sine wave surface"),
+                            ("particles", "Lua floating glowing particles"),
+                            ("scanlines", "Lua CRT horizontal scanline bands"),
+                            ("starfield", "Lua multi-depth starfield"),
+                            ("noise", "Lua procedural noise field"),
+                            ("floating_chars", "Lua floating drifting glyphs"),
+                            ("none", "Static background with no ambient effect"),
+                        ];
+                        let extra: Vec<(String, String)> = lua_effects
+                            .into_iter()
+                            .filter(|n| !cands.iter().any(|(k, _)| k.eq_ignore_ascii_case(n)))
+                            .map(|n| (n.clone(), format!("Custom Lua effect 'effects.{n}'")))
+                            .collect();
+                        let mut out = complete_from_pairs(&current_token, &cands, None);
+                        for (name, desc) in extra {
+                            if name.starts_with(&current_token.to_ascii_lowercase()) {
+                                out.push(CompletionItem {
+                                    insert_text: name.clone(),
+                                    label: name,
+                                    description: desc,
+                                    expected_arg: None,
+                                });
+                            }
+                        }
+                        let _ = &mut cands;
+                        out
                     } else {
                         Vec::new()
                     }

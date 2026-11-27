@@ -346,25 +346,48 @@ pub fn render_animated_component(
 
     match comp.kind {
         ComponentKind::Spinner => {
-            let frames = spinner_frames(anim_cfg.style.as_deref());
-            let idx = match store.get(&comp.id) {
-                Some(ComponentAnimState::Spinner(st)) => st.frame_idx % frames.len(),
-                _ => 0,
+            let custom_style = anim_cfg.style.as_deref();
+            let glyph_owned: String;
+            let glyph = if custom_style == Some("none") {
+                ""
+            } else if custom_style == Some("activity") {
+                let frames = ["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█", "▇", "▆", "▅", "▄"];
+                let idx = match store.get(&comp.id) {
+                    Some(ComponentAnimState::Spinner(st)) => st.frame_idx % frames.len(),
+                    _ => 0,
+                };
+                glyph_owned = frames[idx].to_string();
+                &glyph_owned
+            } else {
+                let frames = spinner_frames(custom_style);
+                let idx = match store.get(&comp.id) {
+                    Some(ComponentAnimState::Spinner(st)) => st.frame_idx % frames.len(),
+                    _ => 0,
+                };
+                frames[idx]
             };
-            let glyph = frames[idx];
             let label = comp.content.text.as_deref().unwrap_or("");
-            let line = if label.is_empty() {
+            let line = if glyph.is_empty() {
+                label.to_string()
+            } else if label.is_empty() {
                 glyph.to_string()
             } else {
                 format!("{glyph} {label}")
             };
+            let align = comp.visual.align;
             render_clipped(frame, area, |buf, local| {
                 fill_bg(buf, local, bg);
+                let line_w = unicode_width::UnicodeWidthStr::width(line.as_str()) as u16;
+                let x = match align {
+                    crate::config::Align::Center => local.width.saturating_sub(line_w) / 2,
+                    crate::config::Align::Right => local.width.saturating_sub(line_w),
+                    crate::config::Align::Left => 0,
+                };
                 buf.set_stringn(
-                    0,
+                    x,
                     0,
                     &line,
-                    local.width as usize,
+                    local.width.saturating_sub(x) as usize,
                     Style::default().fg(fg).bg(bg).add_modifier(Modifier::BOLD),
                 );
             });

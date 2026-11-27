@@ -91,6 +91,26 @@ impl AnimationCatalog {
             by_id.insert(entry.id.to_ascii_lowercase(), entry);
         }
 
+        if let Some(template_pkg) = by_id.get("none").map(|e| e.package.clone()) {
+            for lua_name in crate::lua::list_lua_animations() {
+                let key = lua_name.to_ascii_lowercase();
+                by_id.entry(key).or_insert_with(|| {
+                    let mut pkg = template_pkg.clone();
+                    pkg.definition.name = lua_name.clone();
+                    pkg.definition.display_name = Some(lua_name.clone());
+                    pkg.definition.description =
+                        Some(format!("Lua animation module 'animations.{lua_name}'"));
+                    AnimationCatalogEntry {
+                        id: lua_name.clone(),
+                        display_name: lua_name.clone(),
+                        description: format!("Lua animation module 'animations.{lua_name}'"),
+                        is_community: true,
+                        package: pkg,
+                    }
+                });
+            }
+        }
+
         Self {
             entries: by_id.into_values().collect(),
         }

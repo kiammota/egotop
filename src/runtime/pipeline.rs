@@ -75,6 +75,10 @@ pub fn parse_resource(
         return parse_font_resource(key_hint, path, raw_text);
     }
 
+    if path.extension().and_then(|e| e.to_str()) == Some("lua") {
+        return parse_lua_resource(kind, key_hint, path, raw_text);
+    }
+
     let toml_value = match toml::from_str::<toml::Value>(&raw_text) {
         Ok(v) => v,
         Err(err) => {
@@ -184,6 +188,65 @@ pub fn parse_resource(
             .with_location(Some(path), None, None),
         ]),
         ResourceKind::Font => unreachable!(),
+    }
+}
+
+fn parse_lua_resource(
+    kind: ResourceKind,
+    key_hint: &str,
+    path: &Path,
+    raw_text: String,
+) -> Result<ParsedResource, Vec<Diagnostic>> {
+    match kind {
+        ResourceKind::ApplicationConfig => {
+            let bundle = crate::lua::load_lua_config_str(
+                &raw_text,
+                &path.display().to_string(),
+                path.parent().filter(|p| !p.as_os_str().is_empty()),
+            )
+            .map_err(|msg| {
+                vec![
+                    Diagnostic::error("E1001", msg)
+                        .with_location(Some(path), Some(1), Some(1))
+                        .with_suggestion("Check Lua syntax and egotop.* API calls in egotop.lua"),
+                ]
+            })?;
+            let cfg = bundle.config;
+            let mut deps = Vec::new();
+            let theme_key = cfg.theme.name.trim().to_ascii_lowercase();
+            if !theme_key.is_empty() && theme_key != "custom" {
+                deps.push(ResourceId::new(ResourceKind::Theme, theme_key));
+            }
+            Ok(ParsedResource {
+                id: ResourceId::app_config(),
+                path: path.to_path_buf(),
+                raw_text,
+                toml_value: None,
+                payload: ParsedPayload::ApplicationConfig(Box::new(cfg)),
+                dependencies: deps,
+            })
+        }
+        ResourceKind::Theme => {
+            let themes = crate::lua::load_all_lua_themes();
+            let key = key_hint.to_ascii_lowercase();
+            let entry = themes.get(&key).cloned().unwrap_or_else(|| ThemeEntry {
+                name: key_hint.to_string(),
+                theme: crate::ui::theme::preset_theme(key_hint),
+                source_path: Some(path.to_path_buf()),
+            });
+            Ok(ParsedResource {
+                id: ResourceId::new(ResourceKind::Theme, &entry.name),
+                path: path.to_path_buf(),
+                raw_text,
+                toml_value: None,
+                payload: ParsedPayload::Theme(Box::new(entry)),
+                dependencies: Vec::new(),
+            })
+        }
+        _ => Err(vec![
+            Diagnostic::error("E1000", format!("Unsupported Lua resource '{}'", path.display()))
+                .with_location(Some(path), Some(1), Some(1)),
+        ]),
     }
 }
 
@@ -1039,16 +1102,13 @@ fn check_allowed_keys(
 
 /// Utility helper returning built-in preset theme table for lookup during validation.
 pub fn builtin_themes_lookup() -> BTreeMap<String, ThemeEntry> {
-    let mut map = BTreeMap::new();
+    let mut map = crate::lua::load_all_lua_themes();
     for &name in builtin_theme_names() {
-        map.insert(
-            name.to_string(),
-            ThemeEntry {
-                name: name.to_string(),
-                theme: preset_theme(name),
-                source_path: None,
-            },
-        );
+        map.entry(name.to_string()).or_insert_with(|| ThemeEntry {
+            name: name.to_string(),
+            theme: preset_theme(name),
+            source_path: None,
+        });
     }
     map
 }

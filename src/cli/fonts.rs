@@ -21,9 +21,12 @@ pub fn handle(args: FontsArgs) -> Result<i32> {
 }
 
 fn list_command() -> Result<i32> {
-    println!("Embedded fonts:");
+    println!("Available Lua fonts:");
+    for font in crate::lua::list_lua_fonts() {
+        println!("  - {font} [lua]");
+    }
     for font in available_fonts() {
-        println!("  - {font} [embedded]");
+        println!("  - {font} [builtin]");
     }
     Ok(0)
 }

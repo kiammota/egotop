@@ -1,11 +1,16 @@
 use crate::animation::{AnimationCatalog, BackgroundEffect, TransitionPlayer};
 use crate::command::CommandLineState;
+use crate::config::schema::BackgroundBaseType;
 use crate::config::{Config, ThemeEntry};
+use crate::lua::LuaAnimationRuntime;
 use crate::ui::components::ComponentAnimationStore;
 use crate::ui::customizer::{CustomizerState, render_customizer, render_help_overlay};
 use crate::ui::layout::{ExclusionMask, compute_dashboard_layout};
 use crate::ui::theme::parse_color;
-use crate::ui::widgets::{RenderContext, render_command_line, render_container_tree};
+use crate::ui::widgets::{
+    RenderContext, apply_color_opacity, render_command_line, render_container_tree,
+    render_gradient_bg_with_opacity,
+};
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -71,13 +76,43 @@ pub fn draw_frame(
 ) {
     let area = frame.area();
 
-    let base_bg_color = if config.background.transparent || ctx.theme.background == Color::Reset {
-        Color::Reset
+    if config.background.transparent
+        || config.background.base.kind == BackgroundBaseType::Transparent
+        || (config.background.base.kind == BackgroundBaseType::Theme
+            && ctx.theme.background == Color::Reset)
+    {
+        let base_bg = Style::default().fg(ctx.theme.text).bg(Color::Reset);
+        frame.render_widget(Block::default().style(base_bg), area);
+    } else if config.background.base.kind == BackgroundBaseType::Gradient
+        && let Some(grad) = &config.background.base.gradient
+    {
+        frame.render_widget(
+            Block::default().style(Style::default().fg(ctx.theme.text)),
+            area,
+        );
+        render_gradient_bg_with_opacity(
+            frame.buffer_mut(),
+            area,
+            grad,
+            ctx.theme.background,
+            config.background.base.opacity,
+        );
     } else {
-        ctx.theme.background
-    };
-    let base_bg = Style::default().fg(ctx.theme.text).bg(base_bg_color);
-    frame.render_widget(Block::default().style(base_bg), area);
+        let solid = if config.background.base.kind == BackgroundBaseType::Solid {
+            config
+                .background
+                .base
+                .color
+                .as_deref()
+                .map(|c| parse_color(c, ctx.theme.background))
+                .unwrap_or(ctx.theme.background)
+        } else {
+            ctx.theme.background
+        };
+        let base_bg_color = apply_color_opacity(solid, config.background.base.opacity);
+        let base_bg = Style::default().fg(ctx.theme.text).bg(base_bg_color);
+        frame.render_widget(Block::default().style(base_bg), area);
+    }
 
     if startup.pending {
         render_cursor_startup(frame, area, config, startup, ctx);
@@ -119,6 +154,16 @@ pub fn draw_frame(
     }
 
     render_command_line(frame, area, command_line, ctx);
+}
+
+pub fn render_lua_animation_overlay(
+    frame: &mut Frame,
+    area: Rect,
+    lua_anim: &LuaAnimationRuntime,
+) {
+    if !lua_anim.is_finished() {
+        lua_anim.render(frame.buffer_mut(), area);
+    }
 }
 
 fn render_global_with_mask<F>(frame: &mut Frame, area: Rect, mask: &ExclusionMask, draw_fn: F)

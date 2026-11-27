@@ -3,6 +3,7 @@ pub mod api;
 pub mod builtins;
 pub mod effects;
 pub mod fonts;
+pub mod serializer;
 
 use crate::config::{Config, ThemeConfig, ThemeEntry, paths};
 use crate::ui::theme::Theme;
@@ -15,6 +16,7 @@ pub use animation_runtime::{GreetingCellTransform, LuaAnimationRuntime, LuaScene
 pub use builtins::{BUILTIN_LUA_MODULES, ensure_lua_config_tree, ensure_lua_tree_at};
 pub use effects::{LuaEffectAdapter, LuaEffectSpec};
 pub use fonts::{list_lua_fonts, load_lua_font};
+pub use serializer::serialize_config_to_lua;
 
 #[derive(Debug, Clone)]
 pub struct LuaConfigBundle {

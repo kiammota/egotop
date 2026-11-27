@@ -14,18 +14,17 @@ pub struct ConfigLoadResult {
 }
 
 pub fn default_config_path() -> PathBuf {
-    paths::main_config_path()
+    let lua_path = paths::main_lua_path();
+    let toml_path = paths::main_config_path();
+    if lua_path.exists() || !toml_path.exists() {
+        lua_path
+    } else {
+        toml_path
+    }
 }
 
 pub fn ensure_config_dirs() {
-    for dir in [
-        paths::root_path(),
-        paths::themes_path(),
-        paths::animations_path(),
-        paths::layouts_path(),
-    ] {
-        let _ = fs::create_dir_all(dir);
-    }
+    crate::lua::ensure_lua_config_tree();
     ensure_sample_animations();
 }
 
@@ -47,7 +46,16 @@ pub fn load_or_create(custom_path: Option<&Path>) -> Result<ConfigLoadResult, Co
                 source,
             })?;
         }
-        save_config_to_path(&path, &Config::default())?;
+        if path.extension().and_then(|e| e.to_str()) == Some("lua") {
+            fs::write(&path, crate::lua::builtins::DEFAULT_EGOTOP_LUA).map_err(|source| {
+                ConfigError::Io {
+                    path: path.clone(),
+                    source,
+                }
+            })?;
+        } else {
+            save_config_to_path(&path, &Config::default())?;
+        }
         created_default = true;
     }
 
@@ -60,6 +68,17 @@ pub fn load_or_create(custom_path: Option<&Path>) -> Result<ConfigLoadResult, Co
 }
 
 pub fn load_from_path(path: &Path) -> Result<Config, ConfigError> {
+    if path.extension().and_then(|e| e.to_str()) == Some("lua") {
+        let bundle = crate::lua::load_lua_config_from_path(path).map_err(|message| {
+            ConfigError::Parse {
+                path: path.to_path_buf(),
+                message,
+            }
+        })?;
+        bundle.config.validate()?;
+        return Ok(bundle.config);
+    }
+
     let raw = fs::read_to_string(path).map_err(|source| ConfigError::Io {
         path: path.to_path_buf(),
         source,
@@ -83,10 +102,14 @@ pub fn save_config_to_path(path: &Path, config: &Config) -> Result<(), ConfigErr
             source,
         })?;
     }
-    let serialized = toml::to_string_pretty(config).map_err(|err| ConfigError::Parse {
-        path: path.to_path_buf(),
-        message: err.to_string(),
-    })?;
+    let serialized = if path.extension().and_then(|e| e.to_str()) == Some("lua") {
+        crate::lua::serialize_config_to_lua(config)
+    } else {
+        toml::to_string_pretty(config).map_err(|err| ConfigError::Parse {
+            path: path.to_path_buf(),
+            message: err.to_string(),
+        })?
+    };
     fs::write(path, serialized).map_err(|source| ConfigError::Io {
         path: path.to_path_buf(),
         source,
