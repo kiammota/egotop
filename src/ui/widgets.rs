@@ -4,7 +4,7 @@ use crate::system::{SystemSnapshot, format_bytes, uptime::format_uptime};
 use crate::ui::layout::ComputedLayout;
 use crate::ui::theme::{Theme, parse_color};
 use crate::ui::typography::{IconSet, RevealState, render_ascii_heading, resolve_logo_lines};
-use crate::window::{WindowBackgroundMode, WindowState};
+use crate::window::{ComposedWindow, WindowBackgroundMode, WindowConfig, WindowState};
 use chrono::Local;
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
@@ -64,15 +64,43 @@ pub fn window_help_button_rect(win_rect: Rect) -> Rect {
 }
 
 pub fn render_window_frame(frame: &mut Frame, win: &WindowState, ctx: &RenderContext) {
-    let area = win.resolved_rect;
-    if !win.config.visible || area.width < 4 || area.height < 3 {
+    render_window_frame_rect(
+        frame,
+        win.resolved_rect,
+        &win.config,
+        win.focused,
+        ctx,
+    );
+}
+
+pub fn render_composed_window_frame(
+    frame: &mut Frame,
+    composed: &ComposedWindow,
+    ctx: &RenderContext,
+) {
+    render_window_frame_rect(
+        frame,
+        composed.rect,
+        &composed.config,
+        composed.focused,
+        ctx,
+    );
+}
+
+fn render_window_frame_rect(
+    frame: &mut Frame,
+    area: Rect,
+    cfg: &WindowConfig,
+    focused: bool,
+    ctx: &RenderContext,
+) {
+    if !cfg.visible || area.width < 4 || area.height < 3 {
         return;
     }
 
-    let bg = match win.config.background.mode {
+    let bg = match cfg.background.mode {
         WindowBackgroundMode::Transparent => Color::Reset,
-        WindowBackgroundMode::Solid => win
-            .config
+        WindowBackgroundMode::Solid => cfg
             .background
             .color
             .as_deref()
@@ -85,20 +113,19 @@ pub fn render_window_frame(frame: &mut Frame, win: &WindowState, ctx: &RenderCon
     }
 
     let win_style = Style::default().fg(ctx.theme.text).bg(bg);
-    if win.config.border.enabled {
-        let border_color = win
-            .config
+    if cfg.border.enabled {
+        let default_border = if focused && ctx.config.windows.len() > 1 {
+            ctx.theme.primary
+        } else {
+            ctx.theme.border
+        };
+        let border_color = cfg
             .border
             .color
             .as_deref()
-            .map(|c| parse_color(c, ctx.theme.border))
-            .unwrap_or(ctx.theme.border);
-        let title = win
-            .config
-            .border
-            .title
-            .as_deref()
-            .unwrap_or(&ctx.config.general.name);
+            .map(|c| parse_color(c, default_border))
+            .unwrap_or(default_border);
+        let title = cfg.effective_title().unwrap_or(&ctx.config.general.name);
         let block = Block::default()
             .borders(Borders::ALL)
             .border_set(ctx.theme.borders.as_ratatui_set())
@@ -115,7 +142,6 @@ pub fn render_window_frame(frame: &mut Frame, win: &WindowState, ctx: &RenderCon
         frame.render_widget(Block::default().style(win_style), area);
     }
 
-    // Subtle interactive action pills in top-right corner of the window frame
     let cfg_btn = window_config_button_rect(area);
     if cfg_btn.width > 0 {
         frame.render_widget(
@@ -137,8 +163,7 @@ pub fn render_window_frame(frame: &mut Frame, win: &WindowState, ctx: &RenderCon
         );
     }
 
-    // Subtle resize corner indicator when resizable
-    if win.config.resizable && area.width >= 6 && area.height >= 4 {
+    if cfg.can_resize() && area.width >= 6 && area.height >= 4 {
         let corner = Rect::new(area.right() - 1, area.bottom() - 1, 1, 1);
         frame.render_widget(
             Paragraph::new(Span::styled(
@@ -150,25 +175,34 @@ pub fn render_window_frame(frame: &mut Frame, win: &WindowState, ctx: &RenderCon
     }
 }
 
+pub fn render_single_widget(
+    frame: &mut Frame,
+    area: Rect,
+    widget: &WidgetConfig,
+    ctx: &RenderContext,
+) {
+    if area.width < 4 || area.height < 2 {
+        return;
+    }
+    match widget.id {
+        WidgetId::Greeting => render_greeting_widget(frame, area, widget, ctx),
+        WidgetId::Logo => render_logo_widget(frame, area, widget, ctx),
+        WidgetId::System => render_system_widget(frame, area, widget, ctx),
+        WidgetId::Hardware => render_hardware_widget(frame, area, widget, ctx),
+        WidgetId::Activity => render_activity_widget(frame, area, widget, ctx),
+        WidgetId::Session => render_session_widget(frame, area, widget, ctx),
+        WidgetId::Uptime => render_uptime_widget(frame, area, widget, ctx),
+        WidgetId::Message => render_message_widget(frame, area, widget, ctx),
+    }
+}
+
 pub fn render_dashboard(frame: &mut Frame, layout: &ComputedLayout, ctx: &RenderContext) {
     if let Some(header_area) = layout.header {
         render_header(frame, header_area, ctx);
     }
 
     for placed in &layout.widgets {
-        if placed.area.width < 4 || placed.area.height < 2 {
-            continue;
-        }
-        match placed.config.id {
-            WidgetId::Greeting => render_greeting_widget(frame, placed.area, &placed.config, ctx),
-            WidgetId::Logo => render_logo_widget(frame, placed.area, &placed.config, ctx),
-            WidgetId::System => render_system_widget(frame, placed.area, &placed.config, ctx),
-            WidgetId::Hardware => render_hardware_widget(frame, placed.area, &placed.config, ctx),
-            WidgetId::Activity => render_activity_widget(frame, placed.area, &placed.config, ctx),
-            WidgetId::Session => render_session_widget(frame, placed.area, &placed.config, ctx),
-            WidgetId::Uptime => render_uptime_widget(frame, placed.area, &placed.config, ctx),
-            WidgetId::Message => render_message_widget(frame, placed.area, &placed.config, ctx),
-        }
+        render_single_widget(frame, placed.area, &placed.config, ctx);
     }
 }
 
@@ -176,17 +210,17 @@ fn render_header(frame: &mut Frame, area: Rect, ctx: &RenderContext) {
     let now = Local::now();
     let icons = IconSet::from_config(&ctx.config.typography);
 
-    let mut left_spans = vec![
-        Span::styled(
-            format!(" {} ", ctx.config.general.name.to_uppercase()),
-            Style::default()
-                .fg(ctx.theme.background)
-                .bg(ctx.theme.primary)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::raw(" "),
-    ];
+    let brand_label = format!(" {} ", ctx.config.general.name.to_uppercase());
+    let brand_w = brand_label.width() as u16;
+    let brand_span = Span::styled(
+        brand_label,
+        Style::default()
+            .fg(ctx.theme.background)
+            .bg(ctx.theme.primary)
+            .add_modifier(Modifier::BOLD),
+    );
 
+    let mut left_spans = Vec::new();
     if ctx.config.header.show_indicators {
         let anim_label = if ctx.paused {
             "PAUSED".to_string()
@@ -239,7 +273,7 @@ fn render_header(frame: &mut Frame, area: Rect, ctx: &RenderContext) {
     }
     let right_text = right_parts.join("  ");
 
-    if area.height >= 3 {
+    let (inner, is_panel) = if area.height >= 3 {
         let block = Block::default()
             .borders(Borders::ALL)
             .border_set(ctx.theme.borders.as_ratatui_set())
@@ -250,49 +284,54 @@ fn render_header(frame: &mut Frame, area: Rect, ctx: &RenderContext) {
             frame.render_widget(Clear, area);
         }
         frame.render_widget(block, area);
-
-        let cols = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([
-                Constraint::Min(10),
-                Constraint::Length(right_text.chars().count() as u16 + 1),
-            ])
-            .split(inner);
-
-        frame.render_widget(Paragraph::new(Line::from(left_spans)), cols[0]);
-        frame.render_widget(
-            Paragraph::new(Line::from(Span::styled(
-                right_text,
-                Style::default()
-                    .fg(ctx.theme.accent)
-                    .add_modifier(Modifier::BOLD),
-            )))
-            .alignment(Alignment::Right),
-            cols[1],
-        );
+        (inner, true)
     } else {
-        let cols = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([
-                Constraint::Min(10),
-                Constraint::Length(right_text.chars().count() as u16 + 1),
-            ])
-            .split(area);
-        frame.render_widget(
-            Paragraph::new(Line::from(left_spans)).style(ctx.panel_style()),
-            cols[0],
-        );
-        frame.render_widget(
-            Paragraph::new(Line::from(Span::styled(
-                right_text,
-                Style::default()
-                    .fg(ctx.theme.accent)
-                    .add_modifier(Modifier::BOLD),
-            )))
-            .alignment(Alignment::Right)
-            .style(ctx.panel_style()),
-            cols[1],
-        );
+        (area, false)
+    };
+
+    if inner.width == 0 || inner.height == 0 {
+        return;
+    }
+
+    // Center the global application identifier horizontally across the screen,
+    // cleanly separated from page/mode indicators on the left and clock on the right.
+    let screen = frame.area();
+    let eff_brand_w = brand_w.min(inner.width);
+    let ideal_center_x = screen.x + screen.width.saturating_sub(eff_brand_w) / 2;
+    let max_brand_x = inner.right().saturating_sub(eff_brand_w);
+    let brand_x = ideal_center_x.clamp(inner.x, max_brand_x.max(inner.x));
+
+    let left_w = brand_x.saturating_sub(inner.x);
+    let left_rect = Rect::new(inner.x, inner.y, left_w, inner.height);
+    let center_rect = Rect::new(brand_x, inner.y, eff_brand_w, inner.height);
+    let right_x = brand_x.saturating_add(eff_brand_w);
+    let right_w = inner.right().saturating_sub(right_x);
+    let right_rect = Rect::new(right_x, inner.y, right_w, inner.height);
+
+    let mut left_para = Paragraph::new(Line::from(left_spans));
+    let mut center_para = Paragraph::new(Line::from(brand_span)).alignment(Alignment::Center);
+    let mut right_para = Paragraph::new(Line::from(Span::styled(
+        right_text,
+        Style::default()
+            .fg(ctx.theme.accent)
+            .add_modifier(Modifier::BOLD),
+    )))
+    .alignment(Alignment::Right);
+
+    if !is_panel {
+        left_para = left_para.style(ctx.panel_style());
+        center_para = center_para.style(ctx.panel_style());
+        right_para = right_para.style(ctx.panel_style());
+    }
+
+    if left_rect.width > 0 {
+        frame.render_widget(left_para, left_rect);
+    }
+    if center_rect.width > 0 {
+        frame.render_widget(center_para, center_rect);
+    }
+    if right_rect.width > 0 {
+        frame.render_widget(right_para, right_rect);
     }
 }
 

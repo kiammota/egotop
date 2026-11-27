@@ -63,6 +63,12 @@ impl AppConfigManager {
     pub fn apply(lkg: &LastKnownGoodState, target: &mut ManagedAppTarget<'_>) {
         let prev_startup = target.config.general.startup_animation.clone();
         *target.config = lkg.config.clone();
+        if !target.config.windows.is_empty() {
+            target
+                .windows
+                .replace_windows(target.config.windows.values().cloned().collect());
+            target.windows.resolve_all(target.viewport);
+        }
         ThemeManager::resolve_active(lkg, target);
         if prev_startup != target.config.general.startup_animation {
             target.transition.restart(
@@ -77,7 +83,13 @@ impl AppConfigManager {
 pub struct WindowConfigManager;
 impl WindowConfigManager {
     pub fn apply(lkg: &LastKnownGoodState, target: &mut ManagedAppTarget<'_>) {
-        *target.windows.main_window_mut() = WindowState::new(lkg.window.clone());
+        if lkg.config.windows.is_empty() {
+            *target.windows.main_window_mut() = WindowState::new(lkg.window.clone());
+        } else {
+            target
+                .windows
+                .replace_windows(lkg.config.windows.values().cloned().collect());
+        }
         target.windows.resolve_all(target.viewport);
     }
 }

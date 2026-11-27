@@ -135,8 +135,13 @@ pub fn window_items_summary(win: &WindowConfig) -> Vec<(String, String)> {
         ),
         ("Inner Padding".to_string(), format!("{}", win.padding)),
         (
-            "Draggable".to_string(),
-            if win.draggable { "Yes" } else { "No" }.to_string(),
+            "Movable".to_string(),
+            if win.movable && !win.is_static {
+                "Yes"
+            } else {
+                "No"
+            }
+            .to_string(),
         ),
         (
             "Resizable".to_string(),

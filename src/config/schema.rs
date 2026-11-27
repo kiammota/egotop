@@ -1,5 +1,7 @@
 use crate::ui::borders::BorderCharsConfig;
+use crate::window::{PositionMode, WindowConfig};
 use serde::{Deserialize, Deserializer, Serialize};
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use thiserror::Error;
 
@@ -28,6 +30,12 @@ pub struct Config {
     pub background: BackgroundConfig,
     pub layout: LayoutConfig,
     pub widgets: Vec<WidgetConfig>,
+    #[serde(
+        default,
+        skip_serializing_if = "BTreeMap::is_empty",
+        deserialize_with = "deserialize_windows_map"
+    )]
+    pub windows: BTreeMap<String, WindowConfig>,
 }
 
 impl Default for Config {
@@ -41,8 +49,38 @@ impl Default for Config {
             background: BackgroundConfig::default(),
             layout: LayoutConfig::default(),
             widgets: default_widgets(),
+            windows: BTreeMap::new(),
         }
     }
+}
+
+fn deserialize_windows_map<'de, D>(
+    deserializer: D,
+) -> Result<BTreeMap<String, WindowConfig>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let raw_map: BTreeMap<String, toml::Value> = BTreeMap::deserialize(deserializer)?;
+    let mut out = BTreeMap::new();
+    for (key, val) in raw_map {
+        let mut cfg: WindowConfig = val
+            .clone()
+            .try_into()
+            .map_err(serde::de::Error::custom)?;
+        if cfg.id == "main" || cfg.id.trim().is_empty() {
+            cfg.id = key.clone();
+        }
+        if let Some(tbl) = val.as_table() {
+            let has_explicit_pos = tbl.contains_key("position");
+            let has_explicit_anchor = tbl.contains_key("anchor");
+            let has_coords = tbl.contains_key("x") || tbl.contains_key("y");
+            if !has_explicit_pos && !has_explicit_anchor && has_coords {
+                cfg.position = PositionMode::Absolute;
+            }
+        }
+        out.insert(key, cfg);
+    }
+    Ok(out)
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]

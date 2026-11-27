@@ -86,7 +86,11 @@ impl App {
         let theme = resolve_active_theme(&config, &themes_map);
         let theme_list: Vec<ThemeEntry> = themes_map.values().cloned().collect();
 
-        let mut windows = WindowManager::new(lkg.window);
+        let mut windows = if config.windows.is_empty() {
+            WindowManager::new(lkg.window)
+        } else {
+            WindowManager::from_configs(config.windows.values().cloned().collect())
+        };
         windows.resolve_all(Rect::new(0, 0, width, height));
 
         let animations = lkg.animations;
@@ -623,7 +627,7 @@ impl App {
                         3 => {
                             win.config.padding = (win.config.padding + 1) % 5;
                         }
-                        4 => win.config.draggable = !win.config.draggable,
+                        4 => win.config.movable = !win.config.movable,
                         5 => win.config.resizable = !win.config.resizable,
                         6 => win.config = WindowConfig::default(),
                         7 => {
@@ -1063,8 +1067,8 @@ impl App {
                     Some(format!("Window anchor set to {a:?}"))
                 }
                 WindowCommand::SetDraggable(opt) => {
-                    win.config.draggable = opt.unwrap_or(!win.config.draggable);
-                    Some(format!("Window draggable: {}", win.config.draggable))
+                    win.config.movable = opt.unwrap_or(!win.config.movable);
+                    Some(format!("Window movable: {}", win.config.movable))
                 }
                 WindowCommand::SetResizable(opt) => {
                     win.config.resizable = opt.unwrap_or(!win.config.resizable);

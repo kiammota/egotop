@@ -39,7 +39,8 @@ use egotop::ui::widgets::{
 };
 use unicode_width::UnicodeWidthStr;
 use egotop::window::{
-    PositionMode, WindowBackgroundMode, WindowConfig, WindowManager, resolve_window_rect,
+    Compositor, PositionMode, WindowBackgroundMode, WindowConfig, WindowManager,
+    resolve_window_rect,
 };
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
@@ -1856,4 +1857,263 @@ fn cli_commands_parse_and_execute_with_appropriate_exit_codes() {
 
     let _ = std::fs::remove_file(&cfg_path);
     let _ = std::fs::remove_file(&bad_cfg_path);
+}
+
+#[test]
+fn mini_window_manager_compositor_toml_and_centered_header() {
+    let viewport = Rect::new(0, 0, 120, 40);
+
+    // 1. TOML [windows.*] parsing & validation (preserving TOML format)
+    let toml_cfg = r#"
+[windows.dashboard]
+title = "Dashboard"
+context = "dashboard"
+x = 2
+y = 2
+width = 60
+height = 24
+resizable = true
+movable = false
+static = true
+minimizable = false
+maximizable = true
+layer = 0
+z_index = 5
+overlap = true
+
+[windows.system]
+title = "System Monitor"
+context = "system"
+x = 68
+y = 4
+width = 48
+height = 18
+resizable = true
+movable = true
+static = false
+minimizable = true
+maximizable = true
+layer = 1
+z_index = 0
+overlap = true
+"#;
+    let parsed_cfg: Config = toml::from_str(toml_cfg).unwrap();
+    assert_eq!(parsed_cfg.windows.len(), 2);
+    assert!(parsed_cfg.windows["dashboard"].is_static);
+    assert!(!parsed_cfg.windows["dashboard"].movable);
+    assert!(parsed_cfg.windows["dashboard"].resizable);
+    assert_eq!(parsed_cfg.windows["dashboard"].position, PositionMode::Absolute);
+    assert_eq!(parsed_cfg.windows["system"].context, "system");
+    assert_eq!(parsed_cfg.windows["system"].layer, 1);
+    assert_eq!(parsed_cfg.windows["system"].z_index, 0);
+
+    // Validate through ConfigurationRuntime schema/semantic pipeline cleanly
+    let parsed_res = egotop::runtime::parse_resource(
+        ResourceKind::ApplicationConfig,
+        "egotop",
+        std::path::Path::new("egotop.toml"),
+        toml_cfg.to_string(),
+    )
+    .unwrap();
+    assert!(egotop::runtime::validate_schema(&parsed_res).is_empty());
+
+    // 2. WindowManager creation, focus, and context association
+    let mut mgr = WindowManager::from_configs(parsed_cfg.windows.values().cloned().collect());
+    mgr.resolve_all(viewport);
+    assert_eq!(mgr.windows().len(), 2);
+    assert_eq!(
+        mgr.context_for_window("dashboard").unwrap().id,
+        "dashboard"
+    );
+    assert_eq!(mgr.context_for_window("system").unwrap().id, "system");
+
+    assert!(mgr.focus_window("system"));
+    assert_eq!(mgr.focused_id(), Some("system"));
+    assert_eq!(mgr.cycle_focus(), Some("dashboard"));
+
+    // Register custom context window and verify state association
+    let mut notes_cfg = WindowConfig {
+        id: "notes".to_string(),
+        title: Some("Notes".to_string()),
+        context: "custom_notes".to_string(),
+        position: PositionMode::Absolute,
+        x: 70,
+        y: 24,
+        width: SizeSpec::Cells(40),
+        height: SizeSpec::Cells(12),
+        layer: 1,
+        z_index: 2,
+        overlap: true,
+        ..WindowConfig::default()
+    };
+    mgr.register_window(notes_cfg.clone()).unwrap();
+    mgr.context_for_window_mut("notes")
+        .unwrap()
+        .custom_lines
+        .push("Status line preserved".to_string());
+    assert!(mgr.associate_context("notes", "custom_notes"));
+
+    // 3 & 4. Static windows cannot move, YET independently support resizing when resizable = true
+    assert!(mgr.move_window("dashboard", 15, 15, viewport).is_err());
+    let resized = mgr.resize_window("dashboard", 64, 26, viewport).unwrap();
+    assert_eq!((resized.x, resized.y, resized.width, resized.height), (2, 2, 64, 26));
+
+    // Non-resizable window rejects resize
+    notes_cfg.id = "fixed_panel".to_string();
+    notes_cfg.resizable = false;
+    notes_cfg.x = 70;
+    notes_cfg.y = 25;
+    mgr.register_window(notes_cfg).unwrap();
+    assert!(mgr.resize_window("fixed_panel", 50, 14, viewport).is_err());
+    assert!(mgr.remove_window("fixed_panel"));
+
+    // 5. Layer vs Z-index ordering: layer=0 z_index=5 renders BEFORE layer=1 z_index=0 BEFORE layer=1 z_index=2
+    let sorted_ids: Vec<&str> = mgr
+        .windows_sorted()
+        .iter()
+        .map(|w| w.config.id.as_str())
+        .collect();
+    assert_eq!(sorted_ids, vec!["dashboard", "system", "notes"]);
+
+    // 6. Maximize & restore preserves original exact geometry; non-maximizable rejects
+    mgr.maximize("system", viewport).unwrap();
+    assert_eq!(mgr.window("system").unwrap().resolved_rect, viewport);
+    assert!(mgr.restore_maximized("system", viewport));
+    let sys_restored = mgr.window("system").unwrap().resolved_rect;
+    assert_eq!(
+        (sys_restored.x, sys_restored.y, sys_restored.width, sys_restored.height),
+        (68, 4, 48, 18)
+    );
+
+    // 7. Minimize & restore preserves context state and hides minimized window from Compositor
+    assert!(mgr.minimize("dashboard").is_err()); // minimizable = false
+    mgr.minimize("notes").unwrap();
+    assert!(mgr.window("notes").unwrap().minimized);
+    let composed_during_min = Compositor::compose(&mgr, viewport);
+    assert!(!composed_during_min.iter().any(|c| c.window_id == "notes"));
+    assert!(mgr.restore_minimized("notes", viewport));
+    assert_eq!(
+        mgr.context_for_window("notes").unwrap().custom_lines[0],
+        "Status line preserved"
+    );
+
+    // 8. Non-overlapping (overlap = false) enforcement in WindowManager and Compositor
+    let mut non_overlap_mgr = WindowManager::from_configs(vec![
+        WindowConfig {
+            id: "base".to_string(),
+            position: PositionMode::Absolute,
+            x: 0,
+            y: 0,
+            width: SizeSpec::Cells(40),
+            height: SizeSpec::Cells(20),
+            layer: 0,
+            z_index: 0,
+            overlap: false,
+            ..WindowConfig::default()
+        },
+        WindowConfig {
+            id: "floating".to_string(),
+            position: PositionMode::Absolute,
+            x: 10,
+            y: 5,
+            width: SizeSpec::Cells(40),
+            height: SizeSpec::Cells(20),
+            layer: 1,
+            z_index: 0,
+            overlap: true,
+            ..WindowConfig::default()
+        },
+    ]);
+    non_overlap_mgr.resolve_all(viewport);
+    assert_eq!(non_overlap_mgr.geometry_conflicts(viewport).len(), 1);
+    let composed_clean = Compositor::compose(&non_overlap_mgr, viewport);
+    assert_eq!(composed_clean.len(), 2);
+    let r0 = composed_clean[0].rect;
+    let r1 = composed_clean[1].rect;
+    let overlap_x = r0.x < r1.right() && r1.x < r0.right();
+    let overlap_y = r0.y < r1.bottom() && r1.y < r0.bottom();
+    assert!(
+        !(overlap_x && overlap_y),
+        "Compositor must prevent intersection when base.overlap = false: {r0:?} vs {r1:?}"
+    );
+    // Moving directly onto `base` must also be rejected
+    assert!(non_overlap_mgr.move_window("floating", 5, 5, viewport).is_err());
+
+    // 9. Terminal boundary clamping even when configured larger than viewport
+    let small_vp = Rect::new(0, 0, 50, 16);
+    let composed_small = Compositor::compose(&mgr, small_vp);
+    for cw in &composed_small {
+        assert!(cw.rect.right() <= small_vp.right());
+        assert!(cw.rect.bottom() <= small_vp.bottom());
+    }
+
+    // 10. Centered global EGOTOP header check via TestBackend (EGOTOP centered and separated from [Pg 1])
+    let cfg = Config::default();
+    let theme = Theme::from_config(&cfg.theme);
+    let mut collector = SystemCollector::new();
+    let snap = collector.collect(120, 36);
+    let reveal = RevealState::complete();
+    let effect = create_effect(EffectKind::None, 120, 36, &cfg.background);
+    let catalog = AnimationCatalog::load();
+    let transition = TransitionPlayer::new("none", &catalog, 0);
+    let mut single_mgr = WindowManager::new(WindowConfig::default());
+    let mut customizer = CustomizerState::default();
+    let cmd_line = CommandLineState::default();
+    let startup = CursorStartupState::new(false);
+    let themes = vec![];
+    let rctx = RenderContext {
+        config: &cfg,
+        theme: &theme,
+        snapshot: &snap,
+        reveal: &reveal,
+        active_page: 1,
+        view_mode: ViewMode::Dashboard,
+        paused: false,
+        show_help: false,
+        fps: 30.0,
+        status_toast: None,
+        window_transparent: false,
+        config_error_count: 0,
+    };
+    let mut term = Terminal::new(TestBackend::new(120, 36)).unwrap();
+    term.draw(|frame| {
+        draw_frame(
+            frame,
+            &cfg,
+            effect.as_ref(),
+            &transition,
+            &mut single_mgr,
+            &mut customizer,
+            &cmd_line,
+            &startup,
+            &themes,
+            &catalog,
+            &rctx,
+        );
+    })
+    .unwrap();
+    let buf = term.backend().buffer();
+    let mut header_row_with_brand = None;
+    for y in 0..12 {
+        let mut row = String::new();
+        for x in 0..120 {
+            row.push_str(buf[(x, y)].symbol());
+        }
+        if row.contains("EGOTOP") && row.contains("[Pg 1]") {
+            header_row_with_brand = Some(row);
+            break;
+        }
+    }
+    let row = header_row_with_brand.expect("global header row with EGOTOP and [Pg 1] must render");
+    let egotop_col = row.find("EGOTOP").unwrap();
+    let pg_col = row.find("[Pg 1]").unwrap();
+    // EGOTOP must be centered near column ~57 (60 - 3) and clearly separated from [Pg 1]
+    assert!(
+        (50..=64).contains(&egotop_col),
+        "EGOTOP should be horizontally centered around col 57 (got {egotop_col}):\n{row}"
+    );
+    assert!(
+        egotop_col > pg_col + 10,
+        "EGOTOP should not be adjacent to [Pg 1]:\n{row}"
+    );
 }

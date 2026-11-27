@@ -2,10 +2,10 @@ use crate::animation::{BackgroundEffect, TransitionPlayer};
 use crate::command::CommandLineState;
 use crate::config::{Config, StepTarget, ThemeEntry};
 use crate::ui::customizer::{CustomizerState, render_customizer, render_help_overlay};
-use crate::ui::layout::compute_layout;
 use crate::ui::theme::parse_color;
-use crate::ui::widgets::{RenderContext, render_command_line, render_dashboard, render_window_frame};
-use crate::window::WindowManager;
+use crate::ui::widgets::{RenderContext, render_command_line, render_composed_window_frame};
+use crate::window::context::render_context_content;
+use crate::window::{Compositor, WindowManager};
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
@@ -90,26 +90,25 @@ pub fn draw_frame(
         transition.render_scene(frame.buffer_mut(), area, ctx.theme);
     }
 
-    // Resolve and render windows in z-index order
+    // Resolve geometry, enforce overlap/layer/z-index rules via Compositor, and render contexts
     windows.resolve_all(area);
-    for win in windows.windows_sorted() {
-        if !win.config.visible {
-            continue;
-        }
-        render_window_frame(frame, win, ctx);
-        let inner = win.inner_area();
-        if inner.width >= 10 && inner.height >= 4 {
-            let layout = compute_layout(inner, config, ctx.active_page, ctx.view_mode);
-            render_dashboard(frame, &layout, ctx);
-        }
-        transition.apply_to_buffer(frame.buffer_mut(), win.resolved_rect, ctx.theme);
+    let composed = Compositor::compose(windows, area);
+    for cw in &composed {
+        render_composed_window_frame(frame, cw, ctx);
+        render_context_content(
+            frame,
+            cw.inner_area,
+            windows.context(&cw.context_id),
+            ctx,
+        );
+        transition.apply_to_buffer(frame.buffer_mut(), cw.rect, ctx.theme);
         if transition.has_scene_tracks()
             && matches!(scene_target, StepTarget::Window | StepTarget::Content)
         {
             let scene_area = if scene_target == StepTarget::Content {
-                inner
+                cw.inner_area
             } else {
-                win.resolved_rect
+                cw.rect
             };
             transition.render_scene(frame.buffer_mut(), scene_area, ctx.theme);
         }
