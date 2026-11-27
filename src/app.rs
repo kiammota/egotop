@@ -69,7 +69,17 @@ pub struct App {
     should_quit: bool,
     fps: f32,
     status_toast: Option<(String, Instant)>,
-    theme_preview_backup: Option<(Theme, crate::config::ThemeConfig)>,
+    command_preview_backup: Option<CommandPreviewBackup>,
+}
+
+#[derive(Clone)]
+struct CommandPreviewBackup {
+    config: Config,
+    theme: Theme,
+    view_mode: ViewMode,
+    transition_active_id: String,
+    transition_finished: bool,
+    status_toast: Option<(String, Instant)>,
 }
 
 impl App {
@@ -160,7 +170,7 @@ impl App {
                         .then(|| term_diagnostics.summary())
                 })
                 .map(|m| (m, Instant::now() + Duration::from_secs(4))),
-            theme_preview_backup: None,
+            command_preview_backup: None,
         }
     }
 
@@ -433,7 +443,7 @@ impl App {
         let ctx = self.completion_ctx();
 
         let mut execute_str: Option<String> = None;
-        let mut preview_theme = false;
+        let mut preview_cmd = false;
         let mut restore_preview = false;
         match key.code {
             KeyCode::Esc => {
@@ -445,7 +455,7 @@ impl App {
                 }
             }
             KeyCode::Enter => {
-                self.theme_preview_backup = None;
+                self.command_preview_backup = None;
                 let cmd = cmd_state.submit();
                 if !cmd.is_empty() {
                     execute_str = Some(cmd);
@@ -453,11 +463,11 @@ impl App {
             }
             KeyCode::Tab => {
                 cmd_state.next_suggestion(&self.registry, &ctx);
-                preview_theme = true;
+                preview_cmd = true;
             }
             KeyCode::BackTab => {
                 cmd_state.prev_suggestion(&self.registry, &ctx);
-                preview_theme = true;
+                preview_cmd = true;
             }
             KeyCode::Up => cmd_state.handle_up(&self.registry, &ctx),
             KeyCode::Down => cmd_state.handle_down(&self.registry, &ctx),
@@ -478,14 +488,11 @@ impl App {
         }
 
         self.command_line = cmd_state;
-        if restore_preview
-            && let Some((prev_theme, prev_cfg)) = self.theme_preview_backup.take()
-        {
-            self.theme = prev_theme;
-            self.config.theme = prev_cfg;
+        if restore_preview {
+            self.restore_command_preview(viewport);
         }
-        if preview_theme {
-            self.maybe_preview_colorscheme_from_cmdline();
+        if preview_cmd {
+            self.maybe_preview_command_from_cmdline(viewport);
         }
         if let Some(cmd) = execute_str {
             self.execute_command_str(&cmd, guard, viewport)?;
@@ -493,25 +500,169 @@ impl App {
         Ok(())
     }
 
-    fn maybe_preview_colorscheme_from_cmdline(&mut self) {
-        let trimmed = self.command_line.buffer.trim_start();
-        let mut parts = trimmed.split_whitespace();
-        let Some(head) = parts.next() else {
-            return;
-        };
-        if !matches!(head.to_ascii_lowercase().as_str(), "colorscheme" | "theme") {
-            return;
+    fn is_previewable_ui_command(parsed: &ParsedCommand) -> bool {
+        match parsed {
+            ParsedCommand::Colorscheme(Some(_))
+            | ParsedCommand::Set { .. }
+            | ParsedCommand::Effect(Some(_))
+            | ParsedCommand::Layout(Some(_)) => true,
+            ParsedCommand::Background(bcmd) => matches!(
+                bcmd,
+                BackgroundCommand::Set(_)
+                    | BackgroundCommand::Stop
+                    | BackgroundCommand::Pause
+                    | BackgroundCommand::Resume
+                    | BackgroundCommand::Speed(_)
+            ),
+            ParsedCommand::Animation { action, .. } => matches!(
+                action,
+                AnimationAction::Play
+                    | AnimationAction::SetStartup
+                    | AnimationAction::Pause
+                    | AnimationAction::Resume
+                    | AnimationAction::Stop
+                    | AnimationAction::Speed
+            ),
+            ParsedCommand::Container(ccmd) => matches!(
+                ccmd,
+                ContainerCommand::Set { .. }
+                    | ContainerCommand::Gradient { .. }
+                    | ContainerCommand::Reset(_)
+            ),
+            _ => false,
         }
-        let Some(arg) = parts.next() else {
-            return;
-        };
-        let key = arg.trim().to_ascii_lowercase();
-        if let Some(entry) = self.themes_map.get(&key).cloned() {
-            if self.theme_preview_backup.is_none() {
-                self.theme_preview_backup = Some((self.theme.clone(), self.config.theme.clone()));
+    }
+
+    fn restore_from_backup(&mut self, backup: &CommandPreviewBackup, viewport: Rect) {
+        let bg_changed = self.config.background != backup.config.background;
+        self.config = backup.config.clone();
+        self.theme = backup.theme.clone();
+        self.view_mode = backup.view_mode;
+        self.status_toast = backup.status_toast.clone();
+        if bg_changed {
+            self.effect = BackgroundPipeline::from_config(
+                &self.config.background,
+                viewport.width,
+                viewport.height,
+            );
+        }
+        if self.transition.active_id != backup.transition_active_id
+            || self.transition.finished != backup.transition_finished
+        {
+            if backup.transition_finished {
+                self.transition.stop();
+            } else {
+                self.transition.restart(
+                    &backup.transition_active_id,
+                    &self.animations,
+                    self.config.general.startup_duration_ms,
+                );
             }
-            self.apply_theme_entry(&entry);
         }
+    }
+
+    fn restore_command_preview(&mut self, viewport: Rect) {
+        if let Some(backup) = self.command_preview_backup.take() {
+            self.restore_from_backup(&backup, viewport);
+        }
+    }
+
+    fn maybe_preview_command_from_cmdline(&mut self, viewport: Rect) {
+        let Ok(parsed) = parse_command(&self.command_line.buffer) else {
+            return;
+        };
+        if !Self::is_previewable_ui_command(&parsed) {
+            return;
+        }
+        if let Some(backup) = self.command_preview_backup.clone() {
+            self.restore_from_backup(&backup, viewport);
+        } else {
+            self.command_preview_backup = Some(CommandPreviewBackup {
+                config: self.config.clone(),
+                theme: self.theme.clone(),
+                view_mode: self.view_mode,
+                transition_active_id: self.transition.active_id.clone(),
+                transition_finished: self.transition.finished,
+                status_toast: self.status_toast.clone(),
+            });
+        }
+        self.apply_preview_command(parsed, viewport);
+    }
+
+    fn apply_preview_command(&mut self, parsed: ParsedCommand, viewport: Rect) {
+        match parsed {
+            ParsedCommand::Colorscheme(Some(name)) => {
+                let key = name.trim().to_ascii_lowercase();
+                if let Some(entry) = self.themes_map.get(&key).cloned() {
+                    self.apply_theme_entry(&entry);
+                }
+            }
+            ParsedCommand::Set { key, value } => {
+                self.execute_set_option(&key, &value);
+            }
+            ParsedCommand::Effect(Some(kind)) => {
+                self.set_effect_with_size(kind, viewport.width, viewport.height);
+            }
+            ParsedCommand::Layout(Some(sel)) => match sel {
+                LayoutSelection::View(view) => self.view_mode = view,
+                LayoutSelection::Preset(name) => {
+                    let key = name.trim().to_ascii_lowercase();
+                    if let Some(preset) = self.layouts_map.get(&key).cloned() {
+                        self.config.ui.root = preset.root;
+                        if let Some(vm) = preset.view_mode {
+                            self.view_mode = vm;
+                        }
+                    }
+                }
+            },
+            ParsedCommand::Background(bcmd) => {
+                self.execute_background_command_with_size(bcmd, viewport.width, viewport.height);
+            }
+            ParsedCommand::Animation { action, name } => match action {
+                AnimationAction::Play | AnimationAction::SetStartup => {
+                    if let Some(anim_name) = name {
+                        if action == AnimationAction::SetStartup {
+                            self.config.general.startup_animation = anim_name.clone();
+                        }
+                        self.transition.restart(
+                            &anim_name,
+                            &self.animations,
+                            self.config.general.startup_duration_ms,
+                        );
+                        if !self.transition.package_backgrounds().is_empty() {
+                            self.effect.set_specs(
+                                self.transition.package_backgrounds(),
+                                viewport.width,
+                                viewport.height,
+                                &self.config.background,
+                                &self.transition.package.assets,
+                            );
+                        }
+                        self.reveal = RevealState::new(0.65);
+                    }
+                }
+                AnimationAction::Pause => self.transition.pause(),
+                AnimationAction::Resume => self.transition.resume(),
+                AnimationAction::Stop => self.transition.stop(),
+                AnimationAction::Speed => {
+                    if let Some(val_str) = name
+                        && let Ok(spd) = val_str.parse::<f32>()
+                    {
+                        self.transition.set_speed(spd);
+                    }
+                }
+                _ => {}
+            },
+            ParsedCommand::Container(ccmd) => {
+                self.execute_container_command(ccmd);
+            }
+            _ => {}
+        }
+        // Keep status_toast clean during live preview
+        self.status_toast = self
+            .command_preview_backup
+            .as_ref()
+            .and_then(|b| b.status_toast.clone());
     }
 
     fn handle_diagnostics_key(&mut self, key: KeyEvent) {
@@ -1213,6 +1364,12 @@ impl App {
     }
 
     fn set_effect(&mut self, kind: EffectKind, guard: &TerminalGuard) -> Result<()> {
+        let sz = guard.terminal.size()?;
+        self.set_effect_with_size(kind, sz.width, sz.height);
+        Ok(())
+    }
+
+    fn set_effect_with_size(&mut self, kind: EffectKind, width: u16, height: u16) {
         self.config.background.effect = kind;
         self.config.background.enabled = kind != EffectKind::None;
         self.config.background.layers.clear();
@@ -1224,9 +1381,7 @@ impl App {
             EffectKind::Scanlines => self.config.background.scanlines.enabled = true,
             EffectKind::None => {}
         }
-        let sz = guard.terminal.size()?;
-        self.effect = BackgroundPipeline::from_config(&self.config.background, sz.width, sz.height);
-        Ok(())
+        self.effect = BackgroundPipeline::from_config(&self.config.background, width, height);
     }
 
     fn execute_background_command(
@@ -1235,6 +1390,16 @@ impl App {
         guard: &TerminalGuard,
     ) -> Result<()> {
         let sz = guard.terminal.size()?;
+        self.execute_background_command_with_size(bcmd, sz.width, sz.height);
+        Ok(())
+    }
+
+    fn execute_background_command_with_size(
+        &mut self,
+        bcmd: BackgroundCommand,
+        width: u16,
+        height: u16,
+    ) {
         match bcmd {
             BackgroundCommand::Stop => {
                 self.effect.clear();
@@ -1281,8 +1446,8 @@ impl App {
                     };
                     self.effect.set_single(
                         spec,
-                        sz.width,
-                        sz.height,
+                        width,
+                        height,
                         &self.config.background,
                         &BTreeMap::new(),
                     );
@@ -1296,8 +1461,8 @@ impl App {
                         self.config.background.layers = pkg.definition.backgrounds.clone();
                         self.effect.set_specs(
                             &pkg.definition.backgrounds,
-                            sz.width,
-                            sz.height,
+                            width,
+                            height,
                             &self.config.background,
                             &pkg.assets,
                         );
@@ -1323,8 +1488,8 @@ impl App {
                     self.config.background.layers.push(spec.clone());
                     self.effect.add_layer(
                         spec,
-                        sz.width,
-                        sz.height,
+                        width,
+                        height,
                         &self.config.background,
                         &BTreeMap::new(),
                     );
@@ -1338,7 +1503,6 @@ impl App {
                 }
             }
         }
-        Ok(())
     }
 
     fn set_toast(&mut self, msg: impl Into<String>) {
@@ -1367,4 +1531,84 @@ fn resolve_active_theme(cfg: &Config, themes_map: &BTreeMap<String, ThemeEntry>)
         return theme;
     }
     Theme::from_config(&cfg.theme)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::BorderStyle;
+
+    fn test_app() -> App {
+        let tmp = std::env::temp_dir().join(format!(
+            "egotop_preview_test_{}.toml",
+            std::process::id()
+        ));
+        App::new(Config::default(), tmp, None, 100, 36)
+    }
+
+    #[test]
+    fn command_tab_live_preview_and_esc_restore_for_ui_commands() {
+        let mut app = test_app();
+        let vp = Rect::new(0, 0, 100, 36);
+
+        // 1. :effect <Tab> previews effect and Esc restores original effect
+        let orig_effect = app.config.background.effect;
+        let mut cmd = std::mem::take(&mut app.command_line);
+        {
+            let ctx = app.completion_ctx();
+            cmd.open(&app.registry, &ctx);
+            for ch in "effect ".chars() {
+                cmd.insert_char(ch, &app.registry, &ctx);
+            }
+            cmd.next_suggestion(&app.registry, &ctx);
+            cmd.next_suggestion(&app.registry, &ctx);
+        }
+        app.command_line = cmd;
+        app.maybe_preview_command_from_cmdline(vp);
+        assert_ne!(app.config.background.effect, orig_effect);
+        app.restore_command_preview(vp);
+        assert_eq!(app.config.background.effect, orig_effect);
+
+        // 2. :layout <Tab> previews view mode and Esc restores original view mode
+        let orig_view = app.view_mode;
+        let mut cmd = std::mem::take(&mut app.command_line);
+        {
+            let ctx = app.completion_ctx();
+            cmd.open(&app.registry, &ctx);
+            for ch in "layout c".chars() {
+                cmd.insert_char(ch, &app.registry, &ctx);
+            }
+            cmd.next_suggestion(&app.registry, &ctx);
+            cmd.next_suggestion(&app.registry, &ctx);
+        }
+        app.command_line = cmd;
+        app.maybe_preview_command_from_cmdline(vp);
+        assert_eq!(app.view_mode, ViewMode::Compact);
+        app.restore_command_preview(vp);
+        assert_eq!(app.view_mode, orig_view);
+
+        // 3. :set border.style <Tab> previews border style and Esc restores
+        let orig_border = app.config.theme.border_type;
+        app.command_line.buffer = "set border.style none".to_string();
+        app.maybe_preview_command_from_cmdline(vp);
+        assert_eq!(app.config.theme.border_type, BorderStyle::None);
+        app.restore_command_preview(vp);
+        assert_eq!(app.config.theme.border_type, orig_border);
+
+        // 4. :container set <id> background <color> previews and Esc restores
+        assert!(!app.config.container_styles.contains_key("system"));
+        app.command_line.buffer = "container set system background #112233".to_string();
+        app.maybe_preview_command_from_cmdline(vp);
+        assert!(app.config.container_styles.contains_key("system"));
+        app.restore_command_preview(vp);
+        assert!(!app.config.container_styles.contains_key("system"));
+
+        // 5. :colorscheme <name> previews and Esc restores
+        let orig_theme_name = app.config.theme.name.clone();
+        app.command_line.buffer = "colorscheme nord".to_string();
+        app.maybe_preview_command_from_cmdline(vp);
+        assert_eq!(app.config.theme.name, "nord");
+        app.restore_command_preview(vp);
+        assert_eq!(app.config.theme.name, orig_theme_name);
+    }
 }
