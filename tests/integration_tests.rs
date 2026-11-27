@@ -235,7 +235,8 @@ fn command_parser_and_contextual_completion_engine() {
     assert_eq!(registry.find("w").unwrap().name, "write");
     assert_eq!(registry.find("q").unwrap().name, "quit");
 
-    let cfg = Config::default();
+    let mut cfg = Config::default();
+    cfg.background.effect = EffectKind::Particles;
     let base_theme = Theme::from_config(&cfg.theme);
     let themes = vec![
         ThemeEntry {
@@ -380,7 +381,8 @@ fn border_chars_validation_and_runtime_application() {
 
 #[test]
 fn animation_engine_native_cursor_expand_and_declarative_toml() {
-    let cfg = Config::default();
+    let mut cfg = Config::default();
+    cfg.background.effect = EffectKind::Particles;
     let theme = Theme::from_config(&cfg.theme);
     let catalog = AnimationCatalog::load();
 
@@ -596,7 +598,8 @@ ID=arch
 
 #[test]
 fn container_layout_small_terminal_resize_no_overlap_and_clipping() {
-    let cfg = Config::default();
+    let mut cfg = Config::default();
+    cfg.background.effect = EffectKind::Particles;
 
     for (w, h) in [(0, 0), (6, 3), (10, 4), (20, 8), (45, 16), (80, 24), (200, 60)] {
         let screen = Rect::new(0, 0, w, h);
@@ -714,7 +717,8 @@ fn typography_renders_all_builtin_fonts_and_flf_parser() {
 
 #[test]
 fn animations_update_and_render_within_bounds_and_regions() {
-    let cfg = Config::default();
+    let mut cfg = Config::default();
+    cfg.background.effect = EffectKind::Particles;
     let theme = Theme::from_config(&cfg.theme);
     assert_eq!(parse_color("#39FF88", Color::Reset), Color::Rgb(57, 255, 136));
 
@@ -883,7 +887,8 @@ fn popup_layout_prevents_overflow_handles_unicode_and_resizes_cleanly() {
     assert_eq!(d, 0, "description must hide when narrow width only fits name + tag");
 
     // 2. Customizer popup (especially Animations tab) stays strictly inside borders across resizes
-    let cfg = Config::default();
+    let mut cfg = Config::default();
+    cfg.background.effect = EffectKind::Particles;
     let theme = Theme::from_config(&cfg.theme);
     let themes = vec![
         ThemeEntry {
@@ -1263,7 +1268,8 @@ fn timeline_loops_unified_showcases_text_fx_and_backgrounds() {
     }
 
     // 4. Multi-layer BackgroundPipeline composition, resize, speed & pause
-    let cfg = Config::default();
+    let mut cfg = Config::default();
+    cfg.background.effect = EffectKind::Particles;
     let mut bg = BackgroundPipeline::from_config(&cfg.background, 80, 24);
     for (idx, kind) in [
         BackgroundLayerKind::Gradient,
@@ -1728,7 +1734,8 @@ fn real_notify_filesystem_watcher_detects_atomic_writes_and_edits() {
     std::fs::create_dir_all(&paths.themes_dir).unwrap();
     std::fs::create_dir_all(&paths.animations_dir).unwrap();
 
-    let cfg = Config::default();
+    let mut cfg = Config::default();
+    cfg.background.effect = EffectKind::Particles;
     std::fs::write(&paths.config_path, toml::to_string_pretty(&cfg).unwrap()).unwrap();
 
     let mut runtime = ConfigurationRuntime::start(paths.clone(), cfg, true);
@@ -1996,7 +2003,8 @@ text = "Hello EgoTop"
     assert_ne!(idx_1, idx_2, "spinner frame index should advance across frames");
 
     // Verify default dashboard renders centered EGOTOP header without [Pg ...]
-    let cfg = Config::default();
+    let mut cfg = Config::default();
+    cfg.background.effect = EffectKind::Particles;
     let theme = Theme::from_config(&cfg.theme);
     let mut collector = SystemCollector::new();
     let snap = collector.collect(120, 36);
@@ -2044,16 +2052,16 @@ text = "Hello EgoTop"
         for x in 0..120 {
             row.push_str(buf[(x, y)].symbol());
         }
-        if row.contains("EGOTOP") && row.contains("[FX:") {
+        if row.contains("EgoTop") && row.contains("[Fx:") {
             header_row = Some(row);
             break;
         }
     }
-    let row = header_row.expect("global header row with EGOTOP and [FX: ...] must render");
-    let egotop_col = row.find("EGOTOP").unwrap();
+    let row = header_row.expect("global header row with EgoTop and [Fx: ...] must render");
+    let egotop_col = row.find("EgoTop").unwrap();
     assert!(
         (50..=64).contains(&egotop_col),
-        "EGOTOP should be horizontally centered around col 57 (got {egotop_col}):\n{row}"
+        "EgoTop should be horizontally centered around col 57 (got {egotop_col}):\n{row}"
     );
 }
 
@@ -2972,6 +2980,94 @@ fn animations_respect_container_bounds_exclusion_mask_and_resize() {
         assert!(
             sys_top.contains(" System "),
             "Scene/background animation overwrote System title at {w}x{h}: {sys_top:?}"
+        );
+    }
+}
+
+#[test]
+fn column_alignment_and_normal_casing_across_sections() {
+    let mut cfg = Config::default();
+    cfg.background.effect = EffectKind::Particles;
+    let theme = Theme::from_config(&cfg.theme);
+    let area = Rect::new(0, 0, 120, 40);
+    let layout = compute_dashboard_layout(area, &cfg, ViewMode::Dashboard);
+    let mut collector = SystemCollector::new();
+    let snapshot = collector.collect(area.width, area.height);
+    let effect = create_effect(EffectKind::Particles, area.width, area.height, &cfg.background);
+    let mut anim_store = ComponentAnimationStore::new();
+    let catalog = AnimationCatalog::load();
+    anim_store.update_all(0.1, &layout, &cfg, &catalog);
+    let transition = TransitionPlayer::new("none", &catalog, 0);
+    let mut customizer = CustomizerState::default();
+    let cmd_line = CommandLineState::default();
+    let startup = CursorStartupState::new(false);
+    let reveal = RevealState::complete();
+    let themes = vec![ThemeEntry {
+        name: "matrix".to_string(),
+        theme: theme.clone(),
+        source_path: None,
+    }];
+    let ctx = RenderContext {
+        config: &cfg,
+        theme: &theme,
+        snapshot: &snapshot,
+        reveal: &reveal,
+        view_mode: ViewMode::Dashboard,
+        paused: false,
+        show_help: false,
+        fps: 30.0,
+        status_toast: None,
+        transparent_bg: false,
+        config_error_count: 0,
+    };
+
+    let backend = TestBackend::new(area.width, area.height);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal
+        .draw(|frame| {
+            draw_frame(
+                frame,
+                &cfg,
+                effect.as_ref(),
+                &transition,
+                &anim_store,
+                &mut customizer,
+                &cmd_line,
+                &startup,
+                &themes,
+                &catalog,
+                &ctx,
+            );
+        })
+        .unwrap();
+
+    let buf = terminal.backend().buffer();
+    let header_rect = layout.find_component("header").unwrap().inner_rect;
+    let header_line: String = (header_rect.x..header_rect.right())
+        .map(|x| buf.cell((x, header_rect.y)).unwrap().symbol())
+        .collect();
+    assert!(header_line.contains("EgoTop"), "Expected Title Case 'EgoTop' in header: {header_line:?}");
+    assert!(header_line.contains("[Fx: Particles]"), "Expected '[Fx: Particles]' in header: {header_line:?}");
+    assert!(!header_line.contains("EGOTOP") && !header_line.contains("[FX:"));
+
+    // Hardware progress bars must all align to the exact same start column
+    let hw = layout.find_component("hardware").unwrap();
+    let mut bar_cols = Vec::new();
+    for y in hw.inner_rect.y..hw.inner_rect.bottom() {
+        let row: String = (hw.inner_rect.x..hw.inner_rect.right())
+            .map(|x| buf.cell((x, y)).unwrap().symbol())
+            .collect();
+        if row.contains('█')
+            && let Some(col) = (hw.inner_rect.x..hw.inner_rect.right())
+                .position(|x| buf.cell((x, y)).unwrap().symbol() == "[")
+        {
+            bar_cols.push(col);
+        }
+    }
+    if bar_cols.len() >= 2 {
+        assert!(
+            bar_cols.iter().all(|&c| c == bar_cols[0]),
+            "Hardware progress bars must align at the same column, got: {bar_cols:?}"
         );
     }
 }
