@@ -38,18 +38,22 @@ pub struct RenderContext<'a> {
 
 impl<'a> RenderContext<'a> {
     pub fn panel_bg(&self) -> Color {
-        Color::Reset
+        self.theme.panel_background
     }
 
     pub fn panel_style(&self) -> Style {
-        Style::default().fg(self.theme.text).bg(Color::Reset)
+        Style::default()
+            .fg(self.theme.text)
+            .bg(self.theme.panel_background)
     }
 
     pub fn border_style(&self, override_color: Option<&str>) -> Style {
         let color = override_color
             .map(|c| parse_color(c, self.theme.border))
             .unwrap_or(self.theme.border);
-        Style::default().fg(color).bg(Color::Reset)
+        Style::default()
+            .fg(color)
+            .bg(self.theme.panel_background)
     }
 }
 

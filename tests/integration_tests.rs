@@ -2153,6 +2153,8 @@ message = "Press any key to start"
 #[test]
 fn transparency_preserves_background_animation_and_colors() {
     let mut cfg = Config::default();
+    cfg.theme.background = "transparent".to_string();
+    cfg.theme.panel_background = "transparent".to_string();
     cfg.background.enabled = true;
     cfg.background.effect = EffectKind::Matrix;
     cfg.background.density = 1.0;
@@ -2393,18 +2395,20 @@ fn container_isolation_and_independent_transparency_flags() {
     let opaque_rect = layout.find_container("opaque_box").unwrap().outer_rect;
     let trans_rect = layout.find_container("transparent_box").unwrap().outer_rect;
 
-    // Opaque container must have #112233 background inside its rect
-    assert_eq!(buf[(opaque_rect.x, opaque_rect.y)].bg, Color::Rgb(0x11, 0x22, 0x33));
-    // Transparent container must preserve global theme.background (since background_transparent = false)
-    assert_eq!(buf[(trans_rect.x, trans_rect.y)].bg, theme.background);
+    // Opaque container must have #112233 background inside its rect (or panel_background when child inherits theme)
+    assert_eq!(buf[(opaque_rect.x, opaque_rect.y)].bg, theme.panel_background);
+    // Transparent container's child component inherits theme.panel_background when theme is solid
+    assert_eq!(buf[(trans_rect.x, trans_rect.y)].bg, theme.panel_background);
 
-    // Now enable background_transparent = true -> transparent container must have Color::Reset,
+    // Now set theme background & panel_background to "transparent" -> transparent container must have Color::Reset,
     // while opaque container still keeps #112233
-    cfg.theme.background_transparent = true;
+    cfg.theme.background = "transparent".to_string();
+    cfg.theme.panel_background = "transparent".to_string();
+    let theme2 = Theme::from_config(&cfg.theme);
     let mut term2 = Terminal::new(TestBackend::new(80, 20)).unwrap();
     let rctx2 = RenderContext {
         config: &cfg,
-        theme: &theme,
+        theme: &theme2,
         snapshot: &snap,
         reveal: &reveal,
         view_mode: ViewMode::Dashboard,
@@ -2412,7 +2416,7 @@ fn container_isolation_and_independent_transparency_flags() {
         show_help: false,
         fps: 30.0,
         status_toast: None,
-        transparent_bg: false,
+        transparent_bg: true,
         config_error_count: 0,
     };
     term2
@@ -2783,7 +2787,8 @@ fn terminal_compatibility_diagnostics_and_check_command() {
 fn container_titles_render_without_borders_and_avoid_content_overlap() {
     let mut cfg = Config::default();
     cfg.theme.border_type = BorderStyle::None;
-    cfg.theme.background_transparent = true;
+    cfg.theme.background = "transparent".to_string();
+    cfg.theme.panel_background = "transparent".to_string();
 
     let area = Rect::new(0, 0, 120, 40);
     let layout = compute_dashboard_layout(area, &cfg, ViewMode::Dashboard);
@@ -3070,5 +3075,29 @@ fn column_alignment_and_normal_casing_across_sections() {
             bar_cols.iter().all(|&c| c == bar_cols[0]),
             "Hardware progress bars must align at the same column, got: {bar_cols:?}"
         );
+    }
+}
+
+#[test]
+fn theme_toml_controls_solid_and_transparent_backgrounds_for_app_and_containers() {
+    let themes_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("themes");
+    let expected = [
+        ("obsidian-solid.toml", Color::Rgb(0x0D, 0x0F, 0x14), Color::Rgb(0x16, 0x19, 0x22)),
+        ("glass-neon.toml", Color::Reset, Color::Reset),
+        ("frosted-slate.toml", Color::Reset, Color::Rgb(0x1E, 0x24, 0x30)),
+        ("solar-amber.toml", Color::Rgb(0x12, 0x0C, 0x06), Color::Reset),
+        ("cyber-void.toml", Color::Rgb(0x09, 0x06, 0x12), Color::Rgb(0x14, 0x0E, 0x24)),
+    ];
+
+    for (file, exp_bg, exp_panel) in expected {
+        let raw = std::fs::read_to_string(themes_dir.join(file)).unwrap();
+        #[derive(serde::Deserialize)]
+        struct Wrapped {
+            theme: egotop::config::ThemeConfig,
+        }
+        let parsed: Wrapped = toml::from_str(&raw).unwrap();
+        let theme = Theme::from_config(&parsed.theme);
+        assert_eq!(theme.background, exp_bg, "background mismatch in {file}");
+        assert_eq!(theme.panel_background, exp_panel, "panel_background mismatch in {file}");
     }
 }

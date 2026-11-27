@@ -71,11 +71,7 @@ pub fn draw_frame(
 ) {
     let area = frame.area();
 
-    let base_bg_color = if config.theme.background_transparent || ctx.transparent_bg {
-        Color::Reset
-    } else {
-        ctx.theme.background
-    };
+    let base_bg_color = ctx.theme.background;
     let base_bg = Style::default().fg(ctx.theme.text).bg(base_bg_color);
     frame.render_widget(Block::default().style(base_bg), area);
 
