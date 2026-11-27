@@ -777,6 +777,7 @@ fn check_unknown_fields(
                     "theme",
                     "typography",
                     "header",
+                    "footer",
                     "background",
                     "ui",
                     "container_styles",
@@ -877,6 +878,7 @@ fn check_unknown_fields(
                 "background",
                 &[
                     "transparent",
+                    "base",
                     "effect",
                     "enabled",
                     "speed",

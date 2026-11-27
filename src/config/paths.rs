@@ -11,12 +11,24 @@ pub fn main_config_path() -> PathBuf {
     root_path().join("egotop.toml")
 }
 
+pub fn main_lua_path() -> PathBuf {
+    root_path().join("egotop.lua")
+}
+
 pub fn themes_path() -> PathBuf {
     root_path().join("themes")
 }
 
 pub fn animations_path() -> PathBuf {
     root_path().join("animations")
+}
+
+pub fn fonts_path() -> PathBuf {
+    root_path().join("fonts")
+}
+
+pub fn effects_path() -> PathBuf {
+    root_path().join("effects")
 }
 
 pub fn layouts_path() -> PathBuf {

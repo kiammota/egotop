@@ -1,7 +1,7 @@
 use crate::config::{BorderStyle, Config, ViewMode};
 use crate::ui::container::{
-    ComponentConfig, ContainerBorderConfig, ContainerConfig, ContainerDirection, ContainerNode,
-    ContainerSize, ContainerStyle, EffectPolicy,
+    ComponentConfig, ContainerBorderConfig, ContainerConfig, ContainerDirection,
+    ContainerGradient, ContainerNode, ContainerSize, ContainerStyle, EffectPolicy,
 };
 use ratatui::layout::Rect;
 use std::collections::BTreeMap;
@@ -14,6 +14,8 @@ pub struct PlacedContainer {
     pub transparent: bool,
     pub border: ContainerBorderConfig,
     pub background: Option<String>,
+    pub gradient: Option<ContainerGradient>,
+    pub opacity: Option<f32>,
 }
 
 #[derive(Debug, Clone)]
@@ -232,6 +234,8 @@ fn layout_container_node(container: &ContainerConfig, outer_rect: Rect, out: &mu
         transparent: container.transparent,
         border: container.border.clone(),
         background: container.background.clone(),
+        gradient: container.gradient.clone(),
+        opacity: container.opacity,
     });
 
     if inner_rect.width == 0 || inner_rect.height == 0 {

@@ -2561,6 +2561,7 @@ fn container_styling_system_commands_gradient_effects_and_toml() {
                 direction: GradientDirection::Horizontal,
                 colors: vec!["#100020".to_string(), "#204080".to_string()],
             }),
+            opacity: None,
             effects: EffectPolicy::Allow,
         },
     );

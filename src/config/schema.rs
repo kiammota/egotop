@@ -1,6 +1,8 @@
 use crate::animation::BackgroundLayerSpec;
 use crate::ui::borders::BorderCharsConfig;
-use crate::ui::container::{BackgroundFill, ContainerConfig, ContainerStyle, default_ui_tree};
+use crate::ui::container::{
+    BackgroundFill, ContainerConfig, ContainerGradient, ContainerStyle, default_ui_tree,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -54,6 +56,32 @@ impl Default for InitConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
+pub struct FooterConfig {
+    pub enabled: bool,
+    pub text: String,
+    pub icon: Option<String>,
+    pub color: Option<String>,
+    pub align: Align,
+    pub animation: Option<String>,
+    pub fps: u32,
+}
+
+impl Default for FooterConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            text: "Monitoring system telemetry".to_string(),
+            icon: Some("spinner".to_string()),
+            color: None,
+            align: Align::Left,
+            animation: Some("spinner".to_string()),
+            fps: 12,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
 pub struct Config {
     pub general: GeneralConfig,
     pub init: InitConfig,
@@ -61,6 +89,7 @@ pub struct Config {
     pub theme: ThemeConfig,
     pub typography: TypographyConfig,
     pub header: HeaderConfig,
+    pub footer: FooterConfig,
     pub background: BackgroundConfig,
     pub ui: UiConfig,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -76,6 +105,7 @@ impl Default for Config {
             theme: ThemeConfig::default(),
             typography: TypographyConfig::default(),
             header: HeaderConfig::default(),
+            footer: FooterConfig::default(),
             background: BackgroundConfig::default(),
             ui: UiConfig::default(),
             container_styles: BTreeMap::new(),
@@ -331,11 +361,44 @@ impl Default for HeaderConfig {
     }
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum BackgroundBaseType {
+    #[default]
+    Theme,
+    Transparent,
+    Solid,
+    Gradient,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct BackgroundBaseConfig {
+    #[serde(rename = "type")]
+    pub kind: BackgroundBaseType,
+    pub color: Option<String>,
+    pub opacity: f32,
+    pub gradient: Option<ContainerGradient>,
+}
+
+impl Default for BackgroundBaseConfig {
+    fn default() -> Self {
+        Self {
+            kind: BackgroundBaseType::Theme,
+            color: None,
+            opacity: 1.0,
+            gradient: None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct BackgroundConfig {
     #[serde(default)]
     pub transparent: bool,
+    #[serde(default)]
+    pub base: BackgroundBaseConfig,
     pub effect: EffectKind,
     pub enabled: bool,
     pub speed: f32,
@@ -356,6 +419,7 @@ impl Default for BackgroundConfig {
     fn default() -> Self {
         Self {
             transparent: false,
+            base: BackgroundBaseConfig::default(),
             effect: EffectKind::Matrix,
             enabled: true,
             speed: 1.0,

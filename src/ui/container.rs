@@ -54,7 +54,7 @@ pub enum EffectPolicy {
     Isolated,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(default)]
 pub struct ContainerStyle {
     pub background: BackgroundFill,
@@ -62,6 +62,7 @@ pub struct ContainerStyle {
     pub border_color: Option<String>,
     pub border_style: Option<BorderStyle>,
     pub gradient: Option<ContainerGradient>,
+    pub opacity: Option<f32>,
     pub effects: EffectPolicy,
 }
 
@@ -204,6 +205,8 @@ pub struct ContainerConfig {
     pub gap: u16,
     pub border: ContainerBorderConfig,
     pub background: Option<String>,
+    pub gradient: Option<ContainerGradient>,
+    pub opacity: Option<f32>,
     pub children: Vec<ContainerNode>,
 }
 
@@ -224,6 +227,8 @@ impl Default for ContainerConfig {
             gap: 0,
             border: ContainerBorderConfig::default(),
             background: None,
+            gradient: None,
+            opacity: None,
             children: Vec::new(),
         }
     }

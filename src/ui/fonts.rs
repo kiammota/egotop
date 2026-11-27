@@ -458,8 +458,45 @@ impl BuiltinFont {
 }
 
 pub fn load_font(name: &str, ascii_fallback: bool) -> FigletFont {
-    let kind = BuiltinFont::from_name(name).unwrap_or(BuiltinFont::Standard);
-    build_builtin_font(kind, ascii_fallback)
+    use std::sync::{Mutex, OnceLock};
+    static FONT_CACHE: OnceLock<Mutex<HashMap<String, FigletFont>>> = OnceLock::new();
+
+    let requested = name.trim();
+    let effective_name = if ascii_fallback {
+        match requested.to_ascii_lowercase().as_str() {
+            "ansi shadow" | "ansi_shadow" => "Doom",
+            "block" => "Standard",
+            _ => requested,
+        }
+    } else {
+        requested
+    };
+
+    let cache_key = format!(
+        "{}:{}",
+        effective_name.to_ascii_lowercase(),
+        ascii_fallback
+    );
+    let cache = FONT_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Ok(guard) = cache.lock()
+        && let Some(cached) = guard.get(&cache_key)
+    {
+        return cached.clone();
+    }
+
+    if let Some(lua_font) = crate::lua::load_lua_font(effective_name) {
+        if let Ok(mut guard) = cache.lock() {
+            guard.insert(cache_key, lua_font.clone());
+        }
+        return lua_font;
+    }
+
+    let kind = BuiltinFont::from_name(effective_name).unwrap_or(BuiltinFont::Standard);
+    let built = build_builtin_font(kind, ascii_fallback);
+    if let Ok(mut guard) = cache.lock() {
+        guard.insert(cache_key, built.clone());
+    }
+    built
 }
 
 pub fn available_fonts() -> &'static [&'static str] {

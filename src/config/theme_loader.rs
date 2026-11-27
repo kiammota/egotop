@@ -19,17 +19,18 @@ struct WrappedThemeFile {
 }
 
 pub fn load_all_themes() -> BTreeMap<String, ThemeEntry> {
-    let mut map = BTreeMap::new();
+    crate::lua::load_all_lua_themes()
+}
+
+pub fn load_all_themes_with_legacy_fallback() -> BTreeMap<String, ThemeEntry> {
+    let mut map = crate::lua::load_all_lua_themes();
 
     for name in builtin_theme_names() {
-        map.insert(
-            (*name).to_string(),
-            ThemeEntry {
-                name: (*name).to_string(),
-                theme: preset_theme(name),
-                source_path: None,
-            },
-        );
+        map.entry((*name).to_string()).or_insert_with(|| ThemeEntry {
+            name: (*name).to_string(),
+            theme: preset_theme(name),
+            source_path: None,
+        });
     }
 
     let dir = paths::themes_path();
