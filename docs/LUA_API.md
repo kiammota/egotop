@@ -71,7 +71,7 @@ egotop.theme({
     theme = bamboo.setup,
     background = "transparent",
     panel_background = "transparent",
-    border_type = "rounded", -- "rounded" | "plain" | "double" | "thick" | "none"
+    border_type = "rounded", -- "rounded" | "plain" | "double" | "thick" | "ascii" | "none"
 })
 ```
 

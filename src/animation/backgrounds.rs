@@ -526,6 +526,31 @@ impl BackgroundPipeline {
         self.layers.clear();
     }
 
+    pub fn remove_layer(&mut self, index_or_name: &str) -> bool {
+        if let Ok(idx) = index_or_name.parse::<usize>() {
+            if idx > 0 && idx <= self.layers.len() {
+                self.layers.remove(idx - 1);
+                return true;
+            }
+        }
+        let target = index_or_name.trim().to_ascii_lowercase().replace('-', "_");
+        if let Some(pos) = self.layers.iter().position(|(_, layer)| {
+            match layer {
+                BackgroundLayerRuntime::Procedural { spec, .. } => {
+                    spec.effect.label().eq_ignore_ascii_case(&target)
+                }
+                BackgroundLayerRuntime::Legacy(eff) => {
+                    eff.kind().label().eq_ignore_ascii_case(&target)
+                }
+            }
+        }) {
+            self.layers.remove(pos);
+            true
+        } else {
+            false
+        }
+    }
+
     pub fn pause(&mut self) {
         self.paused = true;
     }

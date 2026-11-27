@@ -291,6 +291,7 @@ pub enum BorderStyle {
     Plain,
     Double,
     Thick,
+    Ascii,
     #[serde(alias = "off")]
     None,
 }
@@ -301,7 +302,8 @@ impl BorderStyle {
             Self::Rounded => Self::Plain,
             Self::Plain => Self::Double,
             Self::Double => Self::Thick,
-            Self::Thick => Self::None,
+            Self::Thick => Self::Ascii,
+            Self::Ascii => Self::None,
             Self::None => Self::Rounded,
         }
     }
@@ -312,6 +314,7 @@ impl BorderStyle {
             Self::Plain => "plain",
             Self::Double => "double",
             Self::Thick => "thick",
+            Self::Ascii => "ascii",
             Self::None => "none",
         }
     }

@@ -585,7 +585,6 @@ impl App {
         match parsed {
             ParsedCommand::Colorscheme(Some(_))
             | ParsedCommand::Set { .. }
-            | ParsedCommand::Effect(Some(_))
             | ParsedCommand::Layout(Some(_)) => true,
             ParsedCommand::Background(bcmd) => matches!(
                 bcmd,
@@ -593,6 +592,7 @@ impl App {
                     | BackgroundCommand::Stop
                     | BackgroundCommand::Pause
                     | BackgroundCommand::Resume
+                    | BackgroundCommand::Toggle(_)
                     | BackgroundCommand::Speed(_)
             ),
             ParsedCommand::Animation { action, .. } => matches!(
@@ -680,9 +680,6 @@ impl App {
             }
             ParsedCommand::Set { key, value } => {
                 self.execute_set_option(&key, &value);
-            }
-            ParsedCommand::Effect(Some(kind)) => {
-                self.set_effect_with_size(kind, viewport.width, viewport.height);
             }
             ParsedCommand::Layout(Some(sel)) => match sel {
                 LayoutSelection::View(view) => self.view_mode = view,
@@ -1129,15 +1126,6 @@ impl App {
             ParsedCommand::Background(bcmd) => {
                 self.execute_background_command(bcmd, guard)?;
             }
-            ParsedCommand::Effect(None) => {
-                let next = self.config.background.effect.next();
-                self.set_effect(next, guard)?;
-                self.set_toast(format!("Background effect: {}", next.label()));
-            }
-            ParsedCommand::Effect(Some(kind)) => {
-                self.set_effect(kind, guard)?;
-                self.set_toast(format!("Background effect: {}", kind.label()));
-            }
             ParsedCommand::Layout(None) => {
                 self.customizer.open_tab(CustomizerTab::Layout);
             }
@@ -1577,6 +1565,55 @@ impl App {
                 self.effect.resume();
                 self.set_toast("Background resumed");
             }
+            BackgroundCommand::Toggle(opt) => {
+                let target = opt.unwrap_or(!self.config.background.enabled);
+                self.config.background.enabled = target;
+                if target {
+                    if self.effect.layer_count() == 0 {
+                        let spec = BackgroundLayerSpec {
+                            effect: BackgroundLayerKind::MatrixRain,
+                            ..BackgroundLayerSpec::default()
+                        };
+                        self.config.background.layers = vec![spec.clone()];
+                        self.effect.set_single(
+                            spec,
+                            width,
+                            height,
+                            &self.config.background,
+                            &BTreeMap::new(),
+                        );
+                    }
+                    self.effect.resume();
+                    self.set_toast("Background enabled");
+                } else {
+                    self.effect.pause();
+                    self.set_toast("Background disabled");
+                }
+            }
+            BackgroundCommand::Remove(target) => {
+                let removed = self.effect.remove_layer(&target);
+                if removed {
+                    if let Ok(idx) = target.parse::<usize>() {
+                        if idx > 0 && idx <= self.config.background.layers.len() {
+                            self.config.background.layers.remove(idx - 1);
+                        }
+                    } else {
+                        let target_clean = target.trim().to_ascii_lowercase().replace('-', "_");
+                        if let Some(pos) = self.config.background.layers.iter().position(|l| {
+                            l.effect.label().eq_ignore_ascii_case(&target_clean)
+                        }) {
+                            self.config.background.layers.remove(pos);
+                        }
+                    }
+                    self.config.background.enabled = self.effect.layer_count() > 0;
+                    self.set_toast(format!(
+                        "Removed background layer '{target}' ({} active)",
+                        self.effect.layer_count()
+                    ));
+                } else {
+                    self.set_toast(format!("Background layer '{target}' not found"));
+                }
+            }
             BackgroundCommand::Speed(val_str) => {
                 if let Ok(spd) = val_str.parse::<f32>() {
                     let clamped = spd.clamp(0.1, 10.0);
@@ -1720,23 +1757,21 @@ mod tests {
         let mut app = test_app();
         let vp = Rect::new(0, 0, 100, 36);
 
-        // 1. :effect <Tab> previews effect and Esc restores original effect
-        let orig_effect = app.config.background.effect;
+        // 1. :background <Tab> previews effect and Esc restores original background
+        let orig_layers_count = app.effect.layer_count();
         let mut cmd = std::mem::take(&mut app.command_line);
         {
             let ctx = app.completion_ctx();
             cmd.open(&app.registry, &ctx);
-            for ch in "effect ".chars() {
+            for ch in "background set particles".chars() {
                 cmd.insert_char(ch, &app.registry, &ctx);
             }
-            cmd.next_suggestion(&app.registry, &ctx);
-            cmd.next_suggestion(&app.registry, &ctx);
         }
         app.command_line = cmd;
         app.maybe_preview_command_from_cmdline(vp);
-        assert_ne!(app.config.background.effect, orig_effect);
+        assert!(app.config.background.enabled);
         app.restore_command_preview(vp);
-        assert_eq!(app.config.background.effect, orig_effect);
+        assert_eq!(app.effect.layer_count(), orig_layers_count);
 
         // 2. :layout <Tab> previews view mode and Esc restores original view mode
         let orig_view = app.view_mode;

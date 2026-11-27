@@ -51,6 +51,8 @@ pub enum AnimationAction {
 pub enum BackgroundCommand {
     Set(String),
     Add(String),
+    Remove(String),
+    Toggle(Option<bool>),
     Stop,
     Pause,
     Resume,
@@ -83,7 +85,6 @@ pub enum ParsedCommand {
         name: Option<String>,
     },
     Background(BackgroundCommand),
-    Effect(Option<EffectKind>),
     Layout(Option<LayoutSelection>),
     Container(ContainerCommand),
     Set {
@@ -134,20 +135,6 @@ pub fn parse_command(raw: &str) -> Result<ParsedCommand, String> {
         )),
         "animation" | "anim" => parse_animation_command(&rest),
         "background" | "bg" => parse_background_command(&rest),
-        "effect" | "fx" => {
-            let Some(arg) = rest.first() else {
-                return Ok(ParsedCommand::Effect(None));
-            };
-            let kind = match arg.to_ascii_lowercase().as_str() {
-                "matrix" => EffectKind::Matrix,
-                "water" => EffectKind::Water,
-                "particles" => EffectKind::Particles,
-                "scanlines" => EffectKind::Scanlines,
-                "none" | "off" => EffectKind::None,
-                other => return Err(format!("Unknown effect '{other}'")),
-            };
-            Ok(ParsedCommand::Effect(Some(kind)))
-        }
         "layout" => parse_layout_command(&rest),
         "container" => parse_container_command(&rest),
         "set" => parse_set_command(&rest),
@@ -233,6 +220,20 @@ fn parse_background_command(args: &[&str]) -> Result<ParsedCommand, String> {
         "stop" | "clear" | "off" | "none" => BackgroundCommand::Stop,
         "pause" => BackgroundCommand::Pause,
         "resume" => BackgroundCommand::Resume,
+        "toggle" => {
+            let flag = args.get(1).and_then(|v| match v.to_ascii_lowercase().as_str() {
+                "on" | "true" | "1" => Some(true),
+                "off" | "false" | "0" => Some(false),
+                _ => None,
+            });
+            BackgroundCommand::Toggle(flag)
+        }
+        "remove" | "rm" | "del" => {
+            let Some(target) = args.get(1) else {
+                return Err("Usage: :background remove <index|name>".to_string());
+            };
+            BackgroundCommand::Remove((*target).to_string())
+        }
         "set" => {
             let Some(name) = args.get(1) else {
                 return Err("Usage: :background set <name>".to_string());

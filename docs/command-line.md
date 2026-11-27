@@ -144,17 +144,30 @@ All commands are registered in `CommandRegistry` (`src/command/registry.rs`), pa
   ```
 - **Expected behavior:** Updates `WindowManager` immediately and clamps geometry to the terminal viewport.
 
-### `:effect`
+### `:background`
 
-- **Aliases:** `:fx`
-- **Description:** Switch or cycle the ambient background effect.
-- **Syntax:** `:effect [matrix|water|particles|scanlines|none]`
+- **Aliases:** `:bg`
+- **Description:** Configure, layer, remove, toggle, pause, resume, or adjust animated background effects. All visual effects belong exclusively to the background system.
+- **Syntax:** `:background <set|add|remove|toggle|stop|pause|resume|speed|list> [arg]`
+- **Subcommands:**
+  - `set <name>`: Replace background with an effect (e.g. `matrix_rain`, `waves`, `particles`, `starfield`, `noise`, `scanlines`, `gradient`, `floating_chars`) or custom Lua background effect.
+  - `add <name>`: Stack an additional background effect layer.
+  - `remove <index|name>`: Remove an active background layer by 1-based index or effect name.
+  - `toggle [on|off]`: Toggle background rendering on or off.
+  - `stop`: Stop and clear all active background effects.
+  - `pause`: Pause background animation updates.
+  - `resume`: Resume background animation updates.
+  - `speed <0.1..10.0>`: Set global background speed multiplier.
+  - `list`: Show active background layer count and available effects.
 - **Examples:**
   ```text
-  :effect water
-  :effect none
+  :background set particles
+  :background add scanlines
+  :background speed 1.2
+  :background remove 2
+  :background toggle off
   ```
-- **Expected behavior:** Switches the active `BackgroundEffect` without restarting.
+- **Expected behavior:** Controls background effects directly without container interference.
 
 ### `:write`
 

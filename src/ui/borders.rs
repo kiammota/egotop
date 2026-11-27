@@ -82,6 +82,7 @@ impl BorderChars {
         ("plain", "Sharp single-line box borders (┌─┐)"),
         ("double", "Double-line box borders (╔═╗)"),
         ("thick", "Heavy thick box borders (┏━┓)"),
+        ("ascii", "Classic ASCII character box borders (+-+)"),
         ("none", "No borders"),
     ];
 
@@ -126,7 +127,7 @@ impl BorderChars {
                 bottom_separator: "╩".to_string(),
                 intersection: "╬".to_string(),
             },
-            BorderStyle::Thick | BorderStyle::None => Self {
+            BorderStyle::Thick => Self {
                 top_left: "┏".to_string(),
                 top_right: "┓".to_string(),
                 bottom_left: "┗".to_string(),
@@ -138,6 +139,32 @@ impl BorderChars {
                 top_separator: "┳".to_string(),
                 bottom_separator: "┻".to_string(),
                 intersection: "╋".to_string(),
+            },
+            BorderStyle::Ascii => Self {
+                top_left: "+".to_string(),
+                top_right: "+".to_string(),
+                bottom_left: "+".to_string(),
+                bottom_right: "+".to_string(),
+                horizontal: "-".to_string(),
+                vertical: "|".to_string(),
+                left_separator: "+".to_string(),
+                right_separator: "+".to_string(),
+                top_separator: "+".to_string(),
+                bottom_separator: "+".to_string(),
+                intersection: "+".to_string(),
+            },
+            BorderStyle::None => Self {
+                top_left: " ".to_string(),
+                top_right: " ".to_string(),
+                bottom_left: " ".to_string(),
+                bottom_right: " ".to_string(),
+                horizontal: " ".to_string(),
+                vertical: " ".to_string(),
+                left_separator: " ".to_string(),
+                right_separator: " ".to_string(),
+                top_separator: " ".to_string(),
+                bottom_separator: " ".to_string(),
+                intersection: " ".to_string(),
             },
         }
     }
@@ -242,9 +269,10 @@ pub fn parse_border_style(raw: &str) -> Result<BorderStyle, String> {
         "plain" | "solid" => Ok(BorderStyle::Plain),
         "double" => Ok(BorderStyle::Double),
         "thick" => Ok(BorderStyle::Thick),
+        "ascii" => Ok(BorderStyle::Ascii),
         "none" | "off" => Ok(BorderStyle::None),
         other => Err(format!(
-            "Invalid border style '{other}' (expected rounded, plain, double, thick, or none)"
+            "Invalid border style '{other}' (expected rounded, plain, double, thick, ascii, or none)"
         )),
     }
 }

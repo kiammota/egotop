@@ -7,7 +7,6 @@ pub enum CompletionProviderKind {
     Layout,
     Container,
     SetOption,
-    Effect,
     WriteTarget,
 }
 
@@ -83,12 +82,12 @@ impl CommandRegistry {
                 CommandDescriptor {
                     name: "background",
                     aliases: &["bg"],
-                    description: "Configure, layer, pause, resume, or stop animated backgrounds",
-                    usage: ":background <set|add|stop|pause|resume|speed|list> [arg]",
+                    description: "Configure, layer, pause, resume, toggle, or stop animated background effects",
+                    usage: ":background <set|add|remove|toggle|stop|pause|resume|speed|list> [arg]",
                     args: &[CommandArgSpec {
                         name: "[action] [arg]",
                         required: false,
-                        description: "set, add, stop, pause, resume, speed, or preset name",
+                        description: "set, add, remove, toggle, stop, pause, resume, speed, or effect name",
                     }],
                     provider: CompletionProviderKind::Background,
                 },
@@ -132,18 +131,7 @@ impl CommandRegistry {
                     args: &[],
                     provider: CompletionProviderKind::None,
                 },
-                CommandDescriptor {
-                    name: "effect",
-                    aliases: &["fx"],
-                    description: "Switch background ambient effect",
-                    usage: ":effect [matrix|water|particles|scanlines|none]",
-                    args: &[CommandArgSpec {
-                        name: "[name]",
-                        required: false,
-                        description: "Background effect name",
-                    }],
-                    provider: CompletionProviderKind::Effect,
-                },
+
                 CommandDescriptor {
                     name: "reload",
                     aliases: &["r"],

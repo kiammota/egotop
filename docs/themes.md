@@ -50,7 +50,7 @@ Every color field accepts:
 
 ### Border Styles in Themes
 
-`border_type` accepts `"rounded"`, `"plain"` (or alias `"solid"`), `"double"`, and `"thick"`. Optional `[theme.borders]` overrides individual border characters (see [borders.md](borders.md)).
+`border_type` accepts `"rounded"`, `"plain"` (or alias `"solid"`), `"double"`, `"thick"`, and `"ascii"`. Optional `[theme.borders]` overrides individual border characters (see [borders.md](borders.md)).
 
 ## Loading and Switching Themes at Runtime
 

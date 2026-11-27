@@ -91,41 +91,6 @@ impl CompletionEngine {
                     complete_container(&prev_args, &current_token, ctx.containers)
                 }
                 CompletionProviderKind::SetOption => complete_set_option(&prev_args, &current_token),
-                CompletionProviderKind::Effect => {
-                    if prev_args.is_empty() {
-                        let lua_effects = crate::lua::list_lua_effects();
-                        let mut cands: Vec<(&str, &str)> = vec![
-                            ("matrix", "Lua matrix falling glyphs background"),
-                            ("water", "Lua animated sine wave surface"),
-                            ("particles", "Lua floating glowing particles"),
-                            ("scanlines", "Lua CRT horizontal scanline bands"),
-                            ("starfield", "Lua multi-depth starfield"),
-                            ("noise", "Lua procedural noise field"),
-                            ("floating_chars", "Lua floating drifting glyphs"),
-                            ("none", "Static background with no ambient effect"),
-                        ];
-                        let extra: Vec<(String, String)> = lua_effects
-                            .into_iter()
-                            .filter(|n| !cands.iter().any(|(k, _)| k.eq_ignore_ascii_case(n)))
-                            .map(|n| (n.clone(), format!("Custom Lua effect 'effects.{n}'")))
-                            .collect();
-                        let mut out = complete_from_pairs(&current_token, &cands, None);
-                        for (name, desc) in extra {
-                            if name.starts_with(&current_token.to_ascii_lowercase()) {
-                                out.push(CompletionItem {
-                                    insert_text: name.clone(),
-                                    label: name,
-                                    description: desc,
-                                    expected_arg: None,
-                                });
-                            }
-                        }
-                        let _ = &mut cands;
-                        out
-                    } else {
-                        Vec::new()
-                    }
-                }
                 CompletionProviderKind::WriteTarget => {
                     if prev_args.is_empty() {
                         complete_from_pairs(
@@ -361,17 +326,32 @@ fn complete_background(
         let mut items = complete_from_pairs(
             &p,
             &[
-                ("set", "Replace background with a layer or scene background"),
-                ("add", "Stack an extra background layer"),
-                ("stop", "Stop and clear background layers"),
-                ("pause", "Pause background updates"),
-                ("resume", "Resume background updates"),
+                ("set", "Replace background with an effect or scene preset"),
+                ("add", "Stack an extra background effect layer"),
+                ("remove", "Remove a background effect layer by index or name"),
+                ("toggle", "Toggle background rendering on/off"),
+                ("stop", "Stop and clear all background effect layers"),
+                ("pause", "Pause background animation updates"),
+                ("resume", "Resume background animation updates"),
                 ("speed", "Adjust background speed multiplier"),
-                ("list", "Show active layers and available backgrounds"),
+                ("list", "Show active and available background effects"),
             ],
             Some("<arg>"),
         );
         items.extend(complete_from_pairs(&p, &presets, None));
+        let lua_effects = crate::lua::list_lua_effects();
+        for name in lua_effects {
+            if name.to_ascii_lowercase().starts_with(&p)
+                && !items.iter().any(|i| i.insert_text.eq_ignore_ascii_case(&name))
+            {
+                items.push(CompletionItem {
+                    insert_text: name.clone(),
+                    label: name.clone(),
+                    description: format!("Custom background effect 'effects.{name}'"),
+                    expected_arg: None,
+                });
+            }
+        }
         return items;
     }
 
@@ -379,6 +359,19 @@ fn complete_background(
         let sub = prev_args[0].to_ascii_lowercase();
         if matches!(sub.as_str(), "set" | "add" | "layer") {
             let mut items = complete_from_pairs(&p, &presets, None);
+            let lua_effects = crate::lua::list_lua_effects();
+            for name in lua_effects {
+                if name.to_ascii_lowercase().starts_with(&p)
+                    && !items.iter().any(|i| i.insert_text.eq_ignore_ascii_case(&name))
+                {
+                    items.push(CompletionItem {
+                        insert_text: name.clone(),
+                        label: name.clone(),
+                        description: format!("Custom background effect 'effects.{name}'"),
+                        expected_arg: None,
+                    });
+                }
+            }
             for entry in &catalog.entries {
                 if !entry.package.definition.backgrounds.is_empty()
                     && (entry.id.to_ascii_lowercase().starts_with(&p)
@@ -393,6 +386,30 @@ fn complete_background(
                 }
             }
             return items;
+        }
+        if sub == "toggle" {
+            return complete_from_pairs(
+                &p,
+                &[
+                    ("on", "Enable background rendering"),
+                    ("off", "Disable background rendering"),
+                ],
+                None,
+            );
+        }
+        if sub == "remove" || sub == "rm" || sub == "del" {
+            return complete_from_pairs(
+                &p,
+                &[
+                    ("1", "First background layer"),
+                    ("matrix_rain", "Remove matrix layer"),
+                    ("starfield", "Remove starfield layer"),
+                    ("particles", "Remove particles layer"),
+                    ("waves", "Remove waves layer"),
+                    ("scanlines", "Remove scanlines layer"),
+                ],
+                None,
+            );
         }
         if sub == "speed" {
             return complete_from_pairs(
@@ -583,7 +600,7 @@ fn complete_container(
                 ("background", "inherit | transparent | <color>"),
                 ("foreground", "Default content foreground color"),
                 ("border.color", "Border color override"),
-                ("border.style", "rounded | plain | double | thick | none"),
+                ("border.style", "rounded | plain | double | thick | ascii | none"),
                 ("effects", "exclude | allow | isolated"),
             ],
             None,

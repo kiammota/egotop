@@ -64,7 +64,7 @@ Every section uses TOML `#[serde(default)]` semantics: omitted fields fall back 
 | `muted` | string | `"#5F7D6B"` | `#RRGGBB`, named color, `"reset"`, or `""` | Secondary/label muted text |
 | `border` | string | `"#1F7A4C"` | `#RRGGBB`, named color, `"reset"`, or `""` | Default border color |
 | `danger` | string | `"#FF5555"` | `#RRGGBB`, named color, `"reset"`, or `""` | High-load / danger indicator |
-| `border_type` | string | `"rounded"` | `"rounded"` \| `"plain"` (`"solid"`) \| `"double"` \| `"thick"` | Base border character preset |
+| `border_type` | string | `"rounded"` | `"rounded"` \| `"plain"` (`"solid"`) \| `"double"` \| `"thick"` \| `"ascii"` | Base border character preset |
 | `borders.*` | optional string | unset | Single-width (`width == 1`) non-control char | Individual border overrides (see [borders.md](borders.md)) |
 
 ### `[typography]`

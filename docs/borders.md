@@ -27,6 +27,8 @@ Every border consists of 11 configurable single-cell characters plus a preset `s
 - `plain` (also accepted as `solid`): `┌ ┐ └ ┘ ─ │ ├ ┤ ┬ ┴ ┼`
 - `double`: `╔ ╗ ╚ ╝ ═ ║ ╠ ╣ ╦ ╩ ╬`
 - `thick`: `┏ ┓ ┗ ┛ ━ ┃ ┣ ┫ ┳ ┻ ╋`
+- `ascii`: `+ + + + - | + + + + +`
+- `none`: Sem bordas (espaço em branco)
 
 ## Runtime Customization
 
@@ -44,7 +46,7 @@ As soon as you press `Enter`, all panels, windows, and the autocomplete popup re
 
 ### Autocomplete Support
 
-Typing `:set border.` triggers contextual completion listing every property (`border.style`, `border.horizontal`, `border.vertical`, `border.top_left`, etc.). Typing `:set border.style ` suggests `rounded`, `plain`, `double`, and `thick`. Typing `:set border.horizontal ` suggests common single-width box-drawing characters.
+Typing `:set border.` triggers contextual completion listing every property (`border.style`, `border.horizontal`, `border.vertical`, `border.top_left`, etc.). Typing `:set border.style ` suggests `rounded`, `plain`, `double`, `thick`, and `ascii`. Typing `:set border.horizontal ` suggests common single-width box-drawing characters.
 
 ## Character Validation
 

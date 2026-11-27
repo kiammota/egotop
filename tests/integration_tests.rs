@@ -363,6 +363,14 @@ fn border_chars_validation_and_runtime_application() {
 
     assert_eq!(parse_border_style("solid").unwrap(), BorderStyle::Plain);
     assert_eq!(parse_border_style("double").unwrap(), BorderStyle::Double);
+    assert_eq!(parse_border_style("thick").unwrap(), BorderStyle::Thick);
+    assert_eq!(parse_border_style("ascii").unwrap(), BorderStyle::Ascii);
+    assert_eq!(parse_border_style("none").unwrap(), BorderStyle::None);
+
+    let ascii_set = BorderChars::from_style(BorderStyle::Ascii);
+    assert_eq!(ascii_set.top_left, "+");
+    assert_eq!(ascii_set.horizontal, "-");
+    assert_eq!(ascii_set.vertical, "|");
 }
 
 #[test]
@@ -1421,6 +1429,19 @@ count = 9999
         parse_command(":background stop").unwrap(),
         ParsedCommand::Background(BackgroundCommand::Stop)
     );
+    assert_eq!(
+        parse_command(":background remove 1").unwrap(),
+        ParsedCommand::Background(BackgroundCommand::Remove("1".to_string()))
+    );
+    assert_eq!(
+        parse_command(":background toggle").unwrap(),
+        ParsedCommand::Background(BackgroundCommand::Toggle(None))
+    );
+    assert_eq!(
+        parse_command(":background toggle on").unwrap(),
+        ParsedCommand::Background(BackgroundCommand::Toggle(Some(true)))
+    );
+    assert!(parse_command(":effect matrix").is_err());
 
     let registry = CommandRegistry::new();
     let themes = Vec::new();
