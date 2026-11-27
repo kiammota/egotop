@@ -5,18 +5,17 @@ use crate::config::animation_loader::{
 };
 use crate::config::schema::is_valid_color_spec;
 use crate::config::{
-    AnimationDefinition, AnimationPackage, BorderStyle, Config, LayoutConfig, PackageOrigin,
-    ThemeConfig, ThemeEntry, ViewMode, WidgetConfig, load_packages_from_dir,
-    validate_safe_asset_path,
+    AnimationDefinition, AnimationPackage, BorderStyle, Config, PackageOrigin, ThemeConfig,
+    ThemeEntry, ViewMode, load_packages_from_dir, validate_safe_asset_path,
 };
 use crate::runtime::diagnostics::{
     Diagnostic, line_col_from_offset, locate_field_in_toml, locate_value_in_toml,
 };
 use crate::runtime::registry::{ResourceId, ResourceKind, ResourceRegistry};
 use crate::ui::borders::BorderChars;
+use crate::ui::container::{ContainerConfig, ContainerNode};
 use crate::ui::fonts::{FigletFont, available_fonts};
 use crate::ui::theme::{Theme, builtin_theme_names, preset_theme};
-use crate::window::WindowConfig;
 use serde::Deserialize;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -33,8 +32,7 @@ pub struct ValidationContext<'a> {
 pub struct LayoutPreset {
     pub name: String,
     pub view_mode: Option<ViewMode>,
-    pub layout: LayoutConfig,
-    pub widgets: Vec<WidgetConfig>,
+    pub root: ContainerConfig,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -42,15 +40,13 @@ pub struct LayoutPreset {
 struct RawLayoutFile {
     name: Option<String>,
     view_mode: Option<ViewMode>,
-    layout: LayoutConfig,
-    widgets: Vec<WidgetConfig>,
+    root: ContainerConfig,
 }
 
 /// Typed payload emitted cleanly by Stage 1 (`parse_resource`).
 #[derive(Debug, Clone)]
 pub enum ParsedPayload {
     ApplicationConfig(Box<Config>),
-    WindowConfig(Box<WindowConfig>),
     Theme(Box<ThemeEntry>),
     Animation(Box<AnimationPackage>),
     Layout(Box<LayoutPreset>),
@@ -125,18 +121,6 @@ pub fn parse_resource(
                 dependencies: deps,
             })
         }
-        ResourceKind::WindowConfig => {
-            let win: WindowConfig = toml::from_str(&raw_text)
-                .map_err(|e| vec![toml_deserialize_diagnostic(path, &raw_text, &e)])?;
-            Ok(ParsedResource {
-                id: ResourceId::window_config(),
-                path: path.to_path_buf(),
-                raw_text,
-                toml_value: Some(toml_value),
-                payload: ParsedPayload::WindowConfig(Box::new(win)),
-                dependencies: Vec::new(),
-            })
-        }
         ResourceKind::Theme => {
             let cfg = if let Some(wrapped) = toml_value.get("theme") {
                 wrapped
@@ -177,11 +161,7 @@ pub fn parse_resource(
                 .filter(|n| !n.trim().is_empty())
                 .unwrap_or_else(|| key_hint.to_string());
             let mut deps = Vec::new();
-            for w in &raw_layout.widgets {
-                if let Some(font) = &w.font {
-                    deps.push(ResourceId::new(ResourceKind::Font, font));
-                }
-            }
+            collect_container_font_deps(&raw_layout.root, &mut deps);
             let id = ResourceId::new(ResourceKind::Layout, &name);
             Ok(ParsedResource {
                 id,
@@ -191,8 +171,7 @@ pub fn parse_resource(
                 payload: ParsedPayload::Layout(Box::new(LayoutPreset {
                     name,
                     view_mode: raw_layout.view_mode,
-                    layout: raw_layout.layout,
-                    widgets: raw_layout.widgets,
+                    root: raw_layout.root,
                 })),
                 dependencies: deps,
             })
@@ -398,17 +377,6 @@ pub fn validate_schema(parsed: &ParsedResource) -> Vec<Diagnostic> {
                 );
             }
         }
-        ParsedPayload::WindowConfig(win) => {
-            if win.padding > 10 {
-                let (l, c) = locate_value_in_toml(raw, "padding");
-                diags.push(
-                    Diagnostic::error("E1005", "window padding exceeds maximum (10)")
-                        .with_location(Some(path), l, c)
-                        .with_field("padding")
-                        .with_expected_actual("0..=10", win.padding.to_string()),
-                );
-            }
-        }
         ParsedPayload::Theme(entry) => {
             if entry.name.trim().is_empty() {
                 diags.push(
@@ -472,13 +440,11 @@ pub fn validate_schema(parsed: &ParsedResource) -> Vec<Diagnostic> {
             }
         }
         ParsedPayload::Layout(preset) => {
-            if preset.layout.min_width_for_split == 0 {
-                let (l, c) = locate_value_in_toml(raw, "min_width_for_split");
+            if preset.root.id.trim().is_empty() {
                 diags.push(
-                    Diagnostic::error("E1005", "layout.min_width_for_split must be >= 1")
-                        .with_location(Some(path), l, c)
-                        .with_field("layout.min_width_for_split")
-                        .with_expected_actual(">= 1", "0"),
+                    Diagnostic::error("E1005", "layout.root.id cannot be empty")
+                        .with_location(Some(path), Some(1), Some(1))
+                        .with_field("root.id"),
                 );
             }
         }
@@ -728,39 +694,7 @@ pub fn validate_semantics(
             }
         }
         ParsedPayload::Layout(preset) => {
-            for w in &preset.widgets {
-                if let Some(font) = &w.font {
-                    validate_font_ref(
-                        font,
-                        "widgets.font",
-                        path,
-                        raw,
-                        ctx.fonts,
-                        &mut diags,
-                    );
-                }
-                if let Some(c) = &w.color
-                    && !is_valid_color_spec(c)
-                {
-                    diags.push(
-                        Diagnostic::error("E1004", format!("Invalid widget color '{c}'"))
-                            .with_location(Some(path), None, None)
-                            .with_field("widgets.color"),
-                    );
-                }
-            }
-        }
-        ParsedPayload::WindowConfig(win) => {
-            if let Some(c) = &win.border.color
-                && !is_valid_color_spec(c)
-            {
-                let (l, col) = locate_value_in_toml(raw, "color");
-                diags.push(
-                    Diagnostic::error("E1004", format!("Invalid window border color: \"{c}\""))
-                        .with_location(Some(path), l, col)
-                        .with_field("border.color"),
-                );
-            }
+            validate_container_semantics(&preset.root, path, raw, ctx, &mut diags);
         }
         ParsedPayload::Font { .. } => {}
     }
@@ -843,9 +777,7 @@ fn check_unknown_fields(
                     "typography",
                     "header",
                     "background",
-                    "layout",
-                    "widgets",
-                    "windows",
+                    "ui",
                 ],
                 "",
                 path,
@@ -981,48 +913,10 @@ fn check_unknown_fields(
                 diags,
             );
         }
-        ResourceKind::WindowConfig => {
-            check_allowed_keys(
-                root,
-                &[
-                    "id",
-                    "title",
-                    "context",
-                    "position",
-                    "anchor",
-                    "x",
-                    "y",
-                    "offset_x",
-                    "offset_y",
-                    "width",
-                    "height",
-                    "min_width",
-                    "min_height",
-                    "draggable",
-                    "movable",
-                    "resizable",
-                    "minimizable",
-                    "maximizable",
-                    "fullscreen",
-                    "visible",
-                    "static",
-                    "layer",
-                    "z_index",
-                    "overlap",
-                    "padding",
-                    "border",
-                    "background",
-                ],
-                "",
-                path,
-                raw,
-                diags,
-            );
-        }
         ResourceKind::Layout => {
             check_allowed_keys(
                 root,
-                &["name", "view_mode", "layout", "widgets"],
+                &["name", "view_mode", "root"],
                 "",
                 path,
                 raw,
@@ -1030,6 +924,58 @@ fn check_unknown_fields(
             );
         }
         ResourceKind::Animation | ResourceKind::Background | ResourceKind::Font => {}
+    }
+}
+
+fn collect_container_font_deps(container: &ContainerConfig, deps: &mut Vec<ResourceId>) {
+    for child in &container.children {
+        match child {
+            ContainerNode::Container(sub) => collect_container_font_deps(sub, deps),
+            ContainerNode::Component(comp) => {
+                if let Some(font) = &comp.visual.font {
+                    deps.push(ResourceId::new(ResourceKind::Font, font));
+                }
+            }
+        }
+    }
+}
+
+fn validate_container_semantics(
+    container: &ContainerConfig,
+    path: &Path,
+    raw: &str,
+    ctx: &ValidationContext<'_>,
+    diags: &mut Vec<Diagnostic>,
+) {
+    if let Some(c) = &container.border.color
+        && !is_valid_color_spec(c)
+    {
+        diags.push(
+            Diagnostic::error("E1004", format!("Invalid container border color '{c}'"))
+                .with_location(Some(path), None, None)
+                .with_field("border.color"),
+        );
+    }
+    for child in &container.children {
+        match child {
+            ContainerNode::Container(sub) => {
+                validate_container_semantics(sub, path, raw, ctx, diags);
+            }
+            ContainerNode::Component(comp) => {
+                if let Some(font) = &comp.visual.font {
+                    validate_font_ref(font, "visual.font", path, raw, ctx.fonts, diags);
+                }
+                if let Some(c) = &comp.visual.color
+                    && !is_valid_color_spec(c)
+                {
+                    diags.push(
+                        Diagnostic::error("E1004", format!("Invalid component color '{c}'"))
+                            .with_location(Some(path), None, None)
+                            .with_field("visual.color"),
+                    );
+                }
+            }
+        }
     }
 }
 

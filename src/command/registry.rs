@@ -6,7 +6,6 @@ pub enum CompletionProviderKind {
     Background,
     Layout,
     SetOption,
-    Window,
     Effect,
     WriteTarget,
 }
@@ -95,26 +94,14 @@ impl CommandRegistry {
                 CommandDescriptor {
                     name: "layout",
                     aliases: &[],
-                    description: "Switch layout mode or load a layout preset",
+                    description: "Switch view mode or load a container layout preset",
                     usage: ":layout [load|mode] [name]",
                     args: &[CommandArgSpec {
                         name: "[name]",
                         required: false,
-                        description: "Layout mode or preset name",
+                        description: "View mode or layout preset name",
                     }],
                     provider: CompletionProviderKind::Layout,
-                },
-                CommandDescriptor {
-                    name: "window",
-                    aliases: &["win"],
-                    description: "Configure window anchor, borders, background, and behavior",
-                    usage: ":window [subcommand] [value]",
-                    args: &[CommandArgSpec {
-                        name: "[subcommand]",
-                        required: false,
-                        description: "center, anchor, border, bg, drag, resize, padding, reset",
-                    }],
-                    provider: CompletionProviderKind::Window,
                 },
                 CommandDescriptor {
                     name: "effect",
@@ -156,7 +143,7 @@ impl CommandRegistry {
                     name: "write",
                     aliases: &["w"],
                     description: "Write runtime settings to ~/.config/egotop/",
-                    usage: ":write [all|config|window|theme]",
+                    usage: ":write [all|config|theme]",
                     args: &[CommandArgSpec {
                         name: "[target]",
                         required: false,

@@ -4,11 +4,10 @@ use crate::animation::{
 };
 use crate::command::{
     AnimationAction, BackgroundCommand, CommandLineState, CommandRegistry, CompletionContext,
-    LayoutSelection, ParsedCommand, WindowCommand, WriteTarget, parse_command,
+    LayoutSelection, ParsedCommand, WriteTarget, parse_command,
 };
 use crate::config::{
-    Config, EffectKind, StartupMode, StartupTrigger, ThemeEntry, ViewMode, load_or_create_window_config,
-    save_config_to_path, save_window_config,
+    Config, EffectKind, StartupMode, StartupTrigger, ThemeEntry, ViewMode, save_config_to_path,
 };
 use crate::runtime::{
     ConfigurationRuntime, LayoutPreset, ManagedAppTarget, RuntimeCommit, RuntimePaths,
@@ -18,16 +17,15 @@ use crate::system::{SystemCollector, SystemSnapshot};
 use crate::terminal::TerminalGuard;
 use crate::terminal::input::{InputEvent, poll_event};
 use crate::terminal::renderer::{CursorStartupState, draw_frame};
-use crate::ui::RevealState;
 use crate::ui::borders::parse_border_style;
 use crate::ui::customizer::{
-    CustomizerState, CustomizerTab, DiagnosticsOverlayState, DiagnosticsViewMode, cycle_anchor,
-    cycle_border_style, cycle_layout_mode, layout_items_summary, render_diagnostics_overlay,
-    toggle_widget_enabled, window_items_summary,
+    CustomizerState, CustomizerTab, DiagnosticsOverlayState, DiagnosticsViewMode,
+    collect_component_ids, layout_items_summary, render_diagnostics_overlay,
+    toggle_component_visible,
 };
 use crate::ui::theme::Theme;
-use crate::ui::widgets::{RenderContext, window_config_button_rect, window_help_button_rect};
-use crate::window::{PositionMode, WindowBackgroundMode, WindowConfig, WindowManager};
+use crate::ui::widgets::RenderContext;
+use crate::ui::{ComponentAnimationStore, RevealState, compute_dashboard_layout};
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
@@ -38,7 +36,6 @@ use std::time::{Duration, Instant};
 pub struct App {
     config: Config,
     config_path: PathBuf,
-    windows: WindowManager,
     themes_map: BTreeMap<String, ThemeEntry>,
     theme_list: Vec<ThemeEntry>,
     theme: Theme,
@@ -51,12 +48,12 @@ pub struct App {
     collector: SystemCollector,
     snapshot: SystemSnapshot,
     effect: BackgroundPipeline,
+    anim_store: ComponentAnimationStore,
     reveal: RevealState,
     command_line: CommandLineState,
     customizer: CustomizerState,
     diagnostics_ui: DiagnosticsOverlayState,
     runtime: ConfigurationRuntime,
-    active_page: u8,
     view_mode: ViewMode,
     paused: bool,
     show_help: bool,
@@ -73,11 +70,9 @@ impl App {
         width: u16,
         height: u16,
     ) -> Self {
-        let win_cfg = load_or_create_window_config();
         let runtime = ConfigurationRuntime::start(
             RuntimePaths::default_with_config(config_path.clone()),
             config,
-            win_cfg,
             true,
         );
         let lkg = runtime.state().clone();
@@ -85,13 +80,6 @@ impl App {
         let themes_map = lkg.themes;
         let theme = resolve_active_theme(&config, &themes_map);
         let theme_list: Vec<ThemeEntry> = themes_map.values().cloned().collect();
-
-        let mut windows = if config.windows.is_empty() {
-            WindowManager::new(lkg.window)
-        } else {
-            WindowManager::from_configs(config.windows.values().cloned().collect())
-        };
-        windows.resolve_all(Rect::new(0, 0, width, height));
 
         let animations = lkg.animations;
         let layouts_map = lkg.layouts;
@@ -111,14 +99,12 @@ impl App {
         let mut collector = SystemCollector::new();
         let snapshot = collector.collect(width, height);
         let effect = BackgroundPipeline::from_config(&config.background, width, height);
-        let active_page = config.general.default_page.max(1);
         let view_mode = config.general.view_mode;
         let fps = config.general.animation_fps as f32;
 
         Self {
             config,
             config_path,
-            windows,
             themes_map,
             theme_list,
             theme,
@@ -131,6 +117,7 @@ impl App {
             collector,
             snapshot,
             effect,
+            anim_store: ComponentAnimationStore::new(),
             reveal: if is_cursor_startup {
                 RevealState::complete()
             } else {
@@ -140,7 +127,6 @@ impl App {
             customizer: CustomizerState::default(),
             diagnostics_ui: DiagnosticsOverlayState::default(),
             runtime,
-            active_page,
             view_mode,
             paused: false,
             show_help: false,
@@ -153,8 +139,6 @@ impl App {
     pub fn run(&mut self) -> Result<()> {
         let mut guard = TerminalGuard::enter()?;
         let initial_size = guard.terminal.size()?;
-        let viewport = Rect::new(0, 0, initial_size.width, initial_size.height);
-        self.windows.resolve_all(viewport);
         self.effect
             .resize(initial_size.width, initial_size.height, &self.config.background);
         self.snapshot = self
@@ -201,33 +185,36 @@ impl App {
                     self.config.startup.cursor.blink_interval,
                 );
             } else if !self.paused {
+                let sz = guard.terminal.size()?;
+                let vp = Rect::new(0, 0, sz.width, sz.height);
+                let layout = compute_dashboard_layout(vp, &self.config, self.view_mode);
                 self.effect.update(dt, &self.config.background);
+                self.anim_store
+                    .update_all(dt, &layout, &self.config, &self.animations);
                 self.transition.update(dt);
                 self.reveal.advance(dt);
             }
 
             let toast_text = self.status_toast.as_ref().map(|(s, _)| s.as_str());
-            let window_transparent =
-                self.windows.main_window().config.background.mode == WindowBackgroundMode::Transparent;
+            let transparent_bg = self.theme.background == ratatui::style::Color::Reset;
             let ctx = RenderContext {
                 config: &self.config,
                 theme: &self.theme,
                 snapshot: &self.snapshot,
                 reveal: &self.reveal,
-                active_page: self.active_page,
                 view_mode: self.view_mode,
                 paused: self.paused,
                 show_help: self.show_help,
                 fps: self.fps,
                 status_toast: toast_text,
-                window_transparent,
+                transparent_bg,
                 config_error_count: self.runtime.diagnostics().error_count(),
             };
 
             let config_ref = &self.config;
             let effect_ref: &dyn BackgroundEffect = &self.effect;
             let transition_ref = &self.transition;
-            let windows_ref = &mut self.windows;
+            let anim_store_ref = &self.anim_store;
             let customizer_ref = &mut self.customizer;
             let diagnostics_ui_ref = &mut self.diagnostics_ui;
             let diagnostics_ref = self.runtime.diagnostics();
@@ -242,7 +229,7 @@ impl App {
                     config_ref,
                     effect_ref,
                     transition_ref,
-                    windows_ref,
+                    anim_store_ref,
                     customizer_ref,
                     cmd_ref,
                     startup_ref,
@@ -281,7 +268,6 @@ impl App {
 
     fn trigger_cursor_startup(&mut self, origin: (u16, u16), viewport: Rect) {
         self.startup_cursor.pending = false;
-        self.windows.resolve_all(viewport);
         self.snapshot = self.collector.collect(viewport.width, viewport.height);
         self.transition.restart_from_origin(
             &self.config.startup.animation,
@@ -304,8 +290,6 @@ impl App {
         if self.startup_cursor.pending {
             match ev {
                 InputEvent::Resize(w, h) => {
-                    let vp = Rect::new(0, 0, w, h);
-                    self.windows.resolve_all(vp);
                     self.effect.resize(w, h, &self.config.background);
                 }
                 InputEvent::Mouse(mouse) => {
@@ -344,8 +328,6 @@ impl App {
 
         match ev {
             InputEvent::Resize(w, h) => {
-                let vp = Rect::new(0, 0, w, h);
-                self.windows.resolve_all(vp);
                 self.effect.resize(w, h, &self.config.background);
                 self.snapshot = self.collector.collect(w, h);
             }
@@ -370,7 +352,7 @@ impl App {
     fn handle_mouse(
         &mut self,
         mouse: MouseEvent,
-        viewport: Rect,
+        _viewport: Rect,
         guard: &TerminalGuard,
     ) -> Result<()> {
         if self.customizer.open {
@@ -399,41 +381,6 @@ impl App {
                     }
                 }
             }
-            return Ok(());
-        }
-
-        match mouse.kind {
-            MouseEventKind::Down(MouseButton::Left) => {
-                let win_rect = self.windows.main_window().resolved_rect;
-                let cfg_btn = window_config_button_rect(win_rect);
-                if cfg_btn.width > 0
-                    && mouse.column >= cfg_btn.x
-                    && mouse.column < cfg_btn.right()
-                    && mouse.row == cfg_btn.y
-                {
-                    self.customizer.open_tab(CustomizerTab::Themes);
-                    return Ok(());
-                }
-                let help_btn = window_help_button_rect(win_rect);
-                if help_btn.width > 0
-                    && mouse.column >= help_btn.x
-                    && mouse.column < help_btn.right()
-                    && mouse.row == help_btn.y
-                {
-                    self.show_help = !self.show_help;
-                    return Ok(());
-                }
-                self.windows
-                    .begin_mouse_down(mouse.column, mouse.row, viewport);
-            }
-            MouseEventKind::Drag(MouseButton::Left) => {
-                self.windows
-                    .update_mouse_drag(mouse.column, mouse.row, viewport);
-            }
-            MouseEventKind::Up(MouseButton::Left) => {
-                self.windows.end_mouse_drag();
-            }
-            _ => {}
         }
         Ok(())
     }
@@ -538,7 +485,6 @@ impl App {
         match self.customizer.tab {
             CustomizerTab::Themes => self.theme_list.len(),
             CustomizerTab::Animations => self.animations.entries.len(),
-            CustomizerTab::Window => window_items_summary(&self.windows.main_window().config).len(),
             CustomizerTab::Layout => layout_items_summary(&self.config).len(),
         }
     }
@@ -601,52 +547,9 @@ impl App {
                     }
                 }
             }
-            CustomizerTab::Window => {
-                let sz = guard.terminal.size()?;
-                let vp = Rect::new(0, 0, sz.width, sz.height);
-                {
-                    let win = self.windows.main_window_mut();
-                    match idx {
-                        0 => {
-                            win.config.position = PositionMode::Relative;
-                            win.config.anchor = cycle_anchor(win.config.anchor);
-                            win.config.offset_x = 0;
-                            win.config.offset_y = 0;
-                        }
-                        1 => {
-                            cycle_border_style(&mut win.config);
-                            let style = win.config.border.style;
-                            self.theme.set_border_style(style);
-                        }
-                        2 => {
-                            win.config.background.mode = match win.config.background.mode {
-                                WindowBackgroundMode::Solid => WindowBackgroundMode::Transparent,
-                                WindowBackgroundMode::Transparent => WindowBackgroundMode::Solid,
-                            };
-                        }
-                        3 => {
-                            win.config.padding = (win.config.padding + 1) % 5;
-                        }
-                        4 => win.config.movable = !win.config.movable,
-                        5 => win.config.resizable = !win.config.resizable,
-                        6 => win.config = WindowConfig::default(),
-                        7 => {
-                            let cfg_clone = win.config.clone();
-                            match save_window_config(&cfg_clone) {
-                                Ok(()) => self.set_toast("Saved window settings to window.toml"),
-                                Err(e) => self.set_toast(format!("Save error: {e}")),
-                            }
-                            return Ok(());
-                        }
-                        _ => {}
-                    }
-                }
-                self.windows.resolve_all(vp);
-            }
             CustomizerTab::Layout => match idx {
-                0 => self.config.layout.mode = cycle_layout_mode(self.config.layout.mode),
-                1 => self.view_mode = self.view_mode.next(),
-                2 => {
+                0 => self.view_mode = self.view_mode.next(),
+                1 => {
                     let next = self.config.background.effect.next();
                     self.set_effect(next, guard)?;
                 }
@@ -657,15 +560,17 @@ impl App {
                         Err(e) => self.set_toast(format!("Save error: {e}")),
                     }
                 }
-                widget_idx => {
-                    let w_pos = widget_idx.saturating_sub(3);
-                    if let Some(id) = self.config.widgets.get(w_pos).map(|w| w.id) {
-                        let now_on = toggle_widget_enabled(&mut self.config, id);
-                        self.set_toast(format!(
-                            "{}: {}",
-                            id.default_title(),
-                            if now_on { "visible" } else { "hidden" }
-                        ));
+                comp_idx => {
+                    let mut comps = Vec::new();
+                    collect_component_ids(&self.config.ui.root, &mut comps);
+                    if let Some((id, _)) = comps.get(comp_idx.saturating_sub(2)) {
+                        let id = id.clone();
+                        if let Some(now_on) = toggle_component_visible(&mut self.config.ui.root, &id) {
+                            self.set_toast(format!(
+                                "{id}: {}",
+                                if now_on { "visible" } else { "hidden" }
+                            ));
+                        }
                     }
                 }
             },
@@ -674,17 +579,7 @@ impl App {
     }
 
     fn save_active_tab_settings(&mut self) {
-        match self.customizer.tab {
-            CustomizerTab::Window => {
-                match save_window_config(&self.windows.main_window().config) {
-                    Ok(()) => self.set_toast("Saved window settings to ~/.config/egotop/window.toml"),
-                    Err(e) => self.set_toast(format!("Save error: {e}")),
-                }
-            }
-            _ => {
-                self.save_main_config();
-            }
-        }
+        self.save_main_config();
     }
 
     fn save_main_config(&mut self) {
@@ -700,7 +595,7 @@ impl App {
         &mut self,
         key: KeyEvent,
         guard: &mut TerminalGuard,
-        viewport: Rect,
+        _viewport: Rect,
         last_sys_refresh: &mut Instant,
     ) -> Result<()> {
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
@@ -766,26 +661,6 @@ impl App {
                 self.set_effect(next, guard)?;
                 self.set_toast(format!("Background effect: {}", next.label()));
             }
-            KeyCode::Char(d @ '1'..='3') => {
-                self.active_page = (d as u8) - b'0';
-                self.set_toast(format!("Page {}", self.active_page));
-            }
-            KeyCode::Left if key.modifiers.contains(KeyModifiers::SHIFT) => {
-                self.windows.resize_main_by(-2, 0, viewport);
-            }
-            KeyCode::Right if key.modifiers.contains(KeyModifiers::SHIFT) => {
-                self.windows.resize_main_by(2, 0, viewport);
-            }
-            KeyCode::Up if key.modifiers.contains(KeyModifiers::SHIFT) => {
-                self.windows.resize_main_by(0, -1, viewport);
-            }
-            KeyCode::Down if key.modifiers.contains(KeyModifiers::SHIFT) => {
-                self.windows.resize_main_by(0, 1, viewport);
-            }
-            KeyCode::Left => self.windows.nudge_main(-2, 0, viewport),
-            KeyCode::Right => self.windows.nudge_main(2, 0, viewport),
-            KeyCode::Up => self.windows.nudge_main(0, -1, viewport),
-            KeyCode::Down => self.windows.nudge_main(0, 1, viewport),
             _ => {}
         }
         Ok(())
@@ -795,7 +670,7 @@ impl App {
         &mut self,
         raw: &str,
         guard: &TerminalGuard,
-        viewport: Rect,
+        _viewport: Rect,
     ) -> Result<()> {
         let parsed = match parse_command(raw) {
             Ok(cmd) => cmd,
@@ -934,10 +809,6 @@ impl App {
                 self.customizer.open_tab(CustomizerTab::Layout);
             }
             ParsedCommand::Layout(Some(sel)) => match sel {
-                LayoutSelection::Mode(mode) => {
-                    self.config.layout.mode = mode;
-                    self.set_toast(format!("Layout mode: {mode:?}"));
-                }
                 LayoutSelection::View(view) => {
                     self.view_mode = view;
                     self.set_toast(format!("View mode: {}", view.label()));
@@ -945,12 +816,9 @@ impl App {
                 LayoutSelection::Preset(name) => {
                     let key = name.trim().to_ascii_lowercase();
                     if let Some(preset) = self.layouts_map.get(&key).cloned() {
-                        self.config.layout = preset.layout;
+                        self.config.ui.root = preset.root;
                         if let Some(vm) = preset.view_mode {
                             self.view_mode = vm;
-                        }
-                        if !preset.widgets.is_empty() {
-                            self.config.widgets = preset.widgets;
                         }
                         self.set_toast(format!("Applied layout preset '{}'", preset.name));
                     } else {
@@ -960,9 +828,6 @@ impl App {
                     }
                 }
             },
-            ParsedCommand::Window(wcmd) => {
-                self.execute_window_command(wcmd, viewport);
-            }
         }
         Ok(())
     }
@@ -990,7 +855,6 @@ impl App {
             match parse_border_style(value) {
                 Ok(style) => {
                     self.config.theme.border_type = style;
-                    self.windows.main_window_mut().config.border.style = style;
                     self.theme.set_border_style(style);
                     self.set_toast(format!("Border style set to '{}'", style.label()));
                 }
@@ -1020,95 +884,10 @@ impl App {
 
     fn execute_write(&mut self, target: WriteTarget) {
         match target {
-            WriteTarget::Config | WriteTarget::Theme => {
+            WriteTarget::Config | WriteTarget::Theme | WriteTarget::All => {
                 self.save_main_config();
             }
-            WriteTarget::Window => match save_window_config(&self.windows.main_window().config) {
-                Ok(()) => self.set_toast("Saved window settings to ~/.config/egotop/window.toml"),
-                Err(e) => self.set_toast(format!("Save error: {e}")),
-            },
-            WriteTarget::All => {
-                self.config.general.view_mode = self.view_mode;
-                self.config.theme.borders = self.theme.borders.to_config();
-                let res_main = save_config_to_path(&self.config_path, &self.config);
-                let res_win = save_window_config(&self.windows.main_window().config);
-                match (res_main, res_win) {
-                    (Ok(()), Ok(())) => {
-                        self.set_toast("Wrote all settings to ~/.config/egotop/");
-                    }
-                    (Err(e), _) | (_, Err(e)) => self.set_toast(format!("Write error: {e}")),
-                }
-            }
         }
-    }
-
-    fn execute_window_command(&mut self, wcmd: WindowCommand, viewport: Rect) {
-        if matches!(wcmd, WindowCommand::OpenInspector) {
-            self.customizer.open_tab(CustomizerTab::Window);
-            return;
-        }
-        let mut new_border_style = None;
-        let toast_msg: Option<String> = {
-            let win = self.windows.main_window_mut();
-            match wcmd {
-                WindowCommand::OpenInspector => None,
-                WindowCommand::Center => {
-                    win.config.position = PositionMode::Relative;
-                    win.config.anchor = crate::config::Anchor::Center;
-                    win.config.offset_x = 0;
-                    win.config.offset_y = 0;
-                    Some("Window centered".to_string())
-                }
-                WindowCommand::SetAnchor(a) => {
-                    win.config.position = PositionMode::Relative;
-                    win.config.anchor = a;
-                    win.config.offset_x = 0;
-                    win.config.offset_y = 0;
-                    Some(format!("Window anchor set to {a:?}"))
-                }
-                WindowCommand::SetDraggable(opt) => {
-                    win.config.movable = opt.unwrap_or(!win.config.movable);
-                    Some(format!("Window movable: {}", win.config.movable))
-                }
-                WindowCommand::SetResizable(opt) => {
-                    win.config.resizable = opt.unwrap_or(!win.config.resizable);
-                    Some(format!("Window resizable: {}", win.config.resizable))
-                }
-                WindowCommand::ToggleBorder(opt) => {
-                    win.config.border.enabled = opt.unwrap_or(!win.config.border.enabled);
-                    Some(format!("Window border: {}", win.config.border.enabled))
-                }
-                WindowCommand::SetBorderStyle(style) => {
-                    win.config.border.enabled = true;
-                    win.config.border.style = style;
-                    new_border_style = Some(style);
-                    Some(format!("Border style set to '{}'", style.label()))
-                }
-                WindowCommand::SetBackground(mode) => {
-                    win.config.background.mode = mode;
-                    Some(format!("Window background: {mode:?}"))
-                }
-                WindowCommand::SetPadding(p) => {
-                    win.config.padding = p;
-                    Some(format!("Window padding set to {p}"))
-                }
-                WindowCommand::SetVisible(opt) => {
-                    win.config.visible = opt.unwrap_or(!win.config.visible);
-                    None
-                }
-                WindowCommand::Reset => {
-                    win.config = WindowConfig::default();
-                    Some("Window reset to defaults".to_string())
-                }
-            }
-        };
-        if let Some(style) = new_border_style {
-            self.theme.set_border_style(style);
-        }
-        if let Some(msg) = toast_msg {
-            self.set_toast(msg);
-        }
-        self.windows.resolve_all(viewport);
     }
 
     fn reload_all(&mut self, guard: &TerminalGuard) -> Result<()> {
@@ -1131,7 +910,6 @@ impl App {
             animations: &mut self.animations,
             layout_names: &mut self.layout_names,
             layouts_map: &mut self.layouts_map,
-            windows: &mut self.windows,
             background: &mut self.effect,
             transition: &mut self.transition,
             viewport,
@@ -1141,7 +919,6 @@ impl App {
             || commit.themes_updated
             || commit.animations_updated
             || commit.layouts_updated
-            || commit.window_updated
         {
             self.set_toast(commit.summary.clone());
         }

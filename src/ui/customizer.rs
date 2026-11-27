@@ -1,9 +1,9 @@
 use crate::animation::{AnimationCatalog, BackgroundEffect};
-use crate::config::{Anchor, BorderStyle, Config, EffectKind, LayoutMode, ThemeEntry, WidgetId};
+use crate::config::{Config, EffectKind, ThemeEntry};
 use crate::runtime::{DiagnosticEngine, DiagnosticSeverity};
+use crate::ui::container::{ContainerConfig, ContainerNode};
 use crate::ui::theme::Theme;
 use crate::ui::widgets::{allocate_three_column_widths, pad_display_width, truncate_display_width};
-use crate::window::{WindowBackgroundMode, WindowConfig};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
@@ -16,21 +16,19 @@ pub enum CustomizerTab {
     #[default]
     Themes,
     Animations,
-    Window,
     Layout,
 }
 
 impl CustomizerTab {
     pub fn all() -> &'static [Self] {
-        &[Self::Themes, Self::Animations, Self::Window, Self::Layout]
+        &[Self::Themes, Self::Animations, Self::Layout]
     }
 
     pub fn index(self) -> usize {
         match self {
             Self::Themes => 0,
             Self::Animations => 1,
-            Self::Window => 2,
-            Self::Layout => 3,
+            Self::Layout => 2,
         }
     }
 
@@ -38,7 +36,6 @@ impl CustomizerTab {
         match self {
             Self::Themes => "Themes",
             Self::Animations => "Animations",
-            Self::Window => "Window",
             Self::Layout => "Layout",
         }
     }
@@ -46,8 +43,7 @@ impl CustomizerTab {
     pub fn next(self) -> Self {
         match self {
             Self::Themes => Self::Animations,
-            Self::Animations => Self::Window,
-            Self::Window => Self::Layout,
+            Self::Animations => Self::Layout,
             Self::Layout => Self::Themes,
         }
     }
@@ -56,8 +52,7 @@ impl CustomizerTab {
         match self {
             Self::Themes => Self::Layout,
             Self::Animations => Self::Themes,
-            Self::Window => Self::Animations,
-            Self::Layout => Self::Window,
+            Self::Layout => Self::Animations,
         }
     }
 }
@@ -115,46 +110,35 @@ impl CustomizerState {
     }
 }
 
-pub fn window_items_summary(win: &WindowConfig) -> Vec<(String, String)> {
-    vec![
-        ("Anchor".to_string(), format!("{:?}", win.anchor)),
-        (
-            "Borders".to_string(),
-            if win.border.enabled {
-                format!("Enabled ({})", win.border.style.label())
-            } else {
-                "Hidden".to_string()
-            },
-        ),
-        (
-            "Window Background".to_string(),
-            match win.background.mode {
-                WindowBackgroundMode::Solid => "Solid".to_string(),
-                WindowBackgroundMode::Transparent => "Transparent (cells)".to_string(),
-            },
-        ),
-        ("Inner Padding".to_string(), format!("{}", win.padding)),
-        (
-            "Movable".to_string(),
-            if win.movable && !win.is_static {
-                "Yes"
-            } else {
-                "No"
+pub fn collect_component_ids(container: &ContainerConfig, out: &mut Vec<(String, bool)>) {
+    for child in &container.children {
+        match child {
+            ContainerNode::Container(sub) => collect_component_ids(sub, out),
+            ContainerNode::Component(comp) => out.push((comp.id.clone(), comp.visible)),
+        }
+    }
+}
+
+pub fn toggle_component_visible(container: &mut ContainerConfig, id: &str) -> Option<bool> {
+    for child in &mut container.children {
+        match child {
+            ContainerNode::Component(comp) if comp.id == id => {
+                comp.visible = !comp.visible;
+                return Some(comp.visible);
             }
-            .to_string(),
-        ),
-        (
-            "Resizable".to_string(),
-            if win.resizable { "Yes" } else { "No" }.to_string(),
-        ),
-        ("Center & Reset".to_string(), "Restore default".to_string()),
-        ("Save window.toml".to_string(), "Persist to ~/.config/egotop/".to_string()),
-    ]
+            ContainerNode::Container(sub) => {
+                if let Some(res) = toggle_component_visible(sub, id) {
+                    return Some(res);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 pub fn layout_items_summary(cfg: &Config) -> Vec<(String, String)> {
     let mut items = vec![
-        ("Layout Mode".to_string(), format!("{:?}", cfg.layout.mode)),
         (
             "View Mode".to_string(),
             cfg.general.view_mode.label().to_string(),
@@ -164,28 +148,16 @@ pub fn layout_items_summary(cfg: &Config) -> Vec<(String, String)> {
             cfg.background.effect.label().to_string(),
         ),
     ];
-    for w in &cfg.widgets {
+    let mut comps = Vec::new();
+    collect_component_ids(&cfg.ui.root, &mut comps);
+    for (id, visible) in comps {
         items.push((
-            format!("Component: {}", w.id.default_title()),
-            if w.enabled { "Visible" } else { "Hidden" }.to_string(),
+            format!("Component: {id}"),
+            if visible { "Visible" } else { "Hidden" }.to_string(),
         ));
     }
     items.push(("Save egotop.toml".to_string(), "Persist to ~/.config/egotop/".to_string()));
     items
-}
-
-pub fn cycle_anchor(anchor: Anchor) -> Anchor {
-    match anchor {
-        Anchor::TopLeft => Anchor::TopCenter,
-        Anchor::TopCenter => Anchor::TopRight,
-        Anchor::TopRight => Anchor::CenterLeft,
-        Anchor::CenterLeft => Anchor::Center,
-        Anchor::Center => Anchor::CenterRight,
-        Anchor::CenterRight => Anchor::BottomLeft,
-        Anchor::BottomLeft => Anchor::BottomCenter,
-        Anchor::BottomCenter => Anchor::BottomRight,
-        Anchor::BottomRight | Anchor::Absolute => Anchor::TopLeft,
-    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -194,7 +166,6 @@ pub fn render_customizer(
     screen: Rect,
     state: &mut CustomizerState,
     config: &Config,
-    window_cfg: &WindowConfig,
     themes: &[ThemeEntry],
     animations: &AnimationCatalog,
     bg_effect: &dyn BackgroundEffect,
@@ -360,39 +331,6 @@ pub fn render_customizer(
                 .collect();
             render_selectable_list(frame, chunks[1], items, state.selected, theme);
         }
-        CustomizerTab::Window => {
-            let rows = window_items_summary(window_cfg);
-            let max_key_w = rows.iter().map(|(k, _)| k.width()).max().unwrap_or(16).clamp(12, 24);
-            let (key_w, _, val_w) =
-                allocate_three_column_widths(content_budget, max_key_w + 1, 10, 0);
-            let items: Vec<ListItem> = rows
-                .into_iter()
-                .map(|(k, v)| {
-                    let mut spans = vec![Span::raw("  ")];
-                    if val_w > 0 {
-                        spans.push(Span::styled(
-                            format!("{} ", pad_display_width(&k, key_w.saturating_sub(1))),
-                            Style::default()
-                                .fg(theme.secondary)
-                                .add_modifier(Modifier::BOLD),
-                        ));
-                        spans.push(Span::styled(
-                            truncate_display_width(&v, val_w),
-                            Style::default().fg(theme.text),
-                        ));
-                    } else {
-                        spans.push(Span::styled(
-                            pad_display_width(&k, key_w),
-                            Style::default()
-                                .fg(theme.secondary)
-                                .add_modifier(Modifier::BOLD),
-                        ));
-                    }
-                    ListItem::new(Line::from(spans))
-                })
-                .collect();
-            render_selectable_list(frame, chunks[1], items, state.selected, theme);
-        }
         CustomizerTab::Layout => {
             let mut cfg_view = config.clone();
             cfg_view.background.effect = bg_effect.kind();
@@ -433,7 +371,6 @@ pub fn render_customizer(
     let hint = match state.tab {
         CustomizerTab::Themes => "↑/↓ navigate • Enter apply • s save • Tab switch tab • Esc close",
         CustomizerTab::Animations => "↑/↓ navigate • p preview • Enter set startup • Tab switch tab • Esc close",
-        CustomizerTab::Window => "↑/↓ navigate • Enter/Space toggle • s save window.toml • Esc close",
         CustomizerTab::Layout => "↑/↓ navigate • Enter/Space toggle • s save egotop.toml • Esc close",
     };
     frame.render_widget(
@@ -508,16 +445,13 @@ pub fn render_help_overlay(frame: &mut Frame, screen: Rect, theme: &Theme) {
         kv(":colorscheme <name>", "Switch colorscheme (built-in or ~/.config/egotop/themes/)"),
         kv(":set border.<prop> <v>", "Customize border chars/style live in runtime"),
         kv(":animation [name]", "Open picker or run startup animation"),
-        kv(":window [subcmd]", "Configure window (center, anchor, border, bg...)"),
-        kv(":layout [mode]", "Switch layout (responsive, free, compact...)"),
+        kv(":layout [mode]", "Switch view mode (dashboard, compact, minimal) or preset"),
         kv(":write [target] / :w", "Write runtime changes to ~/.config/egotop/"),
         kv(":reload", "Reload configs from ~/.config/egotop/"),
         kv(":quit / :q", "Quit and restore terminal"),
         Line::from(""),
-        kv("Mouse (top border)", "Drag to move window"),
-        kv("Mouse (bottom-right)", "Drag to resize window"),
-        kv("Click [⚙] / F2 / g", "Open visual customization panel"),
-        kv("r / p / 1-3", "Refresh data / Pause animations / Pages"),
+        kv("F2 / g", "Open visual customization panel"),
+        kv("r / p / v", "Refresh data / Pause animations / Cycle view mode"),
         kv("q / Esc", "Close modal or quit"),
         Line::from(""),
         Line::from(Span::styled(
@@ -526,33 +460,6 @@ pub fn render_help_overlay(frame: &mut Frame, screen: Rect, theme: &Theme) {
         )),
     ];
     frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), inner);
-}
-
-pub fn toggle_widget_enabled(cfg: &mut Config, id: WidgetId) -> bool {
-    if let Some(w) = cfg.widgets.iter_mut().find(|w| w.id == id) {
-        w.enabled = !w.enabled;
-        return w.enabled;
-    }
-    false
-}
-
-pub fn cycle_layout_mode(mode: LayoutMode) -> LayoutMode {
-    match mode {
-        LayoutMode::Responsive => LayoutMode::Free,
-        LayoutMode::Free => LayoutMode::Compact,
-        LayoutMode::Compact => LayoutMode::Responsive,
-    }
-}
-
-pub fn cycle_border_style(win: &mut WindowConfig) {
-    if !win.border.enabled {
-        win.border.enabled = true;
-        win.border.style = BorderStyle::Rounded;
-    } else if win.border.style == BorderStyle::Thick {
-        win.border.enabled = false;
-    } else {
-        win.border.style = win.border.style.next();
-    }
 }
 
 pub fn effect_names() -> Vec<String> {

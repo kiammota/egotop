@@ -1,10 +1,13 @@
 use crate::command::CommandLineState;
-use crate::config::{Align, Config, GraphStyle, ViewMode, WidgetConfig, WidgetId};
+use crate::config::{Align, Config, GraphStyle, ViewMode};
 use crate::system::{SystemSnapshot, format_bytes, uptime::format_uptime};
-use crate::ui::layout::ComputedLayout;
+use crate::ui::components::{ComponentAnimationStore, render_animated_component, render_clipped};
+use crate::ui::container::{
+    ComponentCategory, ComponentConfig, ComponentKind, ContainerBorderConfig,
+};
+use crate::ui::layout::{ComputedLayout, PlacedComponent, PlacedContainer};
 use crate::ui::theme::{Theme, parse_color};
 use crate::ui::typography::{IconSet, RevealState, render_ascii_heading, resolve_logo_lines};
-use crate::window::{ComposedWindow, WindowBackgroundMode, WindowConfig, WindowState};
 use chrono::Local;
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
@@ -18,19 +21,18 @@ pub struct RenderContext<'a> {
     pub theme: &'a Theme,
     pub snapshot: &'a SystemSnapshot,
     pub reveal: &'a RevealState,
-    pub active_page: u8,
     pub view_mode: ViewMode,
     pub paused: bool,
     pub show_help: bool,
     pub fps: f32,
     pub status_toast: Option<&'a str>,
-    pub window_transparent: bool,
+    pub transparent_bg: bool,
     pub config_error_count: usize,
 }
 
 impl<'a> RenderContext<'a> {
     pub fn panel_bg(&self) -> Color {
-        if self.window_transparent {
+        if self.transparent_bg {
             Color::Reset
         } else {
             self.theme.panel_background
@@ -49,164 +51,408 @@ impl<'a> RenderContext<'a> {
     }
 }
 
-pub fn window_config_button_rect(win_rect: Rect) -> Rect {
-    if win_rect.width < 16 || win_rect.height < 3 {
-        return Rect::ZERO;
-    }
-    Rect::new(win_rect.right().saturating_sub(10), win_rect.y, 4, 1)
-}
-
-pub fn window_help_button_rect(win_rect: Rect) -> Rect {
-    if win_rect.width < 16 || win_rect.height < 3 {
-        return Rect::ZERO;
-    }
-    Rect::new(win_rect.right().saturating_sub(5), win_rect.y, 3, 1)
-}
-
-pub fn render_window_frame(frame: &mut Frame, win: &WindowState, ctx: &RenderContext) {
-    render_window_frame_rect(
-        frame,
-        win.resolved_rect,
-        &win.config,
-        win.focused,
-        ctx,
-    );
-}
-
-pub fn render_composed_window_frame(
+pub fn render_container_tree(
     frame: &mut Frame,
-    composed: &ComposedWindow,
+    layout: &ComputedLayout,
+    anim_store: &ComponentAnimationStore,
     ctx: &RenderContext,
 ) {
-    render_window_frame_rect(
-        frame,
-        composed.rect,
-        &composed.config,
-        composed.focused,
-        ctx,
-    );
+    for container in &layout.containers {
+        render_container_box(frame, container, ctx);
+    }
+
+    for component in &layout.components {
+        render_placed_component(frame, component, anim_store, ctx);
+    }
 }
 
-fn render_window_frame_rect(
-    frame: &mut Frame,
-    area: Rect,
-    cfg: &WindowConfig,
-    focused: bool,
-    ctx: &RenderContext,
-) {
-    if !cfg.visible || area.width < 4 || area.height < 3 {
+fn render_container_box(frame: &mut Frame, container: &PlacedContainer, ctx: &RenderContext) {
+    let area = container.outer_rect.intersection(frame.area());
+    if area.width == 0 || area.height == 0 {
         return;
     }
 
-    let bg = match cfg.background.mode {
-        WindowBackgroundMode::Transparent => Color::Reset,
-        WindowBackgroundMode::Solid => cfg
-            .background
-            .color
-            .as_deref()
-            .map(|c| parse_color(c, ctx.theme.panel_background))
-            .unwrap_or(ctx.theme.panel_background),
-    };
+    let bg = container
+        .background
+        .as_deref()
+        .map(|c| parse_color(c, ctx.panel_bg()))
+        .unwrap_or_else(|| ctx.panel_bg());
 
-    if bg != Color::Reset {
+    if container.border.enabled && area.width >= 2 && area.height >= 2 {
+        render_border_block(frame, area, &container.border, bg, ctx);
+    } else if container.background.is_some() && bg != Color::Reset {
+        frame.render_widget(Block::default().style(Style::default().bg(bg)), area);
+    }
+}
+
+fn render_placed_component(
+    frame: &mut Frame,
+    placed: &PlacedComponent,
+    anim_store: &ComponentAnimationStore,
+    ctx: &RenderContext,
+) {
+    let outer = placed.outer_rect.intersection(frame.area());
+    if outer.width == 0 || outer.height == 0 {
+        return;
+    }
+
+    let comp = &placed.config;
+    let bg = comp
+        .visual
+        .background
+        .as_deref()
+        .map(|c| parse_color(c, ctx.panel_bg()))
+        .unwrap_or_else(|| ctx.panel_bg());
+
+    if comp.visual.border.enabled && outer.width >= 2 && outer.height >= 2 {
+        let mut border = comp.visual.border.clone();
+        if border.title.is_none() {
+            border.title = comp.content.title.clone();
+        }
+        render_border_block(frame, outer, &border, bg, ctx);
+    } else if bg != Color::Reset && !ctx.transparent_bg {
+        frame.render_widget(
+            Block::default().style(Style::default().fg(ctx.theme.text).bg(bg)),
+            outer,
+        );
+    }
+
+    let inner = placed.inner_rect.intersection(outer);
+    if inner.width == 0 || inner.height == 0 {
+        return;
+    }
+
+    match comp.category {
+        ComponentCategory::Static => render_static_component(frame, inner, comp, ctx),
+        ComponentCategory::Dynamic => render_dynamic_component(frame, inner, comp, ctx),
+        ComponentCategory::Animated => {
+            render_animated_component(frame, inner, comp, anim_store, ctx.config, ctx.theme);
+        }
+    }
+}
+
+fn render_border_block(
+    frame: &mut Frame,
+    area: Rect,
+    border: &ContainerBorderConfig,
+    bg: Color,
+    ctx: &RenderContext,
+) {
+    let border_color = border
+        .color
+        .as_deref()
+        .map(|c| parse_color(c, ctx.theme.border))
+        .unwrap_or(ctx.theme.border);
+    let mut block = Block::default()
+        .borders(Borders::ALL)
+        .border_set(ctx.theme.borders.as_ratatui_set())
+        .border_style(Style::default().fg(border_color).bg(bg))
+        .style(Style::default().fg(ctx.theme.text).bg(bg));
+
+    if let Some(title) = &border.title
+        && !title.is_empty()
+    {
+        block = block.title(Span::styled(
+            format!(" {title} "),
+            Style::default()
+                .fg(ctx.theme.primary)
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
+
+    if bg != Color::Reset && !ctx.transparent_bg {
         frame.render_widget(Clear, area);
     }
-
-    let win_style = Style::default().fg(ctx.theme.text).bg(bg);
-    if cfg.border.enabled {
-        let default_border = if focused && ctx.config.windows.len() > 1 {
-            ctx.theme.primary
-        } else {
-            ctx.theme.border
-        };
-        let border_color = cfg
-            .border
-            .color
-            .as_deref()
-            .map(|c| parse_color(c, default_border))
-            .unwrap_or(default_border);
-        let title = cfg.effective_title().unwrap_or(&ctx.config.general.name);
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_set(ctx.theme.borders.as_ratatui_set())
-            .border_style(Style::default().fg(border_color).bg(bg))
-            .style(win_style)
-            .title(Span::styled(
-                format!(" {title} "),
-                Style::default()
-                    .fg(ctx.theme.primary)
-                    .add_modifier(Modifier::BOLD),
-            ));
-        frame.render_widget(block, area);
-    } else {
-        frame.render_widget(Block::default().style(win_style), area);
-    }
-
-    let cfg_btn = window_config_button_rect(area);
-    if cfg_btn.width > 0 {
-        frame.render_widget(
-            Paragraph::new(Span::styled(
-                "[⚙]",
-                Style::default().fg(ctx.theme.secondary).bg(bg),
-            )),
-            cfg_btn,
-        );
-    }
-    let help_btn = window_help_button_rect(area);
-    if help_btn.width > 0 {
-        frame.render_widget(
-            Paragraph::new(Span::styled(
-                "[?]",
-                Style::default().fg(ctx.theme.muted).bg(bg),
-            )),
-            help_btn,
-        );
-    }
-
-    if cfg.can_resize() && area.width >= 6 && area.height >= 4 {
-        let corner = Rect::new(area.right() - 1, area.bottom() - 1, 1, 1);
-        frame.render_widget(
-            Paragraph::new(Span::styled(
-                "◢",
-                Style::default().fg(ctx.theme.accent).bg(bg),
-            )),
-            corner,
-        );
-    }
+    frame.render_widget(block, area);
 }
 
-pub fn render_single_widget(
+fn render_static_component(
     frame: &mut Frame,
     area: Rect,
-    widget: &WidgetConfig,
+    comp: &ComponentConfig,
     ctx: &RenderContext,
 ) {
-    if area.width < 4 || area.height < 2 {
+    match comp.kind {
+        ComponentKind::Greeting => render_greeting_component(frame, area, comp, ctx),
+        ComponentKind::AsciiLogo => render_logo_component(frame, area, comp, ctx),
+        ComponentKind::Separator => render_separator_component(frame, area, comp, ctx),
+        _ => render_text_component(frame, area, comp, ctx),
+    }
+}
+
+fn render_dynamic_component(
+    frame: &mut Frame,
+    area: Rect,
+    comp: &ComponentConfig,
+    ctx: &RenderContext,
+) {
+    match comp.kind {
+        ComponentKind::Header => render_header_component(frame, area, ctx),
+        ComponentKind::System => render_system_component(frame, area, comp, ctx),
+        ComponentKind::Hardware => render_hardware_component(frame, area, ctx),
+        ComponentKind::Activity => render_activity_component(frame, area, comp, ctx),
+        ComponentKind::Session => render_session_component(frame, area, ctx),
+        ComponentKind::Cpu => render_cpu_component(frame, area, ctx),
+        ComponentKind::Memory => render_memory_component(frame, area, ctx),
+        ComponentKind::Temperature => render_temperature_component(frame, area, ctx),
+        ComponentKind::Processes => render_processes_component(frame, area, ctx),
+        ComponentKind::Network => render_network_component(frame, area, ctx),
+        ComponentKind::Uptime => render_uptime_component(frame, area, ctx),
+        ComponentKind::Graph => render_graph_component(frame, area, comp, ctx),
+        _ => render_text_component(frame, area, comp, ctx),
+    }
+}
+
+fn to_alignment(align: Align) -> Alignment {
+    match align {
+        Align::Left => Alignment::Left,
+        Align::Center => Alignment::Center,
+        Align::Right => Alignment::Right,
+    }
+}
+
+fn render_text_component(
+    frame: &mut Frame,
+    area: Rect,
+    comp: &ComponentConfig,
+    ctx: &RenderContext,
+) {
+    let text = comp
+        .content
+        .text
+        .as_deref()
+        .unwrap_or(&ctx.config.general.message);
+    let fg = comp
+        .visual
+        .color
+        .as_deref()
+        .map(|c| parse_color(c, ctx.theme.text))
+        .unwrap_or(ctx.theme.text);
+    let bg = comp
+        .visual
+        .background
+        .as_deref()
+        .map(|c| parse_color(c, ctx.panel_bg()))
+        .unwrap_or_else(|| ctx.panel_bg());
+
+    let lines: Vec<Line> = text
+        .lines()
+        .map(|l| Line::from(Span::styled(l.to_string(), Style::default().fg(fg).bg(bg))))
+        .collect();
+    frame.render_widget(
+        Paragraph::new(lines)
+            .alignment(to_alignment(comp.visual.align))
+            .wrap(Wrap { trim: true }),
+        area,
+    );
+}
+
+fn render_separator_component(
+    frame: &mut Frame,
+    area: Rect,
+    comp: &ComponentConfig,
+    ctx: &RenderContext,
+) {
+    let ch = comp
+        .content
+        .separator_char
+        .as_deref()
+        .and_then(|s| s.chars().next())
+        .unwrap_or('─');
+    let fg = comp
+        .visual
+        .color
+        .as_deref()
+        .map(|c| parse_color(c, ctx.theme.border))
+        .unwrap_or(ctx.theme.border);
+    let bg = ctx.panel_bg();
+
+    render_clipped(frame, area, |buf, local| {
+        let style = Style::default().fg(fg).bg(bg);
+        if local.height == 1 {
+            let line: String = std::iter::repeat_n(ch, local.width as usize).collect();
+            buf.set_stringn(0, 0, &line, local.width as usize, style);
+        } else {
+            let x = local.width / 2;
+            for y in 0..local.height {
+                if let Some(cell) = buf.cell_mut((x, y)) {
+                    cell.set_char(ch);
+                    cell.set_style(style);
+                }
+            }
+        }
+    });
+}
+
+fn render_logo_component(
+    frame: &mut Frame,
+    area: Rect,
+    comp: &ComponentConfig,
+    ctx: &RenderContext,
+) {
+    let logo_lines = if let Some(custom) = &comp.content.text {
+        custom.lines().map(ToString::to_string).collect()
+    } else {
+        resolve_logo_lines(&ctx.config.typography, ctx.snapshot)
+    };
+    let fg = comp
+        .visual
+        .color
+        .as_deref()
+        .map(|c| parse_color(c, ctx.theme.secondary))
+        .unwrap_or(ctx.theme.secondary);
+    let lines: Vec<Line> = logo_lines
+        .into_iter()
+        .map(|l| {
+            Line::from(Span::styled(
+                l,
+                Style::default().fg(fg).add_modifier(Modifier::BOLD),
+            ))
+        })
+        .collect();
+    frame.render_widget(
+        Paragraph::new(center_vertically(lines, area.height))
+            .alignment(to_alignment(comp.visual.align)),
+        area,
+    );
+}
+
+fn render_greeting_component(
+    frame: &mut Frame,
+    area: Rect,
+    comp: &ComponentConfig,
+    ctx: &RenderContext,
+) {
+    if area.width == 0 || area.height == 0 {
         return;
     }
-    match widget.id {
-        WidgetId::Greeting => render_greeting_widget(frame, area, widget, ctx),
-        WidgetId::Logo => render_logo_widget(frame, area, widget, ctx),
-        WidgetId::System => render_system_widget(frame, area, widget, ctx),
-        WidgetId::Hardware => render_hardware_widget(frame, area, widget, ctx),
-        WidgetId::Activity => render_activity_widget(frame, area, widget, ctx),
-        WidgetId::Session => render_session_widget(frame, area, widget, ctx),
-        WidgetId::Uptime => render_uptime_widget(frame, area, widget, ctx),
-        WidgetId::Message => render_message_widget(frame, area, widget, ctx),
+
+    let user = ctx
+        .config
+        .general
+        .user_override
+        .clone()
+        .or_else(|| ctx.snapshot.os.username.clone())
+        .unwrap_or_else(|| "user".to_string());
+    let host = ctx.snapshot.os.hostname.as_deref().unwrap_or("linux");
+    let distro = ctx.snapshot.os.distro_name.as_deref().unwrap_or("Linux");
+    let wm = ctx
+        .snapshot
+        .session
+        .window_manager
+        .as_deref()
+        .unwrap_or("Terminal");
+
+    let raw_template = comp
+        .content
+        .text
+        .as_deref()
+        .unwrap_or(&ctx.config.general.greeting);
+    let greeting_text = raw_template
+        .replace("{user}", &user)
+        .replace("{host}", host)
+        .replace("{distro}", distro)
+        .replace("{wm}", wm);
+
+    let logo_lines = if ctx.view_mode == ViewMode::Dashboard {
+        resolve_logo_lines(&ctx.config.typography, ctx.snapshot)
+    } else {
+        Vec::new()
+    };
+    let logo_width = logo_lines.iter().map(|l| l.width()).max().unwrap_or(0) as u16;
+
+    let show_side_logo =
+        !logo_lines.is_empty() && area.width > logo_width + 28 && area.height >= 5;
+    let text_area = if show_side_logo {
+        let cols = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Length(logo_width + 4), Constraint::Min(10)])
+            .split(area);
+
+        let logo_styled: Vec<Line<'static>> = logo_lines
+            .iter()
+            .map(|l| {
+                Line::from(Span::styled(
+                    l.clone(),
+                    Style::default()
+                        .fg(ctx.theme.secondary)
+                        .add_modifier(Modifier::BOLD),
+                ))
+            })
+            .collect();
+        let logo_para = Paragraph::new(center_vertically(logo_styled, cols[0].height))
+            .alignment(Alignment::Center);
+        frame.render_widget(logo_para, cols[0]);
+        cols[1]
+    } else {
+        area
+    };
+
+    let font_name = comp
+        .visual
+        .font
+        .as_deref()
+        .unwrap_or(&ctx.config.typography.font);
+
+    let figlet_lines = if text_area.height >= 6 {
+        render_ascii_heading(
+            &greeting_text,
+            font_name,
+            ctx.config.typography.ascii_fallback,
+            text_area.width.saturating_sub(2),
+        )
+    } else if text_area.height >= 4 {
+        render_ascii_heading(
+            &greeting_text,
+            "Small",
+            ctx.config.typography.ascii_fallback,
+            text_area.width.saturating_sub(2),
+        )
+    } else {
+        vec![greeting_text.clone()]
+    };
+
+    let accent_color = comp
+        .visual
+        .color
+        .as_deref()
+        .map(|c| parse_color(c, ctx.theme.primary))
+        .unwrap_or(ctx.theme.primary);
+
+    let mut lines: Vec<Line<'static>> = figlet_lines
+        .into_iter()
+        .enumerate()
+        .map(|(i, l)| {
+            let shown = ctx.reveal.mask_line(&l, i);
+            Line::from(Span::styled(
+                shown,
+                Style::default()
+                    .fg(accent_color)
+                    .add_modifier(Modifier::BOLD),
+            ))
+        })
+        .collect();
+
+    if !ctx.config.general.message.trim().is_empty() && lines.len() < text_area.height as usize {
+        if lines.len() + 2 <= text_area.height as usize {
+            lines.push(Line::from(""));
+        }
+        let msg = ctx.reveal.mask_line(&ctx.config.general.message, lines.len());
+        lines.push(Line::from(Span::styled(
+            msg,
+            Style::default().fg(ctx.theme.accent),
+        )));
     }
+
+    let para = Paragraph::new(center_vertically(lines, text_area.height))
+        .alignment(to_alignment(comp.visual.align));
+    frame.render_widget(para, text_area);
 }
 
-pub fn render_dashboard(frame: &mut Frame, layout: &ComputedLayout, ctx: &RenderContext) {
-    if let Some(header_area) = layout.header {
-        render_header(frame, header_area, ctx);
+fn render_header_component(frame: &mut Frame, area: Rect, ctx: &RenderContext) {
+    if area.width == 0 || area.height == 0 {
+        return;
     }
-
-    for placed in &layout.widgets {
-        render_single_widget(frame, placed.area, &placed.config, ctx);
-    }
-}
-
-fn render_header(frame: &mut Frame, area: Rect, ctx: &RenderContext) {
     let now = Local::now();
     let icons = IconSet::from_config(&ctx.config.typography);
 
@@ -235,10 +481,6 @@ fn render_header(frame: &mut Frame, area: Rect, ctx: &RenderContext) {
         left_spans.push(Span::styled(
             format!("[FX: {anim_label}] "),
             Style::default().fg(anim_color),
-        ));
-        left_spans.push(Span::styled(
-            format!("[Pg {}] ", ctx.active_page),
-            Style::default().fg(ctx.theme.primary),
         ));
         left_spans.push(Span::styled(
             format!("[{}]", ctx.view_mode.label()),
@@ -273,317 +515,63 @@ fn render_header(frame: &mut Frame, area: Rect, ctx: &RenderContext) {
     }
     let right_text = right_parts.join("  ");
 
-    let (inner, is_panel) = if area.height >= 3 {
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_set(ctx.theme.borders.as_ratatui_set())
-            .border_style(ctx.border_style(None))
-            .style(ctx.panel_style());
-        let inner = block.inner(area);
-        if !ctx.window_transparent {
-            frame.render_widget(Clear, area);
-        }
-        frame.render_widget(block, area);
-        (inner, true)
-    } else {
-        (area, false)
-    };
+    let eff_brand_w = brand_w.min(area.width);
+    let ideal_center_x = area.x + area.width.saturating_sub(eff_brand_w) / 2;
+    let max_brand_x = area.right().saturating_sub(eff_brand_w);
+    let brand_x = ideal_center_x.clamp(area.x, max_brand_x.max(area.x));
 
-    if inner.width == 0 || inner.height == 0 {
-        return;
-    }
-
-    // Center the global application identifier horizontally across the screen,
-    // cleanly separated from page/mode indicators on the left and clock on the right.
-    let screen = frame.area();
-    let eff_brand_w = brand_w.min(inner.width);
-    let ideal_center_x = screen.x + screen.width.saturating_sub(eff_brand_w) / 2;
-    let max_brand_x = inner.right().saturating_sub(eff_brand_w);
-    let brand_x = ideal_center_x.clamp(inner.x, max_brand_x.max(inner.x));
-
-    let left_w = brand_x.saturating_sub(inner.x);
-    let left_rect = Rect::new(inner.x, inner.y, left_w, inner.height);
-    let center_rect = Rect::new(brand_x, inner.y, eff_brand_w, inner.height);
+    let left_w = brand_x.saturating_sub(area.x);
+    let left_rect = Rect::new(area.x, area.y, left_w, area.height);
+    let center_rect = Rect::new(brand_x, area.y, eff_brand_w, area.height);
     let right_x = brand_x.saturating_add(eff_brand_w);
-    let right_w = inner.right().saturating_sub(right_x);
-    let right_rect = Rect::new(right_x, inner.y, right_w, inner.height);
-
-    let mut left_para = Paragraph::new(Line::from(left_spans));
-    let mut center_para = Paragraph::new(Line::from(brand_span)).alignment(Alignment::Center);
-    let mut right_para = Paragraph::new(Line::from(Span::styled(
-        right_text,
-        Style::default()
-            .fg(ctx.theme.accent)
-            .add_modifier(Modifier::BOLD),
-    )))
-    .alignment(Alignment::Right);
-
-    if !is_panel {
-        left_para = left_para.style(ctx.panel_style());
-        center_para = center_para.style(ctx.panel_style());
-        right_para = right_para.style(ctx.panel_style());
-    }
+    let right_w = area.right().saturating_sub(right_x);
+    let right_rect = Rect::new(right_x, area.y, right_w, area.height);
 
     if left_rect.width > 0 {
-        frame.render_widget(left_para, left_rect);
+        frame.render_widget(
+            Paragraph::new(Line::from(left_spans)).style(ctx.panel_style()),
+            left_rect,
+        );
     }
     if center_rect.width > 0 {
-        frame.render_widget(center_para, center_rect);
+        frame.render_widget(
+            Paragraph::new(Line::from(brand_span))
+                .alignment(Alignment::Center)
+                .style(ctx.panel_style()),
+            center_rect,
+        );
     }
     if right_rect.width > 0 {
-        frame.render_widget(right_para, right_rect);
-    }
-}
-
-fn panel_block<'a>(widget: &'a WidgetConfig, ctx: &'a RenderContext) -> (Block<'a>, bool) {
-    let show_border = widget.show_border.unwrap_or(true);
-    let title = widget
-        .title
-        .as_deref()
-        .unwrap_or_else(|| widget.id.default_title());
-    let title_color = widget
-        .color
-        .as_deref()
-        .map(|c| parse_color(c, ctx.theme.primary))
-        .unwrap_or(ctx.theme.primary);
-
-    let block = if show_border {
-        Block::default()
-            .borders(Borders::ALL)
-            .border_set(ctx.theme.borders.as_ratatui_set())
-            .border_style(ctx.border_style(widget.border_color.as_deref()))
-            .style(ctx.panel_style())
-            .title(Span::styled(
-                format!(" {title} "),
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                right_text,
                 Style::default()
-                    .fg(title_color)
+                    .fg(ctx.theme.accent)
                     .add_modifier(Modifier::BOLD),
-            ))
-    } else {
-        Block::default().style(ctx.panel_style())
-    };
-    (block, show_border)
+            )))
+            .alignment(Alignment::Right)
+            .style(ctx.panel_style()),
+            right_rect,
+        );
+    }
 }
 
-fn render_panel_frame(
+fn render_system_component(
     frame: &mut Frame,
     area: Rect,
-    widget: &WidgetConfig,
-    ctx: &RenderContext,
-) -> Rect {
-    if !ctx.window_transparent {
-        frame.render_widget(Clear, area);
-    }
-    let (block, _) = panel_block(widget, ctx);
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-    if inner.width >= 4 {
-        Rect::new(inner.x + 1, inner.y, inner.width - 2, inner.height)
-    } else {
-        inner
-    }
-}
-
-fn center_vertically(lines: Vec<Line<'static>>, available_height: u16) -> Vec<Line<'static>> {
-    let total = lines.len();
-    let avail = available_height as usize;
-    if total == 0 || total >= avail {
-        return lines;
-    }
-    let top_pad = (avail - total) / 2;
-    let mut padded = Vec::with_capacity(top_pad + total);
-    for _ in 0..top_pad {
-        padded.push(Line::from(""));
-    }
-    padded.extend(lines);
-    padded
-}
-
-fn render_greeting_widget(
-    frame: &mut Frame,
-    area: Rect,
-    widget: &WidgetConfig,
+    comp: &ComponentConfig,
     ctx: &RenderContext,
 ) {
-    let inner = render_panel_frame(frame, area, widget, ctx);
-    if inner.width == 0 || inner.height == 0 {
-        return;
-    }
-
-    let user = ctx
-        .config
-        .general
-        .user_override
-        .clone()
-        .or_else(|| ctx.snapshot.os.username.clone())
-        .unwrap_or_else(|| "user".to_string());
-    let host = ctx.snapshot.os.hostname.as_deref().unwrap_or("linux");
-    let distro = ctx.snapshot.os.distro_name.as_deref().unwrap_or("Linux");
-    let wm = ctx
-        .snapshot
-        .session
-        .window_manager
-        .as_deref()
-        .unwrap_or("Terminal");
-
-    let greeting_text = ctx
-        .config
-        .general
-        .greeting
-        .replace("{user}", &user)
-        .replace("{host}", host)
-        .replace("{distro}", distro)
-        .replace("{wm}", wm);
-
-    let logo_lines = if ctx.view_mode == ViewMode::Dashboard {
-        resolve_logo_lines(&ctx.config.typography, ctx.snapshot)
-    } else {
-        Vec::new()
-    };
-    let logo_width = logo_lines.iter().map(|l| l.width()).max().unwrap_or(0) as u16;
-
-    let show_side_logo =
-        !logo_lines.is_empty() && inner.width > logo_width + 28 && inner.height >= 5;
-    let text_area = if show_side_logo {
-        let cols = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Length(logo_width + 4), Constraint::Min(10)])
-            .split(inner);
-
-        let logo_styled: Vec<Line<'static>> = logo_lines
-            .iter()
-            .map(|l| {
-                Line::from(Span::styled(
-                    l.clone(),
-                    Style::default()
-                        .fg(ctx.theme.secondary)
-                        .add_modifier(Modifier::BOLD),
-                ))
-            })
-            .collect();
-        let logo_para =
-            Paragraph::new(center_vertically(logo_styled, cols[0].height)).alignment(Alignment::Center);
-        frame.render_widget(logo_para, cols[0]);
-        cols[1]
-    } else {
-        inner
-    };
-
-    let font_name = widget
-        .font
-        .as_deref()
-        .unwrap_or(&ctx.config.typography.font);
-
-    let figlet_lines = if text_area.height >= 6 {
-        render_ascii_heading(
-            &greeting_text,
-            font_name,
-            ctx.config.typography.ascii_fallback,
-            text_area.width.saturating_sub(2),
-        )
-    } else if text_area.height >= 4 {
-        render_ascii_heading(
-            &greeting_text,
-            "Small",
-            ctx.config.typography.ascii_fallback,
-            text_area.width.saturating_sub(2),
-        )
-    } else {
-        vec![greeting_text.clone()]
-    };
-
-    let animate = widget.reveal_animation.unwrap_or(true);
-    let accent_color = widget
-        .color
-        .as_deref()
-        .map(|c| parse_color(c, ctx.theme.primary))
-        .unwrap_or(ctx.theme.primary);
-
-    let mut lines: Vec<Line<'static>> = figlet_lines
-        .into_iter()
-        .enumerate()
-        .map(|(i, l)| {
-            let shown = if animate {
-                ctx.reveal.mask_line(&l, i)
-            } else {
-                l
-            };
-            Line::from(Span::styled(
-                shown,
-                Style::default()
-                    .fg(accent_color)
-                    .add_modifier(Modifier::BOLD),
-            ))
-        })
-        .collect();
-
-    if !ctx.config.general.message.trim().is_empty() && lines.len() < text_area.height as usize {
-        if lines.len() + 2 <= text_area.height as usize {
-            lines.push(Line::from(""));
-        }
-        let msg = if animate {
-            ctx.reveal
-                .mask_line(&ctx.config.general.message, lines.len())
-        } else {
-            ctx.config.general.message.clone()
-        };
-        lines.push(Line::from(Span::styled(
-            msg,
-            Style::default().fg(ctx.theme.accent),
-        )));
-    }
-
-    let align = match widget.align {
-        Align::Left => Alignment::Left,
-        Align::Center => Alignment::Center,
-        Align::Right => Alignment::Right,
-    };
-
-    let para = Paragraph::new(center_vertically(lines, text_area.height)).alignment(align);
-    frame.render_widget(para, text_area);
-}
-
-fn render_logo_widget(frame: &mut Frame, area: Rect, widget: &WidgetConfig, ctx: &RenderContext) {
-    let inner = render_panel_frame(frame, area, widget, ctx);
-    let logo_lines = resolve_logo_lines(&ctx.config.typography, ctx.snapshot);
-    let lines: Vec<Line> = logo_lines
-        .into_iter()
-        .map(|l| {
-            Line::from(Span::styled(
-                l,
-                Style::default()
-                    .fg(ctx.theme.secondary)
-                    .add_modifier(Modifier::BOLD),
-            ))
-        })
-        .collect();
-    frame.render_widget(Paragraph::new(lines).alignment(Alignment::Center), inner);
-}
-
-fn render_system_widget(frame: &mut Frame, area: Rect, widget: &WidgetConfig, ctx: &RenderContext) {
-    let inner = render_panel_frame(frame, area, widget, ctx);
     let icons = IconSet::from_config(&ctx.config.typography);
     let os = &ctx.snapshot.os;
     let sess = &ctx.snapshot.session;
     let hide = ctx.config.general.hide_unavailable;
 
     let candidates = [
-        (
-            "distro",
-            format!("{} Distro", icons.os()),
-            os.distro_name.clone(),
-        ),
-        (
-            "kernel",
-            format!("{} Kernel", icons.kernel()),
-            os.kernel.clone(),
-        ),
+        ("distro", format!("{} Distro", icons.os()), os.distro_name.clone()),
+        ("kernel", format!("{} Kernel", icons.kernel()), os.kernel.clone()),
         ("arch", format!("{} Arch", icons.kernel()), os.arch.clone()),
-        (
-            "host",
-            format!("{} Host", icons.host()),
-            os.hostname.clone(),
-        ),
+        ("host", format!("{} Host", icons.host()), os.hostname.clone()),
         (
             "user",
             format!("{} User", icons.user()),
@@ -593,11 +581,7 @@ fn render_system_widget(frame: &mut Frame, area: Rect, widget: &WidgetConfig, ct
                 .clone()
                 .or_else(|| os.username.clone()),
         ),
-        (
-            "shell",
-            format!("{} Shell", icons.shell()),
-            os.shell.clone(),
-        ),
+        ("shell", format!("{} Shell", icons.shell()), os.shell.clone()),
         (
             "terminal",
             format!("{} Terminal", icons.terminal()),
@@ -624,7 +608,7 @@ fn render_system_widget(frame: &mut Frame, area: Rect, widget: &WidgetConfig, ct
 
     let mut lines = Vec::new();
     for (key, label, value) in candidates {
-        if let Some(allowed) = &widget.fields
+        if let Some(allowed) = &comp.content.fields
             && !allowed.iter().any(|f| f.eq_ignore_ascii_case(key))
         {
             continue;
@@ -636,29 +620,22 @@ fn render_system_widget(frame: &mut Frame, area: Rect, widget: &WidgetConfig, ct
         }
     }
 
-    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), inner);
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), area);
 }
 
-fn render_hardware_widget(
-    frame: &mut Frame,
-    area: Rect,
-    widget: &WidgetConfig,
-    ctx: &RenderContext,
-) {
-    let inner = render_panel_frame(frame, area, widget, ctx);
+fn render_hardware_component(frame: &mut Frame, area: Rect, ctx: &RenderContext) {
     let icons = IconSet::from_config(&ctx.config.typography);
     let hw = &ctx.snapshot.hardware;
     let hide = ctx.config.general.hide_unavailable;
-    let bar_width = inner.width.saturating_sub(38).clamp(6, 18) as usize;
+    let bar_width = area.width.saturating_sub(38).clamp(6, 18) as usize;
 
     let mut lines = Vec::new();
 
-    // CPU
     let cpu_label = hw
         .cpu
         .model
         .as_deref()
-        .map(|m| truncate_str(m, inner.width.saturating_sub(14) as usize));
+        .map(|m| truncate_display_width(m, area.width.saturating_sub(14) as usize));
     if let Some(m) = cpu_label {
         lines.push(kv_line(&format!("{} CPU", icons.cpu()), &m, ctx.theme));
     } else if !hide {
@@ -688,17 +665,12 @@ fn render_hardware_widget(
         lines.push(line);
     }
 
-    // RAM
     if let (Some(used), Some(total), Some(pct)) = (
         hw.memory.used_bytes,
         hw.memory.total_bytes,
         hw.memory.usage_percent(),
     ) {
-        let info = format!(
-            "{} / {} ({pct:.0}%)",
-            format_bytes(used),
-            format_bytes(total)
-        );
+        let info = format!("{} / {} ({pct:.0}%)", format_bytes(used), format_bytes(total));
         lines.push(bar_line(
             &format!("{} RAM", icons.memory()),
             pct,
@@ -714,7 +686,6 @@ fn render_hardware_widget(
         ));
     }
 
-    // Swap if present
     if let (Some(s_used), Some(s_total)) = (hw.memory.swap_used_bytes, hw.memory.swap_total_bytes) {
         let pct = ((s_used as f64 / s_total.max(1) as f64) * 100.0) as f32;
         lines.push(kv_line(
@@ -728,7 +699,6 @@ fn render_hardware_widget(
         ));
     }
 
-    // Primary Disk
     if let Some(disk) = hw.disks.first() {
         let pct = disk.usage_percent();
         let info = format!(
@@ -744,14 +714,9 @@ fn render_hardware_widget(
             ctx.theme,
         ));
     } else if !hide {
-        lines.push(kv_line(
-            &format!("{} Disk", icons.disk()),
-            "N/A",
-            ctx.theme,
-        ));
+        lines.push(kv_line(&format!("{} Disk", icons.disk()), "N/A", ctx.theme));
     }
 
-    // GPU
     if let Some(gpu) = hw.gpus.first() {
         let mut gpu_str = gpu.name.clone().unwrap_or_else(|| "GPU".to_string());
         if let Some(busy) = gpu.busy_percent {
@@ -764,29 +729,20 @@ fn render_hardware_widget(
                 format_bytes(v_total)
             ));
         }
-        lines.push(kv_line(
-            &format!("{} GPU", icons.gpu()),
-            &gpu_str,
-            ctx.theme,
-        ));
+        lines.push(kv_line(&format!("{} GPU", icons.gpu()), &gpu_str, ctx.theme));
     } else if !hide {
         lines.push(kv_line(&format!("{} GPU", icons.gpu()), "N/A", ctx.theme));
     }
 
-    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), inner);
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), area);
 }
 
-fn render_activity_widget(
+fn render_activity_component(
     frame: &mut Frame,
     area: Rect,
-    widget: &WidgetConfig,
+    comp: &ComponentConfig,
     ctx: &RenderContext,
 ) {
-    let inner = render_panel_frame(frame, area, widget, ctx);
-    if inner.width == 0 || inner.height == 0 {
-        return;
-    }
-
     let act = &ctx.snapshot.activity;
     let icons = IconSet::from_config(&ctx.config.typography);
 
@@ -814,8 +770,8 @@ fn render_activity_widget(
         kv_line("   Threads", &threads_str, ctx.theme),
     ];
 
-    let graph_style = widget.graph_style.unwrap_or(GraphStyle::Sparkline);
-    if inner.height >= 7 && graph_style == GraphStyle::Sparkline {
+    let graph_style = comp.visual.graph_style.unwrap_or(GraphStyle::Sparkline);
+    if area.height >= 7 && graph_style == GraphStyle::Sparkline {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
@@ -823,7 +779,7 @@ fn render_activity_widget(
                 Constraint::Length(1),
                 Constraint::Min(2),
             ])
-            .split(inner);
+            .split(area);
 
         frame.render_widget(Paragraph::new(info_lines), chunks[0]);
         frame.render_widget(
@@ -842,29 +798,26 @@ fn render_activity_widget(
         let cpu_data: Vec<u64> = ctx.snapshot.cpu_history.iter().copied().collect();
         let mem_data: Vec<u64> = ctx.snapshot.mem_history.iter().copied().collect();
 
-        let cpu_spark = Sparkline::default()
-            .data(&cpu_data)
-            .max(100)
-            .style(Style::default().fg(ctx.theme.primary));
-        let mem_spark = Sparkline::default()
-            .data(&mem_data)
-            .max(100)
-            .style(Style::default().fg(ctx.theme.secondary));
-
-        frame.render_widget(cpu_spark, graph_cols[0]);
-        frame.render_widget(mem_spark, graph_cols[1]);
+        frame.render_widget(
+            Sparkline::default()
+                .data(&cpu_data)
+                .max(100)
+                .style(Style::default().fg(ctx.theme.primary)),
+            graph_cols[0],
+        );
+        frame.render_widget(
+            Sparkline::default()
+                .data(&mem_data)
+                .max(100)
+                .style(Style::default().fg(ctx.theme.secondary)),
+            graph_cols[1],
+        );
     } else {
-        frame.render_widget(Paragraph::new(info_lines).wrap(Wrap { trim: true }), inner);
+        frame.render_widget(Paragraph::new(info_lines).wrap(Wrap { trim: true }), area);
     }
 }
 
-fn render_session_widget(
-    frame: &mut Frame,
-    area: Rect,
-    widget: &WidgetConfig,
-    ctx: &RenderContext,
-) {
-    let inner = render_panel_frame(frame, area, widget, ctx);
+fn render_session_component(frame: &mut Frame, area: Rect, ctx: &RenderContext) {
     let icons = IconSet::from_config(&ctx.config.typography);
     let act = &ctx.snapshot.activity;
     let sess = &ctx.snapshot.session;
@@ -920,42 +873,205 @@ fn render_session_widget(
         lines.push(kv_line("   Compositor", "Hyprland active", ctx.theme));
     }
 
-    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), inner);
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), area);
 }
 
-fn render_uptime_widget(frame: &mut Frame, area: Rect, widget: &WidgetConfig, ctx: &RenderContext) {
-    render_session_widget(frame, area, widget, ctx);
+fn render_cpu_component(frame: &mut Frame, area: Rect, ctx: &RenderContext) {
+    let cpu = &ctx.snapshot.hardware.cpu;
+    let bar_width = area.width.saturating_sub(28).clamp(6, 20) as usize;
+    let mut lines = Vec::new();
+    if let Some(model) = &cpu.model {
+        lines.push(kv_line(
+            "CPU",
+            &truncate_display_width(model, area.width.saturating_sub(16) as usize),
+            ctx.theme,
+        ));
+    }
+    if let Some(pct) = cpu.usage_percent {
+        lines.push(bar_line(
+            "Total",
+            pct,
+            &format!("{pct:.1}% ({} cores)", cpu.cores),
+            bar_width,
+            ctx.theme,
+        ));
+    }
+    for (idx, pct) in cpu.per_core_percent.iter().enumerate() {
+        if lines.len() >= area.height as usize {
+            break;
+        }
+        lines.push(bar_line(
+            &format!("Core {idx}"),
+            *pct,
+            &format!("{pct:.0}%"),
+            bar_width,
+            ctx.theme,
+        ));
+    }
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), area);
 }
 
-fn render_message_widget(
+fn render_memory_component(frame: &mut Frame, area: Rect, ctx: &RenderContext) {
+    let mem = &ctx.snapshot.hardware.memory;
+    let bar_width = area.width.saturating_sub(32).clamp(6, 20) as usize;
+    let mut lines = Vec::new();
+    if let (Some(used), Some(total), Some(pct)) =
+        (mem.used_bytes, mem.total_bytes, mem.usage_percent())
+    {
+        lines.push(bar_line(
+            "RAM",
+            pct,
+            &format!("{} / {} ({pct:.0}%)", format_bytes(used), format_bytes(total)),
+            bar_width,
+            ctx.theme,
+        ));
+    }
+    if let Some(avail) = mem.available_bytes {
+        lines.push(kv_line("Available", &format_bytes(avail), ctx.theme));
+    }
+    if let (Some(su), Some(st)) = (mem.swap_used_bytes, mem.swap_total_bytes) {
+        let pct = (su as f64 / st.max(1) as f64 * 100.0) as f32;
+        lines.push(bar_line(
+            "Swap",
+            pct,
+            &format!("{} / {}", format_bytes(su), format_bytes(st)),
+            bar_width,
+            ctx.theme,
+        ));
+    }
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), area);
+}
+
+fn render_temperature_component(frame: &mut Frame, area: Rect, ctx: &RenderContext) {
+    let temp = ctx.snapshot.hardware.cpu.temp_celsius;
+    let line = match temp {
+        Some(t) => kv_line("CPU Temp", &format!("{t:.1} °C"), ctx.theme),
+        None => kv_line("CPU Temp", "Unavailable", ctx.theme),
+    };
+    frame.render_widget(Paragraph::new(vec![line]).wrap(Wrap { trim: true }), area);
+}
+
+fn render_processes_component(frame: &mut Frame, area: Rect, ctx: &RenderContext) {
+    let act = &ctx.snapshot.activity;
+    let lines = vec![
+        kv_line(
+            "Processes",
+            &act.process_count
+                .map(|p| p.to_string())
+                .unwrap_or_else(|| "N/A".to_string()),
+            ctx.theme,
+        ),
+        kv_line(
+            "Threads",
+            &act.thread_count
+                .map(|t| t.to_string())
+                .unwrap_or_else(|| "N/A".to_string()),
+            ctx.theme,
+        ),
+        kv_line(
+            "Runnable",
+            &act.runnable_threads
+                .map(|r| r.to_string())
+                .unwrap_or_else(|| "N/A".to_string()),
+            ctx.theme,
+        ),
+    ];
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), area);
+}
+
+fn render_network_component(frame: &mut Frame, area: Rect, ctx: &RenderContext) {
+    let net = &ctx.snapshot.network;
+    let mut lines = vec![
+        kv_line(
+            "RX Rate",
+            &format!("{}/s", format_bytes(net.total_rx_bps)),
+            ctx.theme,
+        ),
+        kv_line(
+            "TX Rate",
+            &format!("{}/s", format_bytes(net.total_tx_bps)),
+            ctx.theme,
+        ),
+    ];
+    for iface in net.interfaces.iter().take(3) {
+        lines.push(kv_line(
+            &iface.name,
+            &format!(
+                "↓{} ↑{}",
+                format_bytes(iface.rx_bytes),
+                format_bytes(iface.tx_bytes)
+            ),
+            ctx.theme,
+        ));
+    }
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), area);
+}
+
+fn render_uptime_component(frame: &mut Frame, area: Rect, ctx: &RenderContext) {
+    render_session_component(frame, area, ctx);
+}
+
+fn render_graph_component(
     frame: &mut Frame,
     area: Rect,
-    widget: &WidgetConfig,
+    comp: &ComponentConfig,
     ctx: &RenderContext,
 ) {
-    let inner = render_panel_frame(frame, area, widget, ctx);
-    let align = match widget.align {
-        Align::Left => Alignment::Left,
-        Align::Center => Alignment::Center,
-        Align::Right => Alignment::Right,
-    };
-    let text = if ctx.active_page == 3 {
-        format!(
-            "{}  |  Config: ~/.config/egotop/egotop.toml",
-            ctx.config.general.message
-        )
-    } else {
-        ctx.config.general.message.clone()
+    let metric = comp
+        .content
+        .metric
+        .as_deref()
+        .unwrap_or("cpu")
+        .to_ascii_lowercase();
+    let (data, max_val, color) = match metric.as_str() {
+        "mem" | "memory" | "ram" => (
+            ctx.snapshot.mem_history.iter().copied().collect::<Vec<_>>(),
+            100,
+            ctx.theme.secondary,
+        ),
+        "net" | "network" | "rx" => (
+            ctx.snapshot
+                .net_rx_history
+                .iter()
+                .copied()
+                .collect::<Vec<_>>(),
+            ctx.snapshot
+                .net_rx_history
+                .iter()
+                .copied()
+                .max()
+                .unwrap_or(1)
+                .max(1),
+            ctx.theme.accent,
+        ),
+        _ => (
+            ctx.snapshot.cpu_history.iter().copied().collect::<Vec<_>>(),
+            100,
+            ctx.theme.primary,
+        ),
     };
     frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(
-            text,
-            Style::default().fg(ctx.theme.accent),
-        )))
-        .alignment(align)
-        .wrap(Wrap { trim: true }),
-        inner,
+        Sparkline::default()
+            .data(&data)
+            .max(max_val)
+            .style(Style::default().fg(color)),
+        area,
     );
+}
+
+fn center_vertically(lines: Vec<Line<'static>>, available_height: u16) -> Vec<Line<'static>> {
+    let total = lines.len();
+    let avail = available_height as usize;
+    if total == 0 || total >= avail {
+        return lines;
+    }
+    let top_pad = (avail - total) / 2;
+    let mut padded = Vec::with_capacity(top_pad + total);
+    for _ in 0..top_pad {
+        padded.push(Line::from(""));
+    }
+    padded.extend(lines);
+    padded
 }
 
 fn pad_label(label: &str, target_width: usize) -> String {
@@ -1008,8 +1124,6 @@ fn bar_line<'a>(label: &str, pct: f32, suffix: &str, bar_width: usize, theme: &T
     ])
 }
 
-/// Truncates `s` so its terminal display width never exceeds `max_width` columns,
-/// appending `…` when characters are omitted.
 pub fn truncate_display_width(s: &str, max_width: usize) -> String {
     if max_width == 0 {
         return String::new();
@@ -1050,7 +1164,6 @@ pub fn truncate_display_width(s: &str, max_width: usize) -> String {
     out
 }
 
-/// Truncates or right-pads `s` with spaces so its terminal display width equals `width`.
 pub fn pad_display_width(s: &str, width: usize) -> String {
     let mut out = truncate_display_width(s, width);
     let w = out.width();
@@ -1060,11 +1173,6 @@ pub fn pad_display_width(s: &str, width: usize) -> String {
     out
 }
 
-/// Allocates `(name_width, tag_width, desc_width)` for a multi-column popup row so that
-/// `name_width + tag_width + desc_width <= available_width`.
-///
-/// The description receives only the remaining width after name and optional tag columns,
-/// hiding gracefully (and collapsing the tag column if necessary) on narrow terminals.
 pub fn allocate_three_column_widths(
     available_width: usize,
     preferred_name_width: usize,
@@ -1109,16 +1217,9 @@ pub fn allocate_three_column_widths(
     (available_width, 0, 0)
 }
 
-fn truncate_str(s: &str, max_width: usize) -> String {
-    truncate_display_width(s, max_width)
-}
-
-/// Renders the Neovim-style command line and its discrete contextual completion popup
-/// using the central theme, border characters, and panel styling from `RenderContext`.
 pub fn render_command_line(
     frame: &mut Frame,
     screen: Rect,
-    anchor_window: Rect,
     cmd_state: &CommandLineState,
     ctx: &RenderContext,
 ) {
@@ -1129,10 +1230,10 @@ pub fn render_command_line(
 
     if cmd_state.active {
         if cmd_state.popup_open && !cmd_state.suggestions.is_empty() && screen.height >= 5 {
-            render_completion_popup(frame, screen, anchor_window, cmd_state, ctx);
+            render_completion_popup(frame, screen, cmd_state, ctx);
         }
 
-        if !ctx.window_transparent {
+        if !ctx.transparent_bg {
             frame.render_widget(Clear, bar);
         }
         let cursor = cmd_state.cursor.min(cmd_state.buffer.len());
@@ -1164,7 +1265,7 @@ pub fn render_command_line(
         ]);
         frame.render_widget(Paragraph::new(line).style(ctx.panel_style()), bar);
     } else if let Some(msg) = ctx.status_toast {
-        if !ctx.window_transparent {
+        if !ctx.transparent_bg {
             frame.render_widget(Clear, bar);
         }
         let line = Line::from(Span::styled(
@@ -1180,7 +1281,6 @@ pub fn render_command_line(
 fn render_completion_popup(
     frame: &mut Frame,
     screen: Rect,
-    anchor_window: Rect,
     cmd_state: &CommandLineState,
     ctx: &RenderContext,
 ) {
@@ -1189,29 +1289,18 @@ fn render_completion_popup(
     let shown_count = total.min(max_visible);
     let popup_h = (shown_count as u16) + 2;
 
-    let preferred_w = if anchor_window.width >= 30 {
-        anchor_window.width.min(74)
-    } else {
-        72
-    };
-    let popup_w = preferred_w
+    let popup_w = 72u16
         .min(screen.width.saturating_sub(2))
         .max(20.min(screen.width));
     if popup_w < 12 || popup_h < 3 || screen.height <= popup_h {
         return;
     }
 
-    let preferred_x = if anchor_window.width >= popup_w {
-        anchor_window.x
-    } else {
-        screen.x + 1.min(screen.width.saturating_sub(popup_w))
-    };
-    let max_x = screen.right().saturating_sub(popup_w);
-    let popup_x = preferred_x.clamp(screen.x, max_x.max(screen.x));
+    let popup_x = screen.x + 1.min(screen.width.saturating_sub(popup_w));
     let popup_y = screen.bottom().saturating_sub(1 + popup_h);
     let popup = Rect::new(popup_x, popup_y, popup_w, popup_h);
 
-    if !ctx.window_transparent {
+    if !ctx.transparent_bg {
         frame.render_widget(Clear, popup);
     }
     let block = Block::default()
@@ -1300,26 +1389,11 @@ fn render_completion_popup(
         } else {
             panel_bg
         };
-        let prefix_fg = if is_selected {
-            ctx.theme.background
-        } else {
-            ctx.theme.primary
-        };
-        let name_fg = if is_selected {
-            ctx.theme.background
-        } else {
-            ctx.theme.primary
-        };
-        let arg_fg = if is_selected {
-            ctx.theme.background
-        } else {
-            ctx.theme.accent
-        };
-        let desc_fg = if is_selected {
-            ctx.theme.background
-        } else {
-            ctx.theme.muted
-        };
+        let fg_hi = ctx.theme.background;
+        let prefix_fg = if is_selected { fg_hi } else { ctx.theme.primary };
+        let name_fg = if is_selected { fg_hi } else { ctx.theme.primary };
+        let arg_fg = if is_selected { fg_hi } else { ctx.theme.accent };
+        let desc_fg = if is_selected { fg_hi } else { ctx.theme.muted };
 
         let desc = if desc_w > 0 {
             if is_selected {

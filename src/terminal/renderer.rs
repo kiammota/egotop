@@ -1,11 +1,11 @@
-use crate::animation::{BackgroundEffect, TransitionPlayer};
+use crate::animation::{AnimationCatalog, BackgroundEffect, TransitionPlayer};
 use crate::command::CommandLineState;
 use crate::config::{Config, StepTarget, ThemeEntry};
+use crate::ui::components::ComponentAnimationStore;
 use crate::ui::customizer::{CustomizerState, render_customizer, render_help_overlay};
+use crate::ui::layout::compute_dashboard_layout;
 use crate::ui::theme::parse_color;
-use crate::ui::widgets::{RenderContext, render_command_line, render_composed_window_frame};
-use crate::window::context::render_context_content;
-use crate::window::{Compositor, WindowManager};
+use crate::ui::widgets::{RenderContext, render_command_line, render_container_tree};
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
@@ -60,17 +60,17 @@ pub fn draw_frame(
     config: &Config,
     effect: &dyn BackgroundEffect,
     transition: &TransitionPlayer,
-    windows: &mut WindowManager,
+    anim_store: &ComponentAnimationStore,
     customizer: &mut CustomizerState,
     command_line: &CommandLineState,
     startup: &CursorStartupState,
     themes: &[ThemeEntry],
-    animations: &crate::animation::AnimationCatalog,
+    animations: &AnimationCatalog,
     ctx: &RenderContext,
 ) {
     let area = frame.area();
 
-    let base_bg = if ctx.window_transparent && !config.background.enabled {
+    let base_bg = if ctx.transparent_bg && !config.background.enabled {
         Style::default().fg(ctx.theme.text).bg(Color::Reset)
     } else {
         ctx.theme.base_style()
@@ -82,7 +82,6 @@ pub fn draw_frame(
         return;
     }
 
-    // Draw background animation directly onto the buffer
     effect.render(frame.buffer_mut(), area, &config.background, ctx.theme);
 
     let scene_target = transition.package.definition.target;
@@ -90,32 +89,11 @@ pub fn draw_frame(
         transition.render_scene(frame.buffer_mut(), area, ctx.theme);
     }
 
-    // Resolve geometry, enforce overlap/layer/z-index rules via Compositor, and render contexts
-    windows.resolve_all(area);
-    let composed = Compositor::compose(windows, area);
-    for cw in &composed {
-        render_composed_window_frame(frame, cw, ctx);
-        render_context_content(
-            frame,
-            cw.inner_area,
-            windows.context(&cw.context_id),
-            ctx,
-        );
-        transition.apply_to_buffer(frame.buffer_mut(), cw.rect, ctx.theme);
-        if transition.has_scene_tracks()
-            && matches!(scene_target, StepTarget::Window | StepTarget::Content)
-        {
-            let scene_area = if scene_target == StepTarget::Content {
-                cw.inner_area
-            } else {
-                cw.rect
-            };
-            transition.render_scene(frame.buffer_mut(), scene_area, ctx.theme);
-        }
-    }
+    let layout = compute_dashboard_layout(area, config, ctx.view_mode);
+    render_container_tree(frame, &layout, anim_store, ctx);
 
-    if transition.has_scene_tracks() && matches!(scene_target, StepTarget::Screen | StepTarget::Overlay)
-    {
+    transition.apply_to_buffer(frame.buffer_mut(), area, ctx.theme);
+    if transition.has_scene_tracks() && !matches!(scene_target, StepTarget::Background) {
         transition.render_scene(frame.buffer_mut(), area, ctx.theme);
     }
 
@@ -125,7 +103,6 @@ pub fn draw_frame(
             area,
             customizer,
             config,
-            &windows.main_window().config,
             themes,
             animations,
             effect,
@@ -135,13 +112,7 @@ pub fn draw_frame(
         render_help_overlay(frame, area, ctx.theme);
     }
 
-    render_command_line(
-        frame,
-        area,
-        windows.main_window().resolved_rect,
-        command_line,
-        ctx,
-    );
+    render_command_line(frame, area, command_line, ctx);
 }
 
 fn render_cursor_startup(

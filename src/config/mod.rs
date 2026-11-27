@@ -13,13 +13,12 @@ pub use animation_loader::{
 };
 pub use loader::{
     ConfigLoadResult, default_config_path, load_from_path, load_layout_names, load_or_create,
-    load_or_create_window_config, save_config_to_path, save_window_config,
+    save_config_to_path,
 };
 pub use schema::{
-    Align, Anchor, BackgroundConfig, BorderStyle, Config, ConfigError, EffectKind, GeneralConfig,
-    GraphStyle, HeaderConfig, LayoutConfig, LayoutMode, MatrixCharset, MatrixConfig,
-    ParticlesConfig, RegionConfig, RegionUnit, ScanlinesConfig, SizeSpec, StartupConfig,
-    StartupCursorConfig, StartupMode, StartupTrigger, ThemeConfig, TypographyConfig, ViewMode,
-    WaterConfig, WidgetConfig, WidgetId,
+    Align, BackgroundConfig, BorderStyle, Config, ConfigError, EffectKind, GeneralConfig,
+    GraphStyle, HeaderConfig, MatrixCharset, MatrixConfig, ParticlesConfig, RegionConfig,
+    RegionUnit, ScanlinesConfig, StartupConfig, StartupCursorConfig, StartupMode, StartupTrigger,
+    ThemeConfig, TypographyConfig, UiConfig, ViewMode, WaterConfig,
 };
 pub use theme_loader::{ThemeEntry, load_all_themes};

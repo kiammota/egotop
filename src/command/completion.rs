@@ -87,7 +87,6 @@ impl CompletionEngine {
                     complete_layout(&prev_args, &current_token, ctx.layouts)
                 }
                 CompletionProviderKind::SetOption => complete_set_option(&prev_args, &current_token),
-                CompletionProviderKind::Window => complete_window(&prev_args, &current_token),
                 CompletionProviderKind::Effect => {
                     if prev_args.is_empty() {
                         complete_from_pairs(
@@ -110,9 +109,8 @@ impl CompletionEngine {
                         complete_from_pairs(
                             &current_token,
                             &[
-                                ("all", "Write egotop.toml and window.toml"),
+                                ("all", "Write egotop.toml"),
                                 ("config", "Write ~/.config/egotop/egotop.toml"),
-                                ("window", "Write ~/.config/egotop/window.toml"),
                                 (
                                     "theme",
                                     "Write active theme colors and borders into egotop.toml",
@@ -397,9 +395,7 @@ fn complete_background(
 fn complete_layout(prev_args: &[String], current: &str, layouts: &[String]) -> Vec<CompletionItem> {
     let p = current.to_ascii_lowercase();
     let mode_pairs = [
-        ("responsive", "Responsive multi-band layout"),
-        ("free", "Free anchor-based placement"),
-        ("compact", "Compact layout for smaller windows"),
+        ("compact", "Compact container layout"),
         ("minimal", "Minimal greeting-focused layout"),
         ("dashboard", "Full dashboard view mode"),
     ];
@@ -515,81 +511,6 @@ fn complete_set_option(prev_args: &[String], current: &str) -> Vec<CompletionIte
         {
             return complete_from_pairs(&p, suggested_chars_for_property(prop), None);
         }
-    }
-
-    Vec::new()
-}
-
-fn complete_window(prev_args: &[String], current: &str) -> Vec<CompletionItem> {
-    let p = current.to_ascii_lowercase();
-    if prev_args.is_empty() {
-        return complete_from_pairs(
-            &p,
-            &[
-                ("center", "Center window in viewport"),
-                ("anchor", "Set window anchor position"),
-                ("border", "Toggle or change window border style"),
-                ("bg", "Set window background (solid | transparent)"),
-                ("drag", "Enable or disable window dragging"),
-                ("resize", "Enable or disable window resizing"),
-                ("padding", "Set internal window padding"),
-                ("show", "Show the main window"),
-                ("hide", "Hide the main window"),
-                ("toggle", "Toggle window visibility"),
-                ("reset", "Reset window geometry to default"),
-            ],
-            None,
-        );
-    }
-
-    if prev_args.len() == 1 {
-        return match prev_args[0].to_ascii_lowercase().as_str() {
-            "anchor" => complete_from_pairs(
-                &p,
-                &[
-                    ("top-left", "Top-left corner"),
-                    ("top-center", "Top edge center"),
-                    ("top-right", "Top-right corner"),
-                    ("center-left", "Middle-left edge"),
-                    ("center", "Viewport center"),
-                    ("center-right", "Middle-right edge"),
-                    ("bottom-left", "Bottom-left corner"),
-                    ("bottom-center", "Bottom edge center"),
-                    ("bottom-right", "Bottom-right corner"),
-                ],
-                None,
-            ),
-            "border" => complete_from_pairs(
-                &p,
-                &[
-                    ("on", "Enable window border"),
-                    ("off", "Disable window border"),
-                    ("rounded", "Rounded border style"),
-                    ("plain", "Plain sharp border style"),
-                    ("double", "Double-line border style"),
-                    ("thick", "Thick heavy border style"),
-                ],
-                None,
-            ),
-            "bg" | "background" => complete_from_pairs(
-                &p,
-                &[
-                    ("solid", "Solid panel background"),
-                    ("transparent", "Terminal cell transparency (Color::Reset)"),
-                ],
-                None,
-            ),
-            "drag" | "resize" => complete_from_pairs(
-                &p,
-                &[
-                    ("on", "Enable"),
-                    ("off", "Disable"),
-                    ("toggle", "Toggle current state"),
-                ],
-                None,
-            ),
-            _ => Vec::new(),
-        };
     }
 
     Vec::new()

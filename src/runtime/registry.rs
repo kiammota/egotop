@@ -6,7 +6,6 @@ use std::path::PathBuf;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ResourceKind {
     ApplicationConfig,
-    WindowConfig,
     Theme,
     Animation,
     Background,
@@ -18,7 +17,6 @@ impl ResourceKind {
     pub fn label(self) -> &'static str {
         match self {
             Self::ApplicationConfig => "ApplicationConfig",
-            Self::WindowConfig => "WindowConfig",
             Self::Theme => "Theme",
             Self::Animation => "Animation",
             Self::Background => "Background",
@@ -51,10 +49,6 @@ impl ResourceId {
 
     pub fn app_config() -> Self {
         Self::new(ResourceKind::ApplicationConfig, "egotop")
-    }
-
-    pub fn window_config() -> Self {
-        Self::new(ResourceKind::WindowConfig, "window")
     }
 
     pub fn background() -> Self {

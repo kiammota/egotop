@@ -52,11 +52,12 @@ fn summary_command(config_override: Option<&Path>) -> Result<i32> {
         (Config::default(), false)
     };
 
-    let enabled_widgets: Vec<&str> = cfg
-        .widgets
-        .iter()
-        .filter(|w| w.enabled)
-        .map(|w| w.id.default_title())
+    let mut components = Vec::new();
+    crate::ui::customizer::collect_component_ids(&cfg.ui.root, &mut components);
+    let enabled_components: Vec<String> = components
+        .into_iter()
+        .filter(|(_, visible)| *visible)
+        .map(|(id, _)| id)
         .collect();
 
     println!("egotop configuration summary");
@@ -65,7 +66,6 @@ fn summary_command(config_override: Option<&Path>) -> Result<i32> {
     println!("  theme:             {}", cfg.theme.name);
     println!("  border_type:       {}", cfg.theme.border_type.label());
     println!("  view_mode:         {}", cfg.general.view_mode.label());
-    println!("  layout_mode:       {:?}", cfg.layout.mode);
     println!("  startup_mode:      {:?}", cfg.startup.mode);
     println!("  startup_animation: {}", cfg.general.startup_animation);
     println!(
@@ -76,12 +76,12 @@ fn summary_command(config_override: Option<&Path>) -> Result<i32> {
     );
     println!("  font / logo_font:  {} / {}", cfg.typography.font, cfg.typography.logo_font);
     println!(
-        "  widgets ({}):      {}",
-        enabled_widgets.len(),
-        if enabled_widgets.is_empty() {
+        "  components ({}):   {}",
+        enabled_components.len(),
+        if enabled_components.is_empty() {
             "none".to_string()
         } else {
-            enabled_widgets.join(", ")
+            enabled_components.join(", ")
         }
     );
     Ok(0)
@@ -125,12 +125,14 @@ pub fn validate_command(config_override: Option<&Path>) -> Result<i32> {
 
     if errors.is_empty() {
         let cfg = load_from_path(&path)?;
+        let mut comps = Vec::new();
+        crate::ui::customizer::collect_component_ids(&cfg.ui.root, &mut comps);
         println!(
-            "Configuration OK: {} (theme='{}', effect='{}', widgets={})",
+            "Configuration OK: {} (theme='{}', effect='{}', components={})",
             path.display(),
             cfg.theme.name,
             cfg.background.effect.label(),
-            cfg.widgets.len()
+            comps.len()
         );
         return Ok(0);
     }

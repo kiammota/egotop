@@ -11,10 +11,6 @@ pub fn main_config_path() -> PathBuf {
     root_path().join("egotop.toml")
 }
 
-pub fn window_config_path() -> PathBuf {
-    root_path().join("window.toml")
-}
-
 pub fn themes_path() -> PathBuf {
     root_path().join("themes")
 }

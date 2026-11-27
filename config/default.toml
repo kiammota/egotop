@@ -20,8 +20,6 @@ date_format = "%m/%d/%Y"
 hide_unavailable = false
 # Default view mode: "dashboard" | "compact" | "minimal"
 view_mode = "dashboard"
-# Initial page (1..=3)
-default_page = 1
 # Startup transition animation: "crt_power_on" | "curtains" | "fade" | "slide" | "matrix_boot" | "none"
 # Or any custom animation name from ~/.config/egotop/animations/*.toml
 startup_animation = "matrix_boot"
@@ -137,77 +135,143 @@ spacing = 2
 intensity = 0.35
 color = "#164A2E"
 
-[layout]
-# Layout mode: "responsive" | "free" | "compact"
-mode = "responsive"
+[ui.root]
+id = "root"
+visible = true
+direction = "vertical"
+width = "100%"
+height = "100%"
 padding = 1
 gap = 1
-min_width_for_split = 88
 
-# ==============================================================================
-# Widgets — Each panel can be customized independently
-# Positions: "top-left", "top-center", "top-right",
-#            "center-left", "center", "center-right",
-#            "bottom-left", "bottom-center", "bottom-right", "absolute"
-# ==============================================================================
+[[ui.root.children]]
+node = "component"
+id = "header"
+category = "dynamic"
+type = "header"
+width = "fill"
+height = 1
 
-[[widgets]]
+[[ui.root.children]]
+node = "component"
 id = "greeting"
-enabled = true
-title = "Welcome"
-position = "top-center"
-page = 1
-z_index = 20
+category = "static"
+type = "greeting"
+width = "fill"
+height = 7
+min_height = 5
+
+[ui.root.children.visual]
 align = "center"
+padding = 1
 font = "ANSI Shadow"
-reveal_animation = true
-show_border = true
 
-[[widgets]]
+[ui.root.children.visual.border]
+enabled = true
+style = "rounded"
+title = "Welcome"
+
+[[ui.root.children]]
+node = "container"
+id = "middle_row"
+direction = "horizontal"
+width = "fill"
+height = "fill"
+min_height = 6
+gap = 1
+
+[[ui.root.children.children]]
+node = "component"
 id = "system"
-enabled = true
-title = "System"
-position = "center-left"
-page = 1
+category = "dynamic"
+type = "system"
 width = "50%"
-z_index = 10
-align = "left"
+height = "fill"
 
-[[widgets]]
-id = "hardware"
-enabled = true
-title = "Hardware"
-position = "center-right"
-page = 1
-width = "50%"
-z_index = 10
+[ui.root.children.children.visual]
 align = "left"
+padding = 1
+
+[ui.root.children.children.visual.border]
+enabled = true
+style = "rounded"
+title = "System"
+
+[[ui.root.children.children]]
+node = "component"
+id = "hardware"
+category = "dynamic"
+type = "hardware"
+width = "50%"
+height = "fill"
+
+[ui.root.children.children.visual]
+align = "left"
+padding = 1
 graph_style = "bar"
 
-[[widgets]]
-id = "activity"
+[ui.root.children.children.visual.border]
 enabled = true
-title = "Activity"
-position = "bottom-left"
-page = 1
+style = "rounded"
+title = "Hardware"
+
+[[ui.root.children]]
+node = "container"
+id = "bottom_row"
+direction = "horizontal"
+width = "fill"
+height = "fill"
+min_height = 6
+gap = 1
+
+[[ui.root.children.children]]
+node = "component"
+id = "activity"
+category = "dynamic"
+type = "activity"
 width = "60%"
-z_index = 10
+height = "fill"
+
+[ui.root.children.children.visual]
+align = "left"
+padding = 1
 graph_style = "sparkline"
 
-[[widgets]]
-id = "session"
+[ui.root.children.children.visual.border]
 enabled = true
-title = "Session & Uptime"
-position = "bottom-right"
-page = 1
-width = "40%"
-z_index = 10
+style = "rounded"
+title = "Activity"
 
-[[widgets]]
-id = "message"
-enabled = false
-title = "Message"
-position = "bottom-center"
-page = 1
-z_index = 15
-align = "center"
+[[ui.root.children.children]]
+node = "component"
+id = "session"
+category = "dynamic"
+type = "session"
+width = "40%"
+height = "fill"
+
+[ui.root.children.children.visual]
+align = "left"
+padding = 1
+
+[ui.root.children.children.visual.border]
+enabled = true
+style = "rounded"
+title = "Session & Uptime"
+
+[[ui.root.children]]
+node = "component"
+id = "status_spinner"
+category = "animated"
+type = "spinner"
+width = "fill"
+height = 1
+
+[ui.root.children.content]
+text = "Monitoring system telemetry"
+
+[ui.root.children.animation]
+fps = 12
+speed = 1.0
+loop_anim = true
+style = "braille"

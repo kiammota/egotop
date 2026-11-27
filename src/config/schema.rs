@@ -1,7 +1,6 @@
 use crate::ui::borders::BorderCharsConfig;
-use crate::window::{PositionMode, WindowConfig};
-use serde::{Deserialize, Deserializer, Serialize};
-use std::collections::BTreeMap;
+use crate::ui::container::{ContainerConfig, default_ui_tree};
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use thiserror::Error;
 
@@ -21,6 +20,20 @@ pub enum ConfigError {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
+pub struct UiConfig {
+    pub root: ContainerConfig,
+}
+
+impl Default for UiConfig {
+    fn default() -> Self {
+        Self {
+            root: default_ui_tree(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
 pub struct Config {
     pub general: GeneralConfig,
     pub startup: StartupConfig,
@@ -28,14 +41,7 @@ pub struct Config {
     pub typography: TypographyConfig,
     pub header: HeaderConfig,
     pub background: BackgroundConfig,
-    pub layout: LayoutConfig,
-    pub widgets: Vec<WidgetConfig>,
-    #[serde(
-        default,
-        skip_serializing_if = "BTreeMap::is_empty",
-        deserialize_with = "deserialize_windows_map"
-    )]
-    pub windows: BTreeMap<String, WindowConfig>,
+    pub ui: UiConfig,
 }
 
 impl Default for Config {
@@ -47,40 +53,9 @@ impl Default for Config {
             typography: TypographyConfig::default(),
             header: HeaderConfig::default(),
             background: BackgroundConfig::default(),
-            layout: LayoutConfig::default(),
-            widgets: default_widgets(),
-            windows: BTreeMap::new(),
+            ui: UiConfig::default(),
         }
     }
-}
-
-fn deserialize_windows_map<'de, D>(
-    deserializer: D,
-) -> Result<BTreeMap<String, WindowConfig>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let raw_map: BTreeMap<String, toml::Value> = BTreeMap::deserialize(deserializer)?;
-    let mut out = BTreeMap::new();
-    for (key, val) in raw_map {
-        let mut cfg: WindowConfig = val
-            .clone()
-            .try_into()
-            .map_err(serde::de::Error::custom)?;
-        if cfg.id == "main" || cfg.id.trim().is_empty() {
-            cfg.id = key.clone();
-        }
-        if let Some(tbl) = val.as_table() {
-            let has_explicit_pos = tbl.contains_key("position");
-            let has_explicit_anchor = tbl.contains_key("anchor");
-            let has_coords = tbl.contains_key("x") || tbl.contains_key("y");
-            if !has_explicit_pos && !has_explicit_anchor && has_coords {
-                cfg.position = PositionMode::Absolute;
-            }
-        }
-        out.insert(key, cfg);
-    }
-    Ok(out)
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -138,78 +113,6 @@ impl Default for StartupConfig {
             cursor: StartupCursorConfig::default(),
         }
     }
-}
-
-pub fn default_widgets() -> Vec<WidgetConfig> {
-    vec![
-        WidgetConfig {
-            id: WidgetId::Greeting,
-            enabled: true,
-            title: Some("Welcome".to_string()),
-            position: Anchor::TopCenter,
-            page: Some(1),
-            z_index: 20,
-            align: Align::Center,
-            font: Some("ANSI Shadow".to_string()),
-            reveal_animation: Some(true),
-            show_border: Some(true),
-            ..WidgetConfig::default()
-        },
-        WidgetConfig {
-            id: WidgetId::System,
-            enabled: true,
-            title: Some("System".to_string()),
-            position: Anchor::CenterLeft,
-            page: Some(1),
-            width: Some(SizeSpec::Percent(50)),
-            z_index: 10,
-            align: Align::Left,
-            ..WidgetConfig::default()
-        },
-        WidgetConfig {
-            id: WidgetId::Hardware,
-            enabled: true,
-            title: Some("Hardware".to_string()),
-            position: Anchor::CenterRight,
-            page: Some(1),
-            width: Some(SizeSpec::Percent(50)),
-            z_index: 10,
-            align: Align::Left,
-            graph_style: Some(GraphStyle::Bar),
-            ..WidgetConfig::default()
-        },
-        WidgetConfig {
-            id: WidgetId::Activity,
-            enabled: true,
-            title: Some("Activity".to_string()),
-            position: Anchor::BottomLeft,
-            page: Some(1),
-            width: Some(SizeSpec::Percent(60)),
-            z_index: 10,
-            graph_style: Some(GraphStyle::Sparkline),
-            ..WidgetConfig::default()
-        },
-        WidgetConfig {
-            id: WidgetId::Session,
-            enabled: true,
-            title: Some("Session & Uptime".to_string()),
-            position: Anchor::BottomRight,
-            page: Some(1),
-            width: Some(SizeSpec::Percent(40)),
-            z_index: 10,
-            ..WidgetConfig::default()
-        },
-        WidgetConfig {
-            id: WidgetId::Message,
-            enabled: false,
-            title: Some("Message".to_string()),
-            position: Anchor::BottomCenter,
-            page: Some(1),
-            z_index: 15,
-            align: Align::Center,
-            ..WidgetConfig::default()
-        },
-    ]
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -606,79 +509,6 @@ impl Default for ScanlinesConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(default)]
-pub struct LayoutConfig {
-    pub mode: LayoutMode,
-    pub padding: u16,
-    pub gap: u16,
-    pub min_width_for_split: u16,
-}
-
-impl Default for LayoutConfig {
-    fn default() -> Self {
-        Self {
-            mode: LayoutMode::Responsive,
-            padding: 1,
-            gap: 1,
-            min_width_for_split: 88,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
-#[serde(rename_all = "lowercase")]
-pub enum LayoutMode {
-    #[default]
-    Responsive,
-    Free,
-    Compact,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
-#[serde(rename_all = "lowercase")]
-pub enum WidgetId {
-    Greeting,
-    Logo,
-    System,
-    Hardware,
-    Activity,
-    Session,
-    Uptime,
-    Message,
-}
-
-impl WidgetId {
-    pub fn default_title(self) -> &'static str {
-        match self {
-            Self::Greeting => "Welcome",
-            Self::Logo => "Logo",
-            Self::System => "System",
-            Self::Hardware => "Hardware",
-            Self::Activity => "Activity",
-            Self::Session => "Session",
-            Self::Uptime => "Uptime",
-            Self::Message => "Message",
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
-#[serde(rename_all = "kebab-case")]
-pub enum Anchor {
-    TopLeft,
-    TopCenter,
-    TopRight,
-    CenterLeft,
-    #[default]
-    Center,
-    CenterRight,
-    BottomLeft,
-    BottomCenter,
-    BottomRight,
-    Absolute,
-}
-
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum Align {
@@ -694,105 +524,6 @@ pub enum GraphStyle {
     #[default]
     Sparkline,
     Bar,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SizeSpec {
-    Cells(u16),
-    Percent(u16),
-}
-
-impl Serialize for SizeSpec {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        match self {
-            Self::Cells(n) => serializer.serialize_u16(*n),
-            Self::Percent(p) => serializer.serialize_str(&format!("{p}%")),
-        }
-    }
-}
-
-impl<'de> Deserialize<'de> for SizeSpec {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        #[derive(Deserialize)]
-        #[serde(untagged)]
-        enum Raw {
-            Num(u16),
-            Text(String),
-        }
-
-        match Raw::deserialize(deserializer)? {
-            Raw::Num(n) => Ok(Self::Cells(n)),
-            Raw::Text(s) => {
-                let trimmed = s.trim();
-                if let Some(pct) = trimmed.strip_suffix('%') {
-                    let val: u16 = pct
-                        .trim()
-                        .parse()
-                        .map_err(|_| serde::de::Error::custom("invalid percentage size"))?;
-                    Ok(Self::Percent(val.min(100)))
-                } else {
-                    let val: u16 = trimmed
-                        .parse()
-                        .map_err(|_| serde::de::Error::custom("invalid cell size"))?;
-                    Ok(Self::Cells(val))
-                }
-            }
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(default)]
-pub struct WidgetConfig {
-    pub id: WidgetId,
-    pub enabled: bool,
-    pub title: Option<String>,
-    pub position: Anchor,
-    pub page: Option<u8>,
-    pub x: Option<u16>,
-    pub y: Option<u16>,
-    pub offset_x: i16,
-    pub offset_y: i16,
-    pub width: Option<SizeSpec>,
-    pub height: Option<SizeSpec>,
-    pub align: Align,
-    pub padding: u16,
-    pub z_index: i32,
-    pub font: Option<String>,
-    pub color: Option<String>,
-    pub border_color: Option<String>,
-    pub show_border: Option<bool>,
-    pub fields: Option<Vec<String>>,
-    pub graph_style: Option<GraphStyle>,
-    pub reveal_animation: Option<bool>,
-}
-
-impl Default for WidgetConfig {
-    fn default() -> Self {
-        Self {
-            id: WidgetId::System,
-            enabled: true,
-            title: None,
-            position: Anchor::Center,
-            page: Some(1),
-            x: None,
-            y: None,
-            offset_x: 0,
-            offset_y: 0,
-            width: None,
-            height: None,
-            align: Align::Left,
-            padding: 1,
-            z_index: 10,
-            font: None,
-            color: None,
-            border_color: None,
-            show_border: Some(true),
-            fields: None,
-            graph_style: None,
-            reveal_animation: None,
-        }
-    }
 }
 
 impl Config {

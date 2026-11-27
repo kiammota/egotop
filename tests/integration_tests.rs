@@ -7,41 +7,41 @@ use egotop::animation::{
 };
 use egotop::command::{
     AnimationAction, BackgroundCommand, CommandLineState, CommandRegistry, CompletionContext,
-    CompletionEngine, LayoutSelection, ParsedCommand, WindowCommand, WriteTarget, parse_command,
+    CompletionEngine, LayoutSelection, ParsedCommand, WriteTarget, parse_command,
 };
 use egotop::config::{
-    Anchor, AnimationDefinition, AnimationPackage, BackgroundConfig, BorderStyle, Config,
-    DeclarativeAnimation, EffectKind, LayoutMode, PackageOrigin, RegionConfig, RegionUnit,
-    SizeSpec, StartupMode, ThemeEntry, ViewMode, WidgetConfig, WidgetId, load_from_path,
-    load_or_create, load_packages_from_dir, validate_safe_asset_path,
+    AnimationDefinition, AnimationPackage, BackgroundConfig, BorderStyle, Config,
+    DeclarativeAnimation, EffectKind, PackageOrigin, RegionConfig, RegionUnit, StartupMode,
+    ThemeEntry, ViewMode, load_from_path, load_or_create, load_packages_from_dir,
+    validate_safe_asset_path,
 };
 use egotop::system::SystemCollector;
 use egotop::system::os::parse_os_release;
 use egotop::system::uptime::format_uptime;
 use egotop::terminal::renderer::{CursorStartupState, draw_frame};
-use egotop::ui::RevealState;
 use egotop::ui::borders::{BorderChars, parse_border_style, validate_border_char};
 use egotop::runtime::{
     ChangeDebouncer, ConfigurationRuntime, LoadStatus, ManagedAppTarget, ResourceId, ResourceKind,
     ResourceRegistry, RuntimePaths, RuntimeResourceManager, ValidationStatus, WatchEventKind,
 };
+use egotop::ui::components::render_clipped;
 use egotop::ui::customizer::{
     CustomizerState, CustomizerTab, DiagnosticsOverlayState, DiagnosticsViewMode, render_customizer,
     render_diagnostics_overlay,
 };
 use egotop::ui::fonts::{FigletFont, available_fonts, load_font, normalize_ascii_text};
-use egotop::ui::layout::compute_layout;
 use egotop::ui::theme::{Theme, adapt_color, parse_color, rgb_to_ansi256};
 use egotop::ui::typography::render_ascii_heading;
 use egotop::ui::widgets::{
     RenderContext, allocate_three_column_widths, pad_display_width, render_command_line,
     truncate_display_width,
 };
-use unicode_width::UnicodeWidthStr;
-use egotop::window::{
-    Compositor, PositionMode, WindowBackgroundMode, WindowConfig, WindowManager,
-    resolve_window_rect,
+use egotop::ui::{
+    ComponentAnimationStore, ComponentCategory, ComponentConfig, ComponentKind,
+    ContainerBorderConfig, ContainerConfig, ContainerDirection, ContainerNode, ContainerSize,
+    RevealState, compute_container_layout, compute_dashboard_layout,
 };
+use unicode_width::UnicodeWidthStr;
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
@@ -102,35 +102,93 @@ fn config_rejects_invalid_toml_and_out_of_range_values() {
 }
 
 #[test]
-fn window_engine_anchors_drag_resize_and_clamping() {
-    let viewport = Rect::new(0, 0, 120, 40);
-    let mut cfg = WindowConfig {
-        anchor: Anchor::TopLeft,
-        width: SizeSpec::Cells(60),
-        height: SizeSpec::Cells(20),
-        ..WindowConfig::default()
+fn container_tree_layout_fixed_relative_fill_padding_gap_visibility() {
+    let root = ContainerConfig {
+        id: "root".to_string(),
+        visible: true,
+        direction: ContainerDirection::Vertical,
+        width: ContainerSize::Percent(100),
+        height: ContainerSize::Percent(100),
+        padding: 1,
+        gap: 1,
+        border: ContainerBorderConfig::titled("Root"),
+        children: vec![
+            ContainerNode::Component(ComponentConfig {
+                id: "top_fixed".to_string(),
+                visible: true,
+                category: ComponentCategory::Static,
+                kind: ComponentKind::Text,
+                width: ContainerSize::Fill(1),
+                height: ContainerSize::Fixed(3),
+                ..ComponentConfig::default()
+            }),
+            ContainerNode::Component(ComponentConfig {
+                id: "hidden_node".to_string(),
+                visible: false,
+                category: ComponentCategory::Static,
+                kind: ComponentKind::Text,
+                width: ContainerSize::Fill(1),
+                height: ContainerSize::Fixed(10),
+                ..ComponentConfig::default()
+            }),
+            ContainerNode::Container(ContainerConfig {
+                id: "row".to_string(),
+                visible: true,
+                direction: ContainerDirection::Horizontal,
+                width: ContainerSize::Fill(1),
+                height: ContainerSize::Fill(1),
+                gap: 2,
+                children: vec![
+                    ContainerNode::Component(ComponentConfig {
+                        id: "left_pct".to_string(),
+                        visible: true,
+                        category: ComponentCategory::Dynamic,
+                        kind: ComponentKind::Cpu,
+                        width: ContainerSize::Percent(30),
+                        max_width: Some(25),
+                        height: ContainerSize::Fill(1),
+                        ..ComponentConfig::default()
+                    }),
+                    ContainerNode::Component(ComponentConfig {
+                        id: "right_fill".to_string(),
+                        visible: true,
+                        category: ComponentCategory::Dynamic,
+                        kind: ComponentKind::Memory,
+                        width: ContainerSize::Fill(1),
+                        height: ContainerSize::Fill(1),
+                        ..ComponentConfig::default()
+                    }),
+                ],
+                ..ContainerConfig::default()
+            }),
+        ],
+        ..ContainerConfig::default()
     };
-    assert_eq!(resolve_window_rect(&cfg, viewport), Rect::new(0, 0, 60, 20));
 
-    cfg.anchor = Anchor::BottomRight;
-    assert_eq!(resolve_window_rect(&cfg, viewport), Rect::new(60, 20, 60, 20));
+    let viewport = Rect::new(0, 0, 100, 30);
+    let layout = compute_container_layout(viewport, &root);
 
-    let mut mgr = WindowManager::new(cfg);
-    mgr.resolve_all(viewport);
-    let top_row = mgr.main_window().resolved_rect.y;
-    let left_col = mgr.main_window().resolved_rect.x + 5;
-    assert!(mgr.begin_mouse_down(left_col, top_row, viewport));
-    assert!(mgr.update_mouse_drag(left_col - 10, top_row - 5, viewport));
-    mgr.end_mouse_drag();
-    assert_eq!(mgr.main_window().config.position, PositionMode::Absolute);
-    assert_eq!(mgr.main_window().resolved_rect.x, 50);
-    assert_eq!(mgr.main_window().resolved_rect.y, 15);
+    // Hidden node must not be placed or consume gap
+    assert!(layout.find_component("hidden_node").is_none());
 
-    let r = mgr.main_window().resolved_rect;
-    assert!(mgr.begin_mouse_down(r.right() - 1, r.bottom() - 1, viewport));
-    assert!(mgr.update_mouse_drag(r.right() + 5, r.bottom() + 2, viewport));
-    mgr.end_mouse_drag();
-    assert!(mgr.main_window().resolved_rect.width >= 60);
+    let root_placed = layout.find_container("root").unwrap();
+    // 1 cell border + 1 cell padding on all sides => inset 2
+    assert_eq!(root_placed.inner_rect, Rect::new(2, 2, 96, 26));
+
+    let top = layout.find_component("top_fixed").unwrap();
+    assert_eq!(top.outer_rect, Rect::new(2, 2, 96, 3));
+
+    let row = layout.find_container("row").unwrap();
+    // y = 2 + 3 (top) + 1 (gap) = 6; height = 26 - 3 - 1 = 22
+    assert_eq!(row.outer_rect, Rect::new(2, 6, 96, 22));
+
+    let left = layout.find_component("left_pct").unwrap();
+    // 30% of (96 - 2 gap) = 28, clamped by max_width=25
+    assert_eq!(left.outer_rect, Rect::new(2, 6, 25, 22));
+
+    let right = layout.find_component("right_fill").unwrap();
+    // x = 2 + 25 + 2 (gap) = 29; width = 96 - 2 - 25 = 69
+    assert_eq!(right.outer_rect, Rect::new(29, 6, 69, 22));
 }
 
 #[test]
@@ -139,8 +197,8 @@ fn command_parser_and_contextual_completion_engine() {
     assert_eq!(parse_command(":w").unwrap(), ParsedCommand::Write(WriteTarget::All));
     assert_eq!(parse_command(":write").unwrap(), ParsedCommand::Write(WriteTarget::All));
     assert_eq!(
-        parse_command(":write window").unwrap(),
-        ParsedCommand::Write(WriteTarget::Window)
+        parse_command(":write config").unwrap(),
+        ParsedCommand::Write(WriteTarget::Config)
     );
     assert_eq!(parse_command(":q").unwrap(), ParsedCommand::Quit);
     assert_eq!(parse_command(":quit").unwrap(), ParsedCommand::Quit);
@@ -164,14 +222,6 @@ fn command_parser_and_contextual_completion_engine() {
             action: AnimationAction::Play,
             name: Some("crt_power_on".to_string()),
         }
-    );
-    assert_eq!(
-        parse_command(":window border plain").unwrap(),
-        ParsedCommand::Window(WindowCommand::SetBorderStyle(BorderStyle::Plain))
-    );
-    assert_eq!(
-        parse_command(":window bg transparent").unwrap(),
-        ParsedCommand::Window(WindowCommand::SetBackground(WindowBackgroundMode::Transparent))
     );
     assert_eq!(
         parse_command(":layout load compact").unwrap(),
@@ -349,7 +399,7 @@ fn full_dashboard_and_cursor_startup_render_via_test_backend() {
     let mut effect = create_effect(EffectKind::Matrix, 120, 36, &cfg.background);
     effect.update(0.05, &cfg.background);
 
-    let mut windows = WindowManager::new(WindowConfig::default());
+    let mut anim_store = ComponentAnimationStore::new();
     let catalog = AnimationCatalog::load();
     let transition = TransitionPlayer::new("none", &catalog, 0);
     let mut customizer = CustomizerState::default();
@@ -380,13 +430,12 @@ fn full_dashboard_and_cursor_startup_render_via_test_backend() {
         theme: &theme,
         snapshot: &snapshot,
         reveal: &reveal,
-        active_page: 1,
         view_mode: ViewMode::Dashboard,
         paused: false,
         show_help: false,
         fps: 30.0,
         status_toast: None,
-        window_transparent: false,
+        transparent_bg: false,
         config_error_count: 0,
     };
     terminal
@@ -396,7 +445,7 @@ fn full_dashboard_and_cursor_startup_render_via_test_backend() {
                 &cfg,
                 effect.as_ref(),
                 &transition,
-                &mut windows,
+                &anim_store,
                 &mut customizer,
                 &cmd_line,
                 &startup,
@@ -412,6 +461,8 @@ fn full_dashboard_and_cursor_startup_render_via_test_backend() {
 
     // 2. Normal dashboard + autocomplete popup + custom border character '━'
     startup.pending = false;
+    let layout = compute_dashboard_layout(Rect::new(0, 0, 120, 36), &cfg, ViewMode::Dashboard);
+    anim_store.update_all(0.1, &layout, &cfg, &catalog);
     cmd_line.open(&registry, &cctx);
     cmd_line.insert_char('c', &registry, &cctx);
     cmd_line.insert_char('o', &registry, &cctx);
@@ -423,7 +474,7 @@ fn full_dashboard_and_cursor_startup_render_via_test_backend() {
                 &cfg,
                 effect.as_ref(),
                 &transition,
-                &mut windows,
+                &anim_store,
                 &mut customizer,
                 &cmd_line,
                 &startup,
@@ -467,7 +518,7 @@ fn full_dashboard_and_cursor_startup_render_via_test_backend() {
                     &cfg,
                     effect.as_ref(),
                     &transition,
-                    &mut windows,
+                    &anim_store,
                     &mut customizer,
                     &cmd_line,
                     &startup,
@@ -529,63 +580,60 @@ ID=arch
 }
 
 #[test]
-fn layout_adapts_to_resizes_and_respects_z_index_and_anchors() {
-    let mut cfg = Config {
-        widgets: vec![
-            WidgetConfig {
-                id: WidgetId::System,
-                enabled: true,
-                position: Anchor::TopRight,
-                width: Some(SizeSpec::Percent(40)),
-                z_index: 50,
-                ..WidgetConfig::default()
-            },
-            WidgetConfig {
-                id: WidgetId::Hardware,
-                enabled: true,
-                position: Anchor::TopLeft,
-                width: Some(SizeSpec::Percent(60)),
-                z_index: 10,
-                ..WidgetConfig::default()
-            },
-            WidgetConfig {
-                id: WidgetId::Activity,
-                enabled: false,
-                ..WidgetConfig::default()
-            },
-        ],
-        ..Config::default()
-    };
+fn container_layout_small_terminal_resize_no_overlap_and_clipping() {
+    let cfg = Config::default();
 
-    let wide = Rect::new(0, 0, 140, 40);
-    let l_wide = compute_layout(wide, &cfg, 1, ViewMode::Dashboard);
-    assert_eq!(l_wide.widgets.len(), 2);
-    assert_eq!(l_wide.widgets[0].config.id, WidgetId::Hardware);
-    assert_eq!(l_wide.widgets[1].config.id, WidgetId::System);
-    assert!(l_wide.widgets[0].area.x < l_wide.widgets[1].area.x);
-
-    for (w, h) in [(20, 8), (45, 16), (80, 24), (200, 60)] {
+    for (w, h) in [(0, 0), (6, 3), (10, 4), (20, 8), (45, 16), (80, 24), (200, 60)] {
         let screen = Rect::new(0, 0, w, h);
-        let l = compute_layout(screen, &cfg, 1, ViewMode::Dashboard);
-        for placed in l.widgets {
-            assert!(placed.area.right() <= screen.right());
-            assert!(placed.area.bottom() <= screen.bottom());
+        for mode in [ViewMode::Dashboard, ViewMode::Compact, ViewMode::Minimal] {
+            let layout = compute_dashboard_layout(screen, &cfg, mode);
+            for comp in &layout.components {
+                assert!(comp.outer_rect.right() <= screen.right());
+                assert!(comp.outer_rect.bottom() <= screen.bottom());
+                assert!(comp.inner_rect.right() <= comp.outer_rect.right());
+                assert!(comp.inner_rect.bottom() <= comp.outer_rect.bottom());
+            }
+            // Verify zero pairwise overlap among all placed components
+            for i in 0..layout.components.len() {
+                for j in (i + 1)..layout.components.len() {
+                    let a = layout.components[i].outer_rect;
+                    let b = layout.components[j].outer_rect;
+                    let overlap_x = a.x < b.right() && b.x < a.right();
+                    let overlap_y = a.y < b.bottom() && b.y < a.bottom();
+                    assert!(
+                        !(overlap_x && overlap_y),
+                        "Components {} ({a:?}) and {} ({b:?}) overlapped at {w}x{h} ({mode:?})",
+                        layout.components[i].id,
+                        layout.components[j].id
+                    );
+                }
+            }
         }
     }
 
-    cfg.layout.mode = LayoutMode::Free;
-    let l_free = compute_layout(Rect::new(0, 0, 100, 40), &cfg, 1, ViewMode::Dashboard);
-    let hw = l_free
-        .widgets
-        .iter()
-        .find(|w| w.config.id == WidgetId::Hardware)
-        .unwrap();
-    let sys = l_free
-        .widgets
-        .iter()
-        .find(|w| w.config.id == WidgetId::System)
-        .unwrap();
-    assert!(hw.area.x < sys.area.x);
+    // Verify render_clipped never writes outside target_rect
+    let mut term = Terminal::new(TestBackend::new(20, 10)).unwrap();
+    let target = Rect::new(5, 3, 6, 4);
+    term.draw(|frame| {
+        render_clipped(frame, target, |buf, local| {
+            // Attempt to draw inside local bounds (and even beyond via set_stringn)
+            for y in 0..local.height {
+                buf.set_stringn(0, y, "XXXXXXXXXXXX", local.width as usize, ratatui::style::Style::default());
+            }
+        });
+    })
+    .unwrap();
+    let buf = term.backend().buffer();
+    for y in 0..10u16 {
+        for x in 0..20u16 {
+            let inside = x >= target.x && x < target.right() && y >= target.y && y < target.bottom();
+            if inside {
+                assert_eq!(buf[(x, y)].symbol(), "X");
+            } else {
+                assert_eq!(buf[(x, y)].symbol(), " ", "cell ({x},{y}) leaked outside {target:?}");
+            }
+        }
+    }
 }
 
 #[test]
@@ -744,10 +792,11 @@ fn completion_excludes_exact_matches_and_preserves_alternatives() {
         res.items
     );
 
-    // Exact command alias `:w` excludes `write`, preserves `window`
+    // Exact command alias `:w` excludes `write`, while partial `a` suggests `animation`
     let res = CompletionEngine::complete("w", 1, &registry, &ctx);
     assert!(!res.items.iter().any(|i| i.insert_text == "write"));
-    assert!(res.items.iter().any(|i| i.insert_text == "window"));
+    let res_a = CompletionEngine::complete("a", 1, &registry, &ctx);
+    assert!(res_a.items.iter().any(|i| i.insert_text == "animation"));
 
     // Case C: partial argument suggests non-exact candidates without duplicates
     let res = CompletionEngine::complete("colorscheme ma", 14, &registry, &ctx);
@@ -855,13 +904,11 @@ fn popup_layout_prevents_overflow_handles_unicode_and_resizes_cleanly() {
     };
 
     let bg = create_effect(EffectKind::None, 80, 24, &cfg.background);
-    let win_cfg = WindowConfig::default();
 
     for (term_w, term_h) in [(90u16, 28u16), (52, 18), (34, 16)] {
         for tab in [
             CustomizerTab::Animations,
             CustomizerTab::Themes,
-            CustomizerTab::Window,
             CustomizerTab::Layout,
         ] {
             let mut state = CustomizerState {
@@ -878,7 +925,6 @@ fn popup_layout_prevents_overflow_handles_unicode_and_resizes_cleanly() {
                         frame.area(),
                         &mut state,
                         &cfg,
-                        &win_cfg,
                         &themes,
                         &catalog,
                         bg.as_ref(),
@@ -962,13 +1008,12 @@ fn popup_layout_prevents_overflow_handles_unicode_and_resizes_cleanly() {
         theme: &theme,
         snapshot: &snap,
         reveal: &reveal,
-        active_page: 0,
         view_mode: ViewMode::Compact,
         paused: false,
         show_help: false,
         fps: 30.0,
         status_toast: None,
-        window_transparent: false,
+        transparent_bg: false,
         config_error_count: 0,
     };
 
@@ -977,8 +1022,7 @@ fn popup_layout_prevents_overflow_handles_unicode_and_resizes_cleanly() {
         terminal
             .draw(|frame| {
                 let area = frame.area();
-                let anchor = Rect::new(1, 1, area.width.saturating_sub(2), area.height.saturating_sub(3));
-                render_command_line(frame, area, anchor, &cmd_line, &render_ctx);
+                render_command_line(frame, area, &cmd_line, &render_ctx);
             })
             .unwrap();
         let buf = terminal.backend().buffer();
@@ -1392,14 +1436,9 @@ danger = "#FF5555"
     let mut initial_cfg = Config::default();
     initial_cfg.theme.name = "bamboo".to_string();
     std::fs::write(&paths.config_path, toml::to_string_pretty(&initial_cfg).unwrap()).unwrap();
-    std::fs::write(
-        &paths.window_path,
-        toml::to_string_pretty(&WindowConfig::default()).unwrap(),
-    )
-    .unwrap();
 
     let mut runtime =
-        ConfigurationRuntime::start(paths.clone(), initial_cfg.clone(), WindowConfig::default(), false);
+        ConfigurationRuntime::start(paths.clone(), initial_cfg.clone(), false);
     assert_eq!(runtime.diagnostics().error_count(), 0);
     assert_eq!(runtime.state().config.theme.name, "bamboo");
     assert!(runtime.state().themes.contains_key("bamboo"));
@@ -1412,7 +1451,6 @@ danger = "#FF5555"
     let mut active_anims = runtime.state().animations.clone();
     let mut active_layouts_map = BTreeMap::new();
     let mut active_layout_names = Vec::new();
-    let mut active_windows = WindowManager::new(runtime.state().window.clone());
     let mut active_bg = BackgroundPipeline::from_config(&active_cfg.background, 80, 24);
     let mut active_transition = TransitionPlayer::new("none", &active_anims, 0);
 
@@ -1489,7 +1527,6 @@ border = "invalid-color"
             animations: &mut active_anims,
             layout_names: &mut active_layout_names,
             layouts_map: &mut active_layouts_map,
-            windows: &mut active_windows,
             background: &mut active_bg,
             transition: &mut active_transition,
             viewport: Rect::new(0, 0, 80, 24),
@@ -1533,7 +1570,6 @@ border = "invalid-color"
             animations: &mut active_anims,
             layout_names: &mut active_layout_names,
             layouts_map: &mut active_layouts_map,
-            windows: &mut active_windows,
             background: &mut active_bg,
             transition: &mut active_transition,
             viewport: Rect::new(0, 0, 80, 24),
@@ -1674,13 +1710,8 @@ fn real_notify_filesystem_watcher_detects_atomic_writes_and_edits() {
 
     let cfg = Config::default();
     std::fs::write(&paths.config_path, toml::to_string_pretty(&cfg).unwrap()).unwrap();
-    std::fs::write(
-        &paths.window_path,
-        toml::to_string_pretty(&WindowConfig::default()).unwrap(),
-    )
-    .unwrap();
 
-    let mut runtime = ConfigurationRuntime::start(paths.clone(), cfg, WindowConfig::default(), true);
+    let mut runtime = ConfigurationRuntime::start(paths.clone(), cfg, true);
     assert!(!runtime.watcher().watched_roots().is_empty());
 
     // Simulate editor atomic write: write tmp -> rename into themes/live_jade.toml
@@ -1860,54 +1891,64 @@ fn cli_commands_parse_and_execute_with_appropriate_exit_codes() {
 }
 
 #[test]
-fn mini_window_manager_compositor_toml_and_centered_header() {
-    let viewport = Rect::new(0, 0, 120, 40);
-
-    // 1. TOML [windows.*] parsing & validation (preserving TOML format)
+fn toml_container_tree_and_animated_state_preservation() {
     let toml_cfg = r#"
-[windows.dashboard]
-title = "Dashboard"
-context = "dashboard"
-x = 2
-y = 2
-width = 60
-height = 24
-resizable = true
-movable = false
-static = true
-minimizable = false
-maximizable = true
-layer = 0
-z_index = 5
-overlap = true
+[ui.root]
+id = "root"
+direction = "vertical"
+width = "100%"
+height = "100%"
+padding = 1
+gap = 1
 
-[windows.system]
-title = "System Monitor"
-context = "system"
-x = 68
-y = 4
-width = 48
-height = 18
-resizable = true
-movable = true
-static = false
-minimizable = true
-maximizable = true
-layer = 1
-z_index = 0
-overlap = true
+[[ui.root.children]]
+node = "component"
+id = "hdr"
+category = "dynamic"
+type = "header"
+width = "fill"
+height = 1
+
+[[ui.root.children]]
+node = "container"
+id = "anim_row"
+direction = "horizontal"
+width = "fill"
+height = "fill"
+gap = 1
+
+[[ui.root.children.children]]
+node = "component"
+id = "spin"
+category = "animated"
+type = "spinner"
+width = "50%"
+height = "fill"
+
+[ui.root.children.children.content]
+text = "Loading"
+
+[ui.root.children.children.animation]
+fps = 10
+speed = 1.0
+style = "braille"
+
+[[ui.root.children.children]]
+node = "component"
+id = "typer"
+category = "animated"
+type = "typewriter"
+width = "50%"
+height = "fill"
+
+[ui.root.children.children.content]
+text = "Hello EgoTop"
 "#;
-    let parsed_cfg: Config = toml::from_str(toml_cfg).unwrap();
-    assert_eq!(parsed_cfg.windows.len(), 2);
-    assert!(parsed_cfg.windows["dashboard"].is_static);
-    assert!(!parsed_cfg.windows["dashboard"].movable);
-    assert!(parsed_cfg.windows["dashboard"].resizable);
-    assert_eq!(parsed_cfg.windows["dashboard"].position, PositionMode::Absolute);
-    assert_eq!(parsed_cfg.windows["system"].context, "system");
-    assert_eq!(parsed_cfg.windows["system"].layer, 1);
-    assert_eq!(parsed_cfg.windows["system"].z_index, 0);
 
-    // Validate through ConfigurationRuntime schema/semantic pipeline cleanly
+    let parsed_cfg: Config = toml::from_str(toml_cfg).unwrap();
+    assert_eq!(parsed_cfg.ui.root.id, "root");
+    assert_eq!(parsed_cfg.ui.root.children.len(), 2);
+
     let parsed_res = egotop::runtime::parse_resource(
         ResourceKind::ApplicationConfig,
         "egotop",
@@ -1917,146 +1958,31 @@ overlap = true
     .unwrap();
     assert!(egotop::runtime::validate_schema(&parsed_res).is_empty());
 
-    // 2. WindowManager creation, focus, and context association
-    let mut mgr = WindowManager::from_configs(parsed_cfg.windows.values().cloned().collect());
-    mgr.resolve_all(viewport);
-    assert_eq!(mgr.windows().len(), 2);
-    assert_eq!(
-        mgr.context_for_window("dashboard").unwrap().id,
-        "dashboard"
-    );
-    assert_eq!(mgr.context_for_window("system").unwrap().id, "system");
+    let catalog = AnimationCatalog::load();
+    let mut anim_store = ComponentAnimationStore::new();
+    let layout = compute_container_layout(Rect::new(0, 0, 80, 20), &parsed_cfg.ui.root);
 
-    assert!(mgr.focus_window("system"));
-    assert_eq!(mgr.focused_id(), Some("system"));
-    assert_eq!(mgr.cycle_focus(), Some("dashboard"));
-
-    // Register custom context window and verify state association
-    let mut notes_cfg = WindowConfig {
-        id: "notes".to_string(),
-        title: Some("Notes".to_string()),
-        context: "custom_notes".to_string(),
-        position: PositionMode::Absolute,
-        x: 70,
-        y: 24,
-        width: SizeSpec::Cells(40),
-        height: SizeSpec::Cells(12),
-        layer: 1,
-        z_index: 2,
-        overlap: true,
-        ..WindowConfig::default()
+    // Advance animation across multiple frames and verify state is preserved & progresses
+    anim_store.update_all(0.15, &layout, &parsed_cfg, &catalog);
+    let idx_1 = match anim_store.get("spin") {
+        Some(egotop::ui::components::ComponentAnimState::Spinner(s)) => s.frame_idx,
+        _ => panic!("expected spinner state"),
     };
-    mgr.register_window(notes_cfg.clone()).unwrap();
-    mgr.context_for_window_mut("notes")
-        .unwrap()
-        .custom_lines
-        .push("Status line preserved".to_string());
-    assert!(mgr.associate_context("notes", "custom_notes"));
+    anim_store.update_all(0.25, &layout, &parsed_cfg, &catalog);
+    let idx_2 = match anim_store.get("spin") {
+        Some(egotop::ui::components::ComponentAnimState::Spinner(s)) => s.frame_idx,
+        _ => panic!("expected spinner state"),
+    };
+    assert_ne!(idx_1, idx_2, "spinner frame index should advance across frames");
 
-    // 3 & 4. Static windows cannot move, YET independently support resizing when resizable = true
-    assert!(mgr.move_window("dashboard", 15, 15, viewport).is_err());
-    let resized = mgr.resize_window("dashboard", 64, 26, viewport).unwrap();
-    assert_eq!((resized.x, resized.y, resized.width, resized.height), (2, 2, 64, 26));
-
-    // Non-resizable window rejects resize
-    notes_cfg.id = "fixed_panel".to_string();
-    notes_cfg.resizable = false;
-    notes_cfg.x = 70;
-    notes_cfg.y = 25;
-    mgr.register_window(notes_cfg).unwrap();
-    assert!(mgr.resize_window("fixed_panel", 50, 14, viewport).is_err());
-    assert!(mgr.remove_window("fixed_panel"));
-
-    // 5. Layer vs Z-index ordering: layer=0 z_index=5 renders BEFORE layer=1 z_index=0 BEFORE layer=1 z_index=2
-    let sorted_ids: Vec<&str> = mgr
-        .windows_sorted()
-        .iter()
-        .map(|w| w.config.id.as_str())
-        .collect();
-    assert_eq!(sorted_ids, vec!["dashboard", "system", "notes"]);
-
-    // 6. Maximize & restore preserves original exact geometry; non-maximizable rejects
-    mgr.maximize("system", viewport).unwrap();
-    assert_eq!(mgr.window("system").unwrap().resolved_rect, viewport);
-    assert!(mgr.restore_maximized("system", viewport));
-    let sys_restored = mgr.window("system").unwrap().resolved_rect;
-    assert_eq!(
-        (sys_restored.x, sys_restored.y, sys_restored.width, sys_restored.height),
-        (68, 4, 48, 18)
-    );
-
-    // 7. Minimize & restore preserves context state and hides minimized window from Compositor
-    assert!(mgr.minimize("dashboard").is_err()); // minimizable = false
-    mgr.minimize("notes").unwrap();
-    assert!(mgr.window("notes").unwrap().minimized);
-    let composed_during_min = Compositor::compose(&mgr, viewport);
-    assert!(!composed_during_min.iter().any(|c| c.window_id == "notes"));
-    assert!(mgr.restore_minimized("notes", viewport));
-    assert_eq!(
-        mgr.context_for_window("notes").unwrap().custom_lines[0],
-        "Status line preserved"
-    );
-
-    // 8. Non-overlapping (overlap = false) enforcement in WindowManager and Compositor
-    let mut non_overlap_mgr = WindowManager::from_configs(vec![
-        WindowConfig {
-            id: "base".to_string(),
-            position: PositionMode::Absolute,
-            x: 0,
-            y: 0,
-            width: SizeSpec::Cells(40),
-            height: SizeSpec::Cells(20),
-            layer: 0,
-            z_index: 0,
-            overlap: false,
-            ..WindowConfig::default()
-        },
-        WindowConfig {
-            id: "floating".to_string(),
-            position: PositionMode::Absolute,
-            x: 10,
-            y: 5,
-            width: SizeSpec::Cells(40),
-            height: SizeSpec::Cells(20),
-            layer: 1,
-            z_index: 0,
-            overlap: true,
-            ..WindowConfig::default()
-        },
-    ]);
-    non_overlap_mgr.resolve_all(viewport);
-    assert_eq!(non_overlap_mgr.geometry_conflicts(viewport).len(), 1);
-    let composed_clean = Compositor::compose(&non_overlap_mgr, viewport);
-    assert_eq!(composed_clean.len(), 2);
-    let r0 = composed_clean[0].rect;
-    let r1 = composed_clean[1].rect;
-    let overlap_x = r0.x < r1.right() && r1.x < r0.right();
-    let overlap_y = r0.y < r1.bottom() && r1.y < r0.bottom();
-    assert!(
-        !(overlap_x && overlap_y),
-        "Compositor must prevent intersection when base.overlap = false: {r0:?} vs {r1:?}"
-    );
-    // Moving directly onto `base` must also be rejected
-    assert!(non_overlap_mgr.move_window("floating", 5, 5, viewport).is_err());
-
-    // 9. Terminal boundary clamping even when configured larger than viewport
-    let small_vp = Rect::new(0, 0, 50, 16);
-    let composed_small = Compositor::compose(&mgr, small_vp);
-    for cw in &composed_small {
-        assert!(cw.rect.right() <= small_vp.right());
-        assert!(cw.rect.bottom() <= small_vp.bottom());
-    }
-
-    // 10. Centered global EGOTOP header check via TestBackend (EGOTOP centered and separated from [Pg 1])
+    // Verify default dashboard renders centered EGOTOP header without [Pg ...]
     let cfg = Config::default();
     let theme = Theme::from_config(&cfg.theme);
     let mut collector = SystemCollector::new();
     let snap = collector.collect(120, 36);
     let reveal = RevealState::complete();
     let effect = create_effect(EffectKind::None, 120, 36, &cfg.background);
-    let catalog = AnimationCatalog::load();
     let transition = TransitionPlayer::new("none", &catalog, 0);
-    let mut single_mgr = WindowManager::new(WindowConfig::default());
     let mut customizer = CustomizerState::default();
     let cmd_line = CommandLineState::default();
     let startup = CursorStartupState::new(false);
@@ -2066,13 +1992,12 @@ overlap = true
         theme: &theme,
         snapshot: &snap,
         reveal: &reveal,
-        active_page: 1,
         view_mode: ViewMode::Dashboard,
         paused: false,
         show_help: false,
         fps: 30.0,
         status_toast: None,
-        window_transparent: false,
+        transparent_bg: false,
         config_error_count: 0,
     };
     let mut term = Terminal::new(TestBackend::new(120, 36)).unwrap();
@@ -2082,7 +2007,7 @@ overlap = true
             &cfg,
             effect.as_ref(),
             &transition,
-            &mut single_mgr,
+            &anim_store,
             &mut customizer,
             &cmd_line,
             &startup,
@@ -2093,27 +2018,21 @@ overlap = true
     })
     .unwrap();
     let buf = term.backend().buffer();
-    let mut header_row_with_brand = None;
-    for y in 0..12 {
+    let mut header_row = None;
+    for y in 0..6 {
         let mut row = String::new();
         for x in 0..120 {
             row.push_str(buf[(x, y)].symbol());
         }
-        if row.contains("EGOTOP") && row.contains("[Pg 1]") {
-            header_row_with_brand = Some(row);
+        if row.contains("EGOTOP") && row.contains("[FX:") {
+            header_row = Some(row);
             break;
         }
     }
-    let row = header_row_with_brand.expect("global header row with EGOTOP and [Pg 1] must render");
+    let row = header_row.expect("global header row with EGOTOP and [FX: ...] must render");
     let egotop_col = row.find("EGOTOP").unwrap();
-    let pg_col = row.find("[Pg 1]").unwrap();
-    // EGOTOP must be centered near column ~57 (60 - 3) and clearly separated from [Pg 1]
     assert!(
         (50..=64).contains(&egotop_col),
         "EGOTOP should be horizontally centered around col 57 (got {egotop_col}):\n{row}"
-    );
-    assert!(
-        egotop_col > pg_col + 10,
-        "EGOTOP should not be adjacent to [Pg 1]:\n{row}"
     );
 }

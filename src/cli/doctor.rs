@@ -71,16 +71,6 @@ pub fn handle(config_override: Option<&Path>) -> Result<i32> {
         );
     }
 
-    let win_path = paths::window_config_path();
-    if win_path.is_file() {
-        println!("[OK]   Window config: {}", win_path.display());
-    } else {
-        println!(
-            "[INFO] Window config: {} (using default window geometry)",
-            win_path.display()
-        );
-    }
-
     let themes = load_all_themes();
     println!("[OK]   Themes available: {}", themes.len());
 

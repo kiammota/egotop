@@ -3,7 +3,6 @@ use crate::config::{Config, ThemeEntry};
 use crate::runtime::pipeline::LayoutPreset;
 use crate::runtime::state::{LastKnownGoodState, RuntimeCommit};
 use crate::ui::theme::Theme;
-use crate::window::{WindowManager, WindowState};
 use ratatui::layout::Rect;
 use std::collections::BTreeMap;
 
@@ -16,7 +15,6 @@ pub struct ManagedAppTarget<'a> {
     pub animations: &'a mut AnimationCatalog,
     pub layout_names: &'a mut Vec<String>,
     pub layouts_map: &'a mut BTreeMap<String, LayoutPreset>,
-    pub windows: &'a mut WindowManager,
     pub background: &'a mut BackgroundPipeline,
     pub transition: &'a mut TransitionPlayer,
     pub viewport: Rect,
@@ -45,9 +43,6 @@ impl RuntimeResourceManager {
         if commit.layouts_updated {
             LayoutManager::apply(lkg, target);
         }
-        if commit.window_updated {
-            WindowConfigManager::apply(lkg, target);
-        }
         if commit.config_updated {
             AppConfigManager::apply(lkg, target);
             BackgroundManager::apply(lkg, target);
@@ -63,12 +58,6 @@ impl AppConfigManager {
     pub fn apply(lkg: &LastKnownGoodState, target: &mut ManagedAppTarget<'_>) {
         let prev_startup = target.config.general.startup_animation.clone();
         *target.config = lkg.config.clone();
-        if !target.config.windows.is_empty() {
-            target
-                .windows
-                .replace_windows(target.config.windows.values().cloned().collect());
-            target.windows.resolve_all(target.viewport);
-        }
         ThemeManager::resolve_active(lkg, target);
         if prev_startup != target.config.general.startup_animation {
             target.transition.restart(
@@ -77,20 +66,6 @@ impl AppConfigManager {
                 target.config.general.startup_duration_ms,
             );
         }
-    }
-}
-
-pub struct WindowConfigManager;
-impl WindowConfigManager {
-    pub fn apply(lkg: &LastKnownGoodState, target: &mut ManagedAppTarget<'_>) {
-        if lkg.config.windows.is_empty() {
-            *target.windows.main_window_mut() = WindowState::new(lkg.window.clone());
-        } else {
-            target
-                .windows
-                .replace_windows(lkg.config.windows.values().cloned().collect());
-        }
-        target.windows.resolve_all(target.viewport);
     }
 }
 

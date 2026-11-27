@@ -1,7 +1,6 @@
 use crate::animation::AnimationCatalog;
 use crate::config::{Config, ThemeEntry};
 use crate::runtime::pipeline::LayoutPreset;
-use crate::window::WindowConfig;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Monotonically versioned active state preserving `LastKnownGood` across invalid updates.
@@ -9,7 +8,6 @@ use std::collections::{BTreeMap, BTreeSet};
 pub struct LastKnownGoodState {
     pub generation: u64,
     pub config: Config,
-    pub window: WindowConfig,
     pub themes: BTreeMap<String, ThemeEntry>,
     pub animations: AnimationCatalog,
     pub layouts: BTreeMap<String, LayoutPreset>,
@@ -19,7 +17,6 @@ pub struct LastKnownGoodState {
 impl LastKnownGoodState {
     pub fn new(
         config: Config,
-        window: WindowConfig,
         themes: BTreeMap<String, ThemeEntry>,
         animations: AnimationCatalog,
         layouts: BTreeMap<String, LayoutPreset>,
@@ -28,7 +25,6 @@ impl LastKnownGoodState {
         Self {
             generation: 1,
             config,
-            window,
             themes,
             animations,
             layouts,
@@ -52,7 +48,6 @@ impl LastKnownGoodState {
 pub struct RuntimeCommit {
     pub generation: u64,
     pub config_updated: bool,
-    pub window_updated: bool,
     pub themes_updated: bool,
     pub animations_updated: bool,
     pub layouts_updated: bool,

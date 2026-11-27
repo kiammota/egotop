@@ -9,7 +9,6 @@ use crate::runtime::pipeline::{
 use crate::runtime::registry::{LoadStatus, ResourceId, ResourceKind, ResourceRegistry, ValidationStatus};
 use crate::runtime::state::{LastKnownGoodState, RuntimeCommit};
 use crate::runtime::watcher::FileWatcher;
-use crate::window::WindowConfig;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -19,7 +18,6 @@ use std::time::{Duration, Instant};
 pub struct RuntimePaths {
     pub root_dir: PathBuf,
     pub config_path: PathBuf,
-    pub window_path: PathBuf,
     pub themes_dir: PathBuf,
     pub animations_dir: PathBuf,
     pub layouts_dir: PathBuf,
@@ -31,7 +29,6 @@ impl RuntimePaths {
         Self {
             root_dir: paths::root_path(),
             config_path,
-            window_path: paths::window_config_path(),
             themes_dir: paths::themes_path(),
             animations_dir: paths::animations_path(),
             layouts_dir: paths::layouts_path(),
@@ -42,7 +39,6 @@ impl RuntimePaths {
     pub fn from_root_dir(root: PathBuf) -> Self {
         Self {
             config_path: root.join("egotop.toml"),
-            window_path: root.join("window.toml"),
             themes_dir: root.join("themes"),
             animations_dir: root.join("animations"),
             layouts_dir: root.join("layouts"),
@@ -89,7 +85,6 @@ impl ConfigurationRuntime {
     pub fn start(
         paths: RuntimePaths,
         initial_config: Config,
-        initial_window: WindowConfig,
         enable_os_watcher: bool,
     ) -> Self {
         let roots = paths.watch_roots();
@@ -107,7 +102,6 @@ impl ConfigurationRuntime {
             diagnostics: DiagnosticEngine::new(),
             lkg: LastKnownGoodState::new(
                 initial_config,
-                initial_window,
                 builtin_themes_lookup(),
                 AnimationCatalog::load(),
                 BTreeMap::new(),
@@ -203,14 +197,6 @@ impl ConfigurationRuntime {
         );
 
         let mut batch = Vec::new();
-        if self.paths.window_path.is_file() {
-            batch.push(PendingChange {
-                path: self.paths.window_path.clone(),
-                kind: WatchEventKind::Modified,
-                last_event_at: Instant::now(),
-                event_count: 1,
-            });
-        }
         collect_toml_entries(&self.paths.themes_dir, &mut batch);
         collect_animation_entries(&self.paths.animations_dir, &mut batch);
         collect_toml_entries(&self.paths.layouts_dir, &mut batch);
@@ -284,7 +270,6 @@ impl ConfigurationRuntime {
         let mut next_layouts = self.lkg.layouts.clone();
         let mut next_fonts = self.lkg.custom_fonts.clone();
         let mut next_config = self.lkg.config.clone();
-        let mut next_window = self.lkg.window.clone();
         let mut commit = RuntimeCommit {
             generation: candidate_generation,
             ..RuntimeCommit::default()
@@ -296,7 +281,6 @@ impl ConfigurationRuntime {
             path,
             raw_text,
             &mut next_config,
-            &mut next_window,
             &mut next_themes,
             &mut next_animations,
             &mut next_layouts,
@@ -315,7 +299,6 @@ impl ConfigurationRuntime {
         }
 
         self.lkg.config = next_config;
-        self.lkg.window = next_window;
         self.lkg.themes = next_themes;
         self.lkg.animations = next_animations;
         self.lkg.layouts = next_layouts;
@@ -338,7 +321,6 @@ impl ConfigurationRuntime {
         };
 
         let mut next_config = self.lkg.config.clone();
-        let mut next_window = self.lkg.window.clone();
         let mut next_themes = self.lkg.themes.clone();
         let mut next_animations = self.lkg.animations.clone();
         let mut next_layouts = self.lkg.layouts.clone();
@@ -406,7 +388,6 @@ impl ConfigurationRuntime {
                 &path,
                 raw_text,
                 &mut next_config,
-                &mut next_window,
                 &mut next_themes,
                 &mut next_animations,
                 &mut next_layouts,
@@ -440,7 +421,6 @@ impl ConfigurationRuntime {
                     &dpath,
                     raw,
                     &mut next_config,
-                    &mut next_window,
                     &mut next_themes,
                     &mut next_animations,
                     &mut next_layouts,
@@ -468,7 +448,6 @@ impl ConfigurationRuntime {
 
         if self.lkg.try_commit_generation(generation) {
             self.lkg.config = next_config;
-            self.lkg.window = next_window;
             self.lkg.themes = next_themes;
             self.lkg.animations = next_animations;
             self.lkg.layouts = next_layouts;
@@ -491,7 +470,6 @@ impl ConfigurationRuntime {
         path: &Path,
         raw_text: String,
         next_config: &mut Config,
-        next_window: &mut WindowConfig,
         next_themes: &mut BTreeMap<String, ThemeEntry>,
         next_animations: &mut AnimationCatalog,
         next_layouts: &mut BTreeMap<String, LayoutPreset>,
@@ -579,7 +557,6 @@ impl ConfigurationRuntime {
         apply_parsed_to_candidate(
             parsed,
             next_config,
-            next_window,
             next_themes,
             next_animations,
             next_layouts,
@@ -603,7 +580,7 @@ impl ConfigurationRuntime {
         next_fonts: &mut BTreeSet<String>,
         commit: &mut RuntimeCommit,
     ) -> bool {
-        if kind == ResourceKind::ApplicationConfig || kind == ResourceKind::WindowConfig {
+        if kind == ResourceKind::ApplicationConfig {
             let id = ResourceId::new(kind, key);
             let diag = Diagnostic::warning(
                 "W2002",
@@ -666,21 +643,12 @@ impl ConfigurationRuntime {
         let p = fs::canonicalize(raw_path).unwrap_or_else(|_| raw_path.to_path_buf());
         let cfg_norm =
             fs::canonicalize(&self.paths.config_path).unwrap_or_else(|_| self.paths.config_path.clone());
-        let win_norm =
-            fs::canonicalize(&self.paths.window_path).unwrap_or_else(|_| self.paths.window_path.clone());
 
         if p == cfg_norm || raw_path == self.paths.config_path {
             return Some((
                 ResourceKind::ApplicationConfig,
                 "egotop".to_string(),
                 self.paths.config_path.clone(),
-            ));
-        }
-        if p == win_norm || raw_path == self.paths.window_path {
-            return Some((
-                ResourceKind::WindowConfig,
-                "window".to_string(),
-                self.paths.window_path.clone(),
             ));
         }
 
@@ -743,8 +711,7 @@ fn resource_sort_order(kind: ResourceKind) -> u8 {
         ResourceKind::Animation => 2,
         ResourceKind::Background => 3,
         ResourceKind::Layout => 4,
-        ResourceKind::WindowConfig => 5,
-        ResourceKind::ApplicationConfig => 6,
+        ResourceKind::ApplicationConfig => 5,
     }
 }
 
@@ -752,7 +719,6 @@ fn resource_sort_order(kind: ResourceKind) -> u8 {
 fn apply_parsed_to_candidate(
     parsed: ParsedResource,
     next_config: &mut Config,
-    next_window: &mut WindowConfig,
     next_themes: &mut BTreeMap<String, ThemeEntry>,
     next_animations: &mut AnimationCatalog,
     next_layouts: &mut BTreeMap<String, LayoutPreset>,
@@ -763,10 +729,6 @@ fn apply_parsed_to_candidate(
         ParsedPayload::ApplicationConfig(cfg) => {
             *next_config = *cfg;
             commit.config_updated = true;
-        }
-        ParsedPayload::WindowConfig(win) => {
-            *next_window = *win;
-            commit.window_updated = true;
         }
         ParsedPayload::Theme(entry) => {
             next_themes.insert(entry.name.to_ascii_lowercase(), *entry);
