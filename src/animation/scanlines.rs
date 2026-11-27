@@ -74,7 +74,7 @@ impl BackgroundEffect for ScanlinesEffect {
             for x in target.left()..target.right() {
                 if let Some(cell) = buf.cell_mut((x, y)) {
                     cell.set_char(ch)
-                        .set_style(Style::default().fg(fg).bg(theme.background));
+                        .set_style(Style::default().fg(fg).bg(ratatui::style::Color::Reset));
                 }
             }
         }

@@ -2129,3 +2129,290 @@ message = "Press any key to start"
     };
     assert!(offset1 > 0.0);
 }
+
+#[test]
+fn transparency_preserves_background_animation_and_colors() {
+    let mut cfg = Config::default();
+    cfg.background.enabled = true;
+    cfg.background.effect = EffectKind::Matrix;
+    cfg.background.density = 1.0;
+    let theme = Theme::from_config(&cfg.theme);
+
+    let mut collector = SystemCollector::new();
+    let snap = collector.collect(80, 24);
+    let reveal = RevealState::complete();
+    let mut effect = create_effect(EffectKind::Matrix, 80, 24, &cfg.background);
+    for _ in 0..8 {
+        effect.update(0.2, &cfg.background);
+    }
+
+    let transition = TransitionPlayer::new("none", &AnimationCatalog::load(), 0);
+    let anim_store = ComponentAnimationStore::new();
+    let mut customizer = CustomizerState::default();
+    let cmd_line = CommandLineState::default();
+    let startup = CursorStartupState::new(false);
+    let themes = vec![];
+    let rctx = RenderContext {
+        config: &cfg,
+        theme: &theme,
+        snapshot: &snap,
+        reveal: &reveal,
+        view_mode: ViewMode::Dashboard,
+        paused: false,
+        show_help: false,
+        fps: 30.0,
+        status_toast: None,
+        transparent_bg: false,
+        config_error_count: 0,
+    };
+    let mut full_term = Terminal::new(TestBackend::new(80, 24)).unwrap();
+    full_term
+        .draw(|frame| {
+            draw_frame(
+                frame,
+                &cfg,
+                effect.as_ref(),
+                &transition,
+                &anim_store,
+                &mut customizer,
+                &cmd_line,
+                &startup,
+                &themes,
+                &AnimationCatalog::load(),
+                &rctx,
+            );
+        })
+        .unwrap();
+
+    // Verify that global Matrix glyphs NEVER appear inside any component's inner empty area,
+    // and that transparent containers keep Color::Reset (preserving terminal background).
+    let full_buf = full_term.backend().buffer();
+    let layout = compute_dashboard_layout(Rect::new(0, 0, 80, 24), &cfg, ViewMode::Dashboard);
+    let greeting_inner = layout.find_component("greeting").unwrap().inner_rect;
+    for x in greeting_inner.x..greeting_inner.right() {
+        // Bottom row of greeting_inner (empty area if no subtitle at bottom) must not have Matrix glyphs
+        let cell = &full_buf[(x, greeting_inner.bottom().saturating_sub(1))];
+        assert_eq!(cell.bg, Color::Reset);
+    }
+    assert_eq!(full_buf[(0, 0)].bg, Color::Reset);
+
+    // Verify ExclusionMask blocks global effect inside a transparent container with an empty Text component
+    let mut masked_cfg = Config::default();
+    masked_cfg.background.enabled = true;
+    masked_cfg.background.effect = EffectKind::Matrix;
+    masked_cfg.ui.root = ContainerConfig {
+        id: "root".to_string(),
+        visible: true,
+        transparent: true,
+        padding: 2,
+        children: vec![ContainerNode::Component(ComponentConfig {
+            id: "empty_box".to_string(),
+            visible: true,
+            category: ComponentCategory::Static,
+            kind: ComponentKind::Text,
+            width: ContainerSize::Fill(1),
+            height: ContainerSize::Fill(1),
+            ..ComponentConfig::default()
+        })],
+        ..ContainerConfig::default()
+    };
+    let mut empty_text_cfg = masked_cfg.clone();
+    if let ContainerNode::Component(c) = &mut empty_text_cfg.ui.root.children[0] {
+        c.content.text = Some(String::new());
+    }
+    let mut term_masked = Terminal::new(TestBackend::new(80, 24)).unwrap();
+    let rctx_m = RenderContext {
+        config: &empty_text_cfg,
+        theme: &theme,
+        snapshot: &snap,
+        reveal: &reveal,
+        view_mode: ViewMode::Dashboard,
+        paused: false,
+        show_help: false,
+        fps: 30.0,
+        status_toast: None,
+        transparent_bg: false,
+        config_error_count: 0,
+    };
+    term_masked
+        .draw(|frame| {
+            draw_frame(
+                frame,
+                &empty_text_cfg,
+                effect.as_ref(),
+                &transition,
+                &anim_store,
+                &mut customizer,
+                &cmd_line,
+                &startup,
+                &themes,
+                &AnimationCatalog::load(),
+                &rctx_m,
+            );
+        })
+        .unwrap();
+    let masked_buf = term_masked.backend().buffer();
+    let box_rect = compute_dashboard_layout(Rect::new(0, 0, 80, 24), &empty_text_cfg, ViewMode::Dashboard)
+        .find_component("empty_box")
+        .unwrap()
+        .outer_rect;
+    for y in box_rect.y..box_rect.bottom() {
+        for x in box_rect.x..box_rect.right() {
+            assert_eq!(
+                masked_buf[(x, y)].symbol(),
+                " ",
+                "global effect leaked into excluded container at ({x},{y})"
+            );
+            assert_eq!(masked_buf[(x, y)].bg, Color::Reset);
+        }
+    }
+}
+
+#[test]
+fn container_isolation_and_independent_transparency_flags() {
+    // 1. background_transparent = false paints theme.background, while transparent = false container paints its own bg
+    let mut cfg = Config::default();
+    cfg.background.enabled = false;
+    cfg.theme.background_transparent = false;
+    cfg.ui.root = ContainerConfig {
+        id: "root".to_string(),
+        visible: true,
+        transparent: true,
+        direction: ContainerDirection::Horizontal,
+        width: ContainerSize::Percent(100),
+        height: ContainerSize::Percent(100),
+        gap: 2,
+        children: vec![
+            ContainerNode::Container(ContainerConfig {
+                id: "opaque_box".to_string(),
+                visible: true,
+                transparent: false,
+                width: ContainerSize::Percent(50),
+                height: ContainerSize::Fill(1),
+                background: Some("#112233".to_string()),
+                children: vec![ContainerNode::Component(ComponentConfig {
+                    id: "matrix_left".to_string(),
+                    visible: true,
+                    category: ComponentCategory::Animated,
+                    kind: ComponentKind::Matrix,
+                    width: ContainerSize::Fill(1),
+                    height: ContainerSize::Fill(1),
+                    ..ComponentConfig::default()
+                })],
+                ..ContainerConfig::default()
+            }),
+            ContainerNode::Container(ContainerConfig {
+                id: "transparent_box".to_string(),
+                visible: true,
+                transparent: true,
+                width: ContainerSize::Fill(1),
+                height: ContainerSize::Fill(1),
+                children: vec![ContainerNode::Component(ComponentConfig {
+                    id: "text_right".to_string(),
+                    visible: true,
+                    category: ComponentCategory::Static,
+                    kind: ComponentKind::Text,
+                    width: ContainerSize::Fill(1),
+                    height: ContainerSize::Fill(1),
+                    ..ComponentConfig::default()
+                })],
+                ..ContainerConfig::default()
+            }),
+        ],
+        ..ContainerConfig::default()
+    };
+
+    let theme = Theme::from_config(&cfg.theme);
+    let mut collector = SystemCollector::new();
+    let snap = collector.collect(80, 20);
+    let reveal = RevealState::complete();
+    let effect = create_effect(EffectKind::None, 80, 20, &cfg.background);
+    let catalog = AnimationCatalog::load();
+    let transition = TransitionPlayer::new("none", &catalog, 0);
+    let mut anim_store = ComponentAnimationStore::new();
+    let layout = compute_dashboard_layout(Rect::new(0, 0, 80, 20), &cfg, ViewMode::Dashboard);
+    anim_store.update_all(0.25, &layout, &cfg, &catalog);
+
+    let mut customizer = CustomizerState::default();
+    let cmd_line = CommandLineState::default();
+    let startup = CursorStartupState::new(false);
+    let themes = vec![];
+    let rctx = RenderContext {
+        config: &cfg,
+        theme: &theme,
+        snapshot: &snap,
+        reveal: &reveal,
+        view_mode: ViewMode::Dashboard,
+        paused: false,
+        show_help: false,
+        fps: 30.0,
+        status_toast: None,
+        transparent_bg: false,
+        config_error_count: 0,
+    };
+
+    let mut term = Terminal::new(TestBackend::new(80, 20)).unwrap();
+    term.draw(|frame| {
+        draw_frame(
+            frame,
+            &cfg,
+            effect.as_ref(),
+            &transition,
+            &anim_store,
+            &mut customizer,
+            &cmd_line,
+            &startup,
+            &themes,
+            &catalog,
+            &rctx,
+        );
+    })
+    .unwrap();
+
+    let buf = term.backend().buffer();
+    let opaque_rect = layout.find_container("opaque_box").unwrap().outer_rect;
+    let trans_rect = layout.find_container("transparent_box").unwrap().outer_rect;
+
+    // Opaque container must have #112233 background inside its rect
+    assert_eq!(buf[(opaque_rect.x, opaque_rect.y)].bg, Color::Rgb(0x11, 0x22, 0x33));
+    // Transparent container must preserve global theme.background (since background_transparent = false)
+    assert_eq!(buf[(trans_rect.x, trans_rect.y)].bg, theme.background);
+
+    // Now enable background_transparent = true -> transparent container must have Color::Reset,
+    // while opaque container still keeps #112233
+    cfg.theme.background_transparent = true;
+    let mut term2 = Terminal::new(TestBackend::new(80, 20)).unwrap();
+    let rctx2 = RenderContext {
+        config: &cfg,
+        theme: &theme,
+        snapshot: &snap,
+        reveal: &reveal,
+        view_mode: ViewMode::Dashboard,
+        paused: false,
+        show_help: false,
+        fps: 30.0,
+        status_toast: None,
+        transparent_bg: false,
+        config_error_count: 0,
+    };
+    term2
+        .draw(|frame| {
+            draw_frame(
+                frame,
+                &cfg,
+                effect.as_ref(),
+                &transition,
+                &anim_store,
+                &mut customizer,
+                &cmd_line,
+                &startup,
+                &themes,
+                &catalog,
+                &rctx2,
+            );
+        })
+        .unwrap();
+    let buf2 = term2.backend().buffer();
+    assert_eq!(buf2[(opaque_rect.x, opaque_rect.y)].bg, Color::Rgb(0x11, 0x22, 0x33));
+    assert_eq!(buf2[(trans_rect.x, trans_rect.y)].bg, Color::Reset);
+}

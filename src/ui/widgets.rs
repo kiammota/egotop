@@ -36,22 +36,18 @@ pub struct RenderContext<'a> {
 
 impl<'a> RenderContext<'a> {
     pub fn panel_bg(&self) -> Color {
-        if self.transparent_bg {
-            Color::Reset
-        } else {
-            self.theme.panel_background
-        }
+        Color::Reset
     }
 
     pub fn panel_style(&self) -> Style {
-        Style::default().fg(self.theme.text).bg(self.panel_bg())
+        Style::default().fg(self.theme.text).bg(Color::Reset)
     }
 
     pub fn border_style(&self, override_color: Option<&str>) -> Style {
         let color = override_color
             .map(|c| parse_color(c, self.theme.border))
             .unwrap_or(self.theme.border);
-        Style::default().fg(color).bg(self.panel_bg())
+        Style::default().fg(color).bg(Color::Reset)
     }
 }
 
@@ -76,18 +72,22 @@ fn render_container_box(frame: &mut Frame, container: &PlacedContainer, ctx: &Re
         return;
     }
 
-    let bg = container
-        .background
-        .as_deref()
-        .map(|c| parse_color(c, ctx.panel_bg()))
-        .unwrap_or_else(|| ctx.panel_bg());
+    let bg = if container.transparent {
+        Color::Reset
+    } else {
+        container
+            .background
+            .as_deref()
+            .map(|c| parse_color(c, ctx.theme.panel_background))
+            .unwrap_or(ctx.theme.panel_background)
+    };
 
     let show_border = container.border.enabled
         && container.border.style != BorderStyle::None
         && ctx.config.theme.border_type != BorderStyle::None;
     if show_border && area.width >= 2 && area.height >= 2 {
         render_border_block(frame, area, &container.border, bg, ctx);
-    } else if container.background.is_some() && bg != Color::Reset {
+    } else if !container.transparent && bg != Color::Reset {
         frame.render_widget(Block::default().style(Style::default().bg(bg)), area);
     }
 }
@@ -120,7 +120,7 @@ fn render_placed_component(
             border.title = comp.content.title.clone();
         }
         render_border_block(frame, outer, &border, bg, ctx);
-    } else if bg != Color::Reset && !ctx.transparent_bg {
+    } else if comp.visual.background.is_some() && bg != Color::Reset {
         frame.render_widget(
             Block::default().style(Style::default().fg(ctx.theme.text).bg(bg)),
             outer,
@@ -170,7 +170,7 @@ fn render_border_block(
         ));
     }
 
-    if bg != Color::Reset && !ctx.transparent_bg {
+    if bg != Color::Reset {
         frame.render_widget(Clear, area);
     }
     frame.render_widget(block, area);
@@ -246,9 +246,13 @@ fn render_text_component(
         .map(|c| parse_color(c, ctx.panel_bg()))
         .unwrap_or_else(|| ctx.panel_bg());
 
+    let mut span_style = Style::default().fg(fg);
+    if comp.visual.background.is_some() && bg != Color::Reset {
+        span_style = span_style.bg(bg);
+    }
     let lines: Vec<Line> = text
         .lines()
-        .map(|l| Line::from(Span::styled(l.to_string(), Style::default().fg(fg).bg(bg))))
+        .map(|l| Line::from(Span::styled(l.to_string(), span_style)))
         .collect();
     frame.render_widget(
         Paragraph::new(lines)

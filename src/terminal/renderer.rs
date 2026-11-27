@@ -3,10 +3,11 @@ use crate::command::CommandLineState;
 use crate::config::{Config, StepTarget, ThemeEntry};
 use crate::ui::components::ComponentAnimationStore;
 use crate::ui::customizer::{CustomizerState, render_customizer, render_help_overlay};
-use crate::ui::layout::compute_dashboard_layout;
+use crate::ui::layout::{ExclusionMask, compute_dashboard_layout};
 use crate::ui::theme::parse_color;
 use crate::ui::widgets::{RenderContext, render_command_line, render_container_tree};
 use ratatui::Frame;
+use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::widgets::{Block, Paragraph};
@@ -70,11 +71,12 @@ pub fn draw_frame(
 ) {
     let area = frame.area();
 
-    let base_bg = if ctx.transparent_bg && !config.background.enabled {
-        Style::default().fg(ctx.theme.text).bg(Color::Reset)
+    let base_bg_color = if config.theme.background_transparent || ctx.transparent_bg {
+        Color::Reset
     } else {
-        ctx.theme.base_style()
+        ctx.theme.background
     };
+    let base_bg = Style::default().fg(ctx.theme.text).bg(base_bg_color);
     frame.render_widget(Block::default().style(base_bg), area);
 
     if startup.pending {
@@ -82,19 +84,30 @@ pub fn draw_frame(
         return;
     }
 
-    effect.render(frame.buffer_mut(), area, &config.background, ctx.theme);
+    let layout = compute_dashboard_layout(area, config, ctx.view_mode);
+    let mask = ExclusionMask::from_layout(&layout);
+
+    render_global_with_mask(frame, area, &mask, |buf, a| {
+        effect.render(buf, a, &config.background, ctx.theme);
+    });
 
     let scene_target = transition.package.definition.target;
-    if transition.has_scene_tracks() && scene_target == StepTarget::Background {
-        transition.render_scene(frame.buffer_mut(), area, ctx.theme);
+    if !transition.finished
+        && transition.has_scene_tracks()
+        && scene_target == StepTarget::Background
+    {
+        render_global_with_mask(frame, area, &mask, |buf, a| {
+            transition.render_scene(buf, a, ctx.theme);
+        });
     }
 
-    let layout = compute_dashboard_layout(area, config, ctx.view_mode);
     render_container_tree(frame, &layout, anim_store, ctx);
 
-    transition.apply_to_buffer(frame.buffer_mut(), area, ctx.theme);
-    if transition.has_scene_tracks() && !matches!(scene_target, StepTarget::Background) {
-        transition.render_scene(frame.buffer_mut(), area, ctx.theme);
+    if !transition.finished {
+        transition.apply_to_buffer(frame.buffer_mut(), area, ctx.theme);
+        if transition.has_scene_tracks() && !matches!(scene_target, StepTarget::Background) {
+            transition.render_scene(frame.buffer_mut(), area, ctx.theme);
+        }
     }
 
     if customizer.open {
@@ -113,6 +126,33 @@ pub fn draw_frame(
     }
 
     render_command_line(frame, area, command_line, ctx);
+}
+
+fn render_global_with_mask<F>(frame: &mut Frame, area: Rect, mask: &ExclusionMask, draw_fn: F)
+where
+    F: FnOnce(&mut Buffer, Rect),
+{
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    let mut scratch = Buffer::empty(area);
+    draw_fn(&mut scratch, area);
+
+    let dest = frame.buffer_mut();
+    for y in area.y..area.bottom() {
+        for x in area.x..area.right() {
+            if mask.contains(x, y) {
+                continue;
+            }
+            let src = &scratch[(x, y)];
+            if src.symbol() == " " && src.bg == Color::Reset {
+                continue;
+            }
+            if let Some(dst) = dest.cell_mut((x, y)) {
+                *dst = src.clone();
+            }
+        }
+    }
 }
 
 fn render_cursor_startup(
@@ -146,13 +186,13 @@ fn render_cursor_startup(
         let line = ratatui::text::Line::from(vec![
             ratatui::text::Span::styled(
                 format!("{msg} "),
-                Style::default().fg(ctx.theme.text).bg(ctx.theme.background),
+                Style::default().fg(ctx.theme.text).bg(Color::Reset),
             ),
             ratatui::text::Span::styled(
                 cursor_str,
                 Style::default()
                     .fg(cursor_color)
-                    .bg(ctx.theme.background)
+                    .bg(Color::Reset)
                     .add_modifier(Modifier::BOLD),
             ),
         ]);
@@ -173,7 +213,7 @@ fn render_cursor_startup(
         Paragraph::new(glyph).style(
             Style::default()
                 .fg(cursor_color)
-                .bg(ctx.theme.background)
+                .bg(Color::Reset)
                 .add_modifier(Modifier::BOLD),
         ),
         cell_rect,

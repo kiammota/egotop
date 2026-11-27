@@ -28,6 +28,8 @@ startup_duration_ms = 1100
 [theme]
 # Built-in presets: "matrix" | "cyberpunk" | "nord" | "amber" | "dracula" | "custom"
 name = "matrix"
+# Preserve terminal background transparency using Color::Reset
+background_transparent = true
 # Use "reset" to inherit terminal transparency, or hex ("#050907") / named ("black")
 background = "#050A07"
 panel_background = "#08110C"

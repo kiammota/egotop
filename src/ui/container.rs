@@ -108,6 +108,7 @@ impl ContainerBorderConfig {
 pub struct ContainerConfig {
     pub id: String,
     pub visible: bool,
+    pub transparent: bool,
     pub direction: ContainerDirection,
     pub width: ContainerSize,
     pub height: ContainerSize,
@@ -127,6 +128,7 @@ impl Default for ContainerConfig {
         Self {
             id: "container".to_string(),
             visible: true,
+            transparent: true,
             direction: ContainerDirection::Vertical,
             width: ContainerSize::Fill(1),
             height: ContainerSize::Fill(1),

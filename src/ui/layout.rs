@@ -10,6 +10,7 @@ pub struct PlacedContainer {
     pub id: String,
     pub outer_rect: Rect,
     pub inner_rect: Rect,
+    pub transparent: bool,
     pub border: ContainerBorderConfig,
     pub background: Option<String>,
 }
@@ -27,6 +28,32 @@ pub struct ComputedLayout {
     pub area: Rect,
     pub containers: Vec<PlacedContainer>,
     pub components: Vec<PlacedComponent>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ExclusionMask {
+    pub rects: Vec<Rect>,
+}
+
+impl ExclusionMask {
+    pub fn from_layout(layout: &ComputedLayout) -> Self {
+        let mut rects = Vec::with_capacity(layout.components.len() + layout.containers.len());
+        for c in &layout.containers {
+            if c.id != "root" && c.id != "minimal_root" && (c.border.enabled || !c.transparent) {
+                rects.push(c.outer_rect);
+            }
+        }
+        for comp in &layout.components {
+            rects.push(comp.outer_rect);
+        }
+        Self { rects }
+    }
+
+    pub fn contains(&self, x: u16, y: u16) -> bool {
+        self.rects
+            .iter()
+            .any(|r| x >= r.x && x < r.right() && y >= r.y && y < r.bottom())
+    }
 }
 
 impl ComputedLayout {
@@ -175,6 +202,7 @@ fn layout_container_node(container: &ContainerConfig, outer_rect: Rect, out: &mu
         id: container.id.clone(),
         outer_rect,
         inner_rect,
+        transparent: container.transparent,
         border: container.border.clone(),
         background: container.background.clone(),
     });

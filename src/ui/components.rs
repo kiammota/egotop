@@ -284,6 +284,8 @@ pub fn component_particles_bg_config(
 
 /// Renders into an isolated scratch `Buffer` sized to `target_rect`, then blits strictly
 /// within `target_rect` on `frame.buffer_mut()` so no component can ever draw outside its bounds.
+/// Transparent scratch cells (`symbol == " "` and `bg == Color::Reset`) preserve the underlying
+/// buffer content, and `bg == Color::Reset` on drawn glyphs preserves the underlying background color.
 pub fn render_clipped<F>(frame: &mut Frame, target_rect: Rect, draw_fn: F)
 where
     F: FnOnce(&mut Buffer, Rect),
@@ -301,7 +303,16 @@ where
         for dx in 0..clipped.width {
             let src_cell = &scratch[(dx, dy)];
             if let Some(dst_cell) = dest.cell_mut((clipped.x + dx, clipped.y + dy)) {
+                if src_cell.symbol() == " " && src_cell.bg == Color::Reset {
+                    continue;
+                }
+                let preserved_bg = if src_cell.bg == Color::Reset {
+                    dst_cell.bg
+                } else {
+                    src_cell.bg
+                };
                 *dst_cell = src_cell.clone();
+                dst_cell.set_bg(preserved_bg);
             }
         }
     }
@@ -330,8 +341,8 @@ pub fn render_animated_component(
         .visual
         .background
         .as_deref()
-        .map(|c| parse_color(c, theme.panel_background))
-        .unwrap_or(theme.panel_background);
+        .map(|c| parse_color(c, Color::Reset))
+        .unwrap_or(Color::Reset);
 
     match comp.kind {
         ComponentKind::Spinner => {

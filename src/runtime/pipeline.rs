@@ -813,6 +813,7 @@ fn check_unknown_fields(
                 "theme",
                 &[
                     "name",
+                    "background_transparent",
                     "background",
                     "panel_background",
                     "primary",
@@ -905,6 +906,7 @@ fn check_unknown_fields(
                 tbl,
                 &[
                     "name",
+                    "background_transparent",
                     "background",
                     "panel_background",
                     "primary",

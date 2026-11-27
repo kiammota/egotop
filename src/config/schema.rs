@@ -207,6 +207,7 @@ impl ViewMode {
 #[serde(default)]
 pub struct ThemeConfig {
     pub name: String,
+    pub background_transparent: bool,
     pub background: String,
     pub panel_background: String,
     pub primary: String,
@@ -224,6 +225,7 @@ impl Default for ThemeConfig {
     fn default() -> Self {
         Self {
             name: "matrix".to_string(),
+            background_transparent: true,
             background: "#050A07".to_string(),
             panel_background: "#08110C".to_string(),
             primary: "#39FF88".to_string(),

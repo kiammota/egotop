@@ -156,7 +156,7 @@ impl BackgroundEffect for MatrixEffect {
                 let ch = charset[glyph_idx];
 
                 if let Some(cell) = buf.cell_mut((x, abs_y)) {
-                    cell.set_char(ch).set_style(Style::default().fg(fg).bg(theme.background));
+                    cell.set_char(ch).set_style(Style::default().fg(fg).bg(ratatui::style::Color::Reset));
                 }
             }
         }

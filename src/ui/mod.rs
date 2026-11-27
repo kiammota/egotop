@@ -16,7 +16,7 @@ pub use container::{
     ContainerNode, ContainerSize, default_ui_tree,
 };
 pub use layout::{
-    ComputedLayout, PlacedComponent, PlacedContainer, compute_container_layout,
+    ComputedLayout, ExclusionMask, PlacedComponent, PlacedContainer, compute_container_layout,
     compute_dashboard_layout, compute_inner_rect,
 };
 pub use theme::Theme;
