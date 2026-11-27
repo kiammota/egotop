@@ -805,6 +805,30 @@ fn completion_excludes_exact_matches_and_preserves_alternatives() {
     assert_eq!(res.items.len(), 1);
     assert_eq!(res.items[0].insert_text, "colorscheme");
 
+    // Partial command matching an alias (e.g. "anim" for "animation") must still suggest "animation"
+    for partial in ["a", "an", "ani", "anim"] {
+        let res_anim = CompletionEngine::complete(partial, partial.len(), &registry, &ctx);
+        assert!(
+            res_anim.items.iter().any(|i| i.insert_text == "animation"),
+            "Expected 'animation' suggestion for partial '{partial}', got: {:?}",
+            res_anim.items
+        );
+    }
+    let res_bg = CompletionEngine::complete("bg", 2, &registry, &ctx);
+    assert!(res_bg.items.iter().any(|i| i.insert_text == "background"));
+    let res_fx = CompletionEngine::complete("fx", 2, &registry, &ctx);
+    assert!(res_fx.items.iter().any(|i| i.insert_text == "effect"));
+
+    // Tab navigation completes "anim" -> "animation"
+    let mut cli = CommandLineState::default();
+    cli.open(&registry, &ctx);
+    for ch in "anim".chars() {
+        cli.insert_char(ch, &registry, &ctx);
+    }
+    assert!(cli.popup_open);
+    cli.next_suggestion(&registry, &ctx);
+    assert_eq!(cli.buffer, "animation");
+
     // Case B: exact command excludes itself from suggestions
     let res = CompletionEngine::complete("colorscheme", 11, &registry, &ctx);
     assert!(
@@ -813,9 +837,11 @@ fn completion_excludes_exact_matches_and_preserves_alternatives() {
         res.items
     );
 
-    // Exact command alias `:w` excludes `write`, while partial `a` suggests `animation`
+    // Typing an alias (e.g. "w" or "anim") still suggests the full command until the full command name is typed
     let res = CompletionEngine::complete("w", 1, &registry, &ctx);
-    assert!(!res.items.iter().any(|i| i.insert_text == "write"));
+    assert!(res.items.iter().any(|i| i.insert_text == "write"));
+    let res_write = CompletionEngine::complete("write", 5, &registry, &ctx);
+    assert!(!res_write.items.iter().any(|i| i.insert_text == "write"));
     let res_a = CompletionEngine::complete("a", 1, &registry, &ctx);
     assert!(res_a.items.iter().any(|i| i.insert_text == "animation"));
 

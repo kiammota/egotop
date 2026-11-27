@@ -201,10 +201,7 @@ fn complete_commands(prefix: &str, registry: &CommandRegistry) -> Vec<Completion
     let mut sub_matches = Vec::new();
 
     for cmd in registry.commands() {
-        let is_exact = !prefix.is_empty()
-            && (cmd.name.eq_ignore_ascii_case(prefix)
-                || cmd.aliases.iter().any(|a| a.eq_ignore_ascii_case(prefix)));
-        if is_exact {
+        if !prefix.is_empty() && cmd.name.eq_ignore_ascii_case(prefix) {
             continue;
         }
         let expected_arg = cmd.args.first().map(|a| a.name.to_string());
