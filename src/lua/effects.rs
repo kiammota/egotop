@@ -4,6 +4,7 @@ use crate::lua::canvas::{
     CanvasBuffer, LuaCanvasHandle, attach_math_helpers, build_theme_lua_table,
 };
 use crate::lua::configure_lua_vm;
+use crate::ui::container::InlineLuaScript;
 use crate::ui::theme::Theme;
 use mlua::{Function, Lua, RegistryKey, Table, Value};
 use ratatui::buffer::Buffer;
@@ -67,7 +68,6 @@ struct LuaScriptInner {
     module_key: RegistryKey,
     state_key: RegistryKey,
     init_called: bool,
-    legacy_stateful: bool,
     width: u16,
     height: u16,
     fps: u32,
@@ -76,9 +76,11 @@ struct LuaScriptInner {
     last_error: Option<String>,
 }
 
-/// Reusable stateful Lua shader/canvas host supporting `setup(config)` -> `init(ctx)`,
-/// `update(dt, t, ctx)`, and `render(canvas, ctx)` with clipped truecolor & z-buffered frames.
+/// Isolated stateful Lua shader/canvas host bound to a single container or background unit.
+/// Each instance owns a private Lua VM and an exclusive `CanvasBuffer`.
 pub struct LuaCanvasInstance {
+    pub owner_name: String,
+    pub owner_description: String,
     pub script_name: String,
     inner: Option<LuaScriptInner>,
     canvas_buf: Arc<Mutex<CanvasBuffer>>,
@@ -87,17 +89,65 @@ pub struct LuaCanvasInstance {
 
 impl LuaCanvasInstance {
     pub fn from_spec(spec: &LuaEffectSpec, width: u16, height: u16, theme: Theme) -> Self {
+        Self::from_spec_named(
+            "background",
+            "Independent background surface",
+            spec,
+            width,
+            height,
+            theme,
+        )
+    }
+
+    pub fn from_spec_named(
+        owner_name: impl Into<String>,
+        owner_description: impl Into<String>,
+        spec: &LuaEffectSpec,
+        width: u16,
+        height: u16,
+        theme: Theme,
+    ) -> Self {
+        let name = owner_name.into();
+        let desc = owner_description.into();
         let mut inst = Self {
+            owner_name: name.clone(),
+            owner_description: desc.clone(),
             script_name: spec.name.clone(),
             inner: None,
-            canvas_buf: Arc::new(Mutex::new(CanvasBuffer::new(width, height))),
+            canvas_buf: Arc::new(Mutex::new(CanvasBuffer::new_named(name, desc, width, height))),
             theme_snapshot: theme,
         };
         inst.initialize_with_spec(spec, width, height);
         inst
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn from_script_name(
+        script_name: &str,
+        width: u16,
+        height: u16,
+        fps: u32,
+        speed: f32,
+        density: f32,
+        theme: Theme,
+    ) -> Self {
+        Self::from_script_name_named(
+            script_name,
+            "",
+            script_name,
+            width,
+            height,
+            fps,
+            speed,
+            density,
+            theme,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_script_name_named(
+        owner_name: impl Into<String>,
+        owner_description: impl Into<String>,
         script_name: &str,
         width: u16,
         height: u16,
@@ -118,7 +168,30 @@ impl LuaCanvasInstance {
             char_glyph: None,
             count: None,
         };
-        Self::from_spec(&spec, width, height, theme)
+        Self::from_spec_named(owner_name, owner_description, &spec, width, height, theme)
+    }
+
+    pub fn from_inline_named(
+        owner_name: impl Into<String>,
+        owner_description: impl Into<String>,
+        inline: &InlineLuaScript,
+        width: u16,
+        height: u16,
+        fps: u32,
+        theme: Theme,
+    ) -> Self {
+        let name = owner_name.into();
+        let desc = owner_description.into();
+        let mut inst = Self {
+            owner_name: name.clone(),
+            owner_description: desc.clone(),
+            script_name: format!("inline:{name}"),
+            inner: None,
+            canvas_buf: Arc::new(Mutex::new(CanvasBuffer::new_named(name, desc, width, height))),
+            theme_snapshot: theme,
+        };
+        inst.initialize_with_inline(inline, width, height, fps.clamp(1, 60));
+        inst
     }
 
     pub fn set_theme(&mut self, theme: Theme) {
@@ -145,6 +218,8 @@ impl LuaCanvasInstance {
             inner.lua.registry_value::<Table>(&inner.module_key),
             inner.lua.registry_value::<Table>(&inner.state_key),
             build_script_ctx(
+                &self.owner_name,
+                &self.owner_description,
                 &self.theme_snapshot,
                 &inner.lua,
                 width,
@@ -155,16 +230,11 @@ impl LuaCanvasInstance {
                 None,
             ),
         ) {
-            let _ = ctx.set("state", st.clone());
-            if let Ok(Value::Function(resize_fn)) = fx.get::<Value>("resize") {
-                let res = if inner.legacy_stateful {
-                    resize_fn.call::<()>((st, ctx))
-                } else {
-                    resize_fn.call::<()>(ctx)
-                };
-                if let Err(e) = res {
-                    inner.last_error = Some(e.to_string());
-                }
+            let _ = ctx.set("state", st);
+            if let Ok(Value::Function(resize_fn)) = fx.get::<Value>("resize")
+                && let Err(e) = resize_fn.call::<()>(ctx)
+            {
+                inner.last_error = Some(e.to_string());
             }
         }
     }
@@ -189,6 +259,8 @@ impl LuaCanvasInstance {
             return;
         };
         let Ok(ctx) = build_script_ctx(
+            &self.owner_name,
+            &self.owner_description,
             &self.theme_snapshot,
             &inner.lua,
             inner.width,
@@ -196,36 +268,26 @@ impl LuaCanvasInstance {
             step_dt,
             inner.elapsed,
             inner.fps,
-            Some(st.clone()),
+            Some(st),
         ) else {
             return;
         };
 
         if !inner.init_called {
             inner.init_called = true;
-            if let Ok(Value::Function(init_fn)) = fx.get::<Value>("init") {
-                let res = if inner.legacy_stateful {
-                    init_fn.call::<()>((st.clone(), ctx.clone()))
-                } else {
-                    init_fn.call::<()>(ctx.clone())
-                };
-                if let Err(e) = res {
-                    inner.last_error = Some(e.to_string());
-                    return;
-                }
-            }
-        }
-
-        if let Ok(Value::Function(update_fn)) = fx.get::<Value>("update") {
-            let res = if inner.legacy_stateful {
-                update_fn.call::<()>((st.clone(), step_dt, ctx.clone()))
-            } else {
-                update_fn.call::<()>((step_dt, inner.elapsed, ctx.clone()))
-            };
-            if let Err(e) = res {
+            if let Ok(Value::Function(init_fn)) = fx.get::<Value>("init")
+                && let Err(e) = init_fn.call::<()>(ctx.clone())
+            {
                 inner.last_error = Some(e.to_string());
                 return;
             }
+        }
+
+        if let Ok(Value::Function(update_fn)) = fx.get::<Value>("update")
+            && let Err(e) = update_fn.call::<()>((step_dt, inner.elapsed, ctx.clone()))
+        {
+            inner.last_error = Some(e.to_string());
+            return;
         }
 
         {
@@ -236,15 +298,10 @@ impl LuaCanvasInstance {
         let canvas_handle =
             LuaCanvasHandle::new(Arc::clone(&self.canvas_buf), self.theme_snapshot.clone());
 
-        if let Ok(Value::Function(render_fn)) = fx.get::<Value>("render") {
-            let res = if inner.legacy_stateful {
-                render_fn.call::<()>((st, canvas_handle, ctx))
-            } else {
-                render_fn.call::<()>((canvas_handle, ctx))
-            };
-            if let Err(e) = res {
-                inner.last_error = Some(e.to_string());
-            }
+        if let Ok(Value::Function(render_fn)) = fx.get::<Value>("render")
+            && let Err(e) = render_fn.call::<()>((canvas_handle, ctx))
+        {
+            inner.last_error = Some(e.to_string());
         }
     }
 
@@ -258,6 +315,70 @@ impl LuaCanvasInstance {
 
     pub fn clear_buffer(&mut self) {
         self.canvas_buf.lock().unwrap().begin_frame();
+    }
+
+    fn initialize_with_inline(
+        &mut self,
+        inline: &InlineLuaScript,
+        width: u16,
+        height: u16,
+        fps: u32,
+    ) {
+        let lua = Lua::new();
+        if configure_lua_vm(&lua, None).is_err() {
+            return;
+        }
+        let Ok(fx_tbl) = lua.create_table() else {
+            return;
+        };
+        let load_bc = |key: &str, bytes: &Option<Vec<u8>>| -> Result<(), String> {
+            if let Some(bc) = bytes {
+                let func = lua
+                    .load(bc.as_slice())
+                    .into_function()
+                    .map_err(|e| format!("Failed to load inline '{key}': {e}"))?;
+                fx_tbl
+                    .set(key, func)
+                    .map_err(|e| format!("Failed to bind inline '{key}': {e}"))?;
+            }
+            Ok(())
+        };
+
+        let mut init_err = None;
+        for (k, b) in [
+            ("init", &inline.init_chunk),
+            ("update", &inline.update_chunk),
+            ("render", &inline.render_chunk),
+            ("resize", &inline.resize_chunk),
+        ] {
+            if let Err(e) = load_bc(k, b) {
+                init_err = Some(e);
+                break;
+            }
+        }
+
+        let Ok(module_key) = lua.create_registry_value(fx_tbl) else {
+            return;
+        };
+        let Ok(state_tbl) = lua.create_table() else {
+            return;
+        };
+        let Ok(state_key) = lua.create_registry_value(state_tbl) else {
+            return;
+        };
+
+        self.inner = Some(LuaScriptInner {
+            lua,
+            module_key,
+            state_key,
+            init_called: false,
+            width,
+            height,
+            fps,
+            accum_dt: 1.0,
+            elapsed: 0.0,
+            last_error: init_err,
+        });
     }
 
     fn initialize_with_spec(&mut self, spec: &LuaEffectSpec, width: u16, height: u16) {
@@ -318,51 +439,13 @@ impl LuaCanvasInstance {
 
         let fx_tbl = match load_fn {
             Ok(t) => t,
-            Err(e) => {
+            Err(_) => {
                 self.inner = None;
-                let _ = e;
                 return;
             }
         };
 
         let fps = fx_tbl.get::<u32>("fps").unwrap_or(spec.fps).clamp(1, 60);
-        let explicit_legacy = fx_tbl
-            .get::<Option<bool>>("legacy")
-            .ok()
-            .flatten()
-            .unwrap_or(false)
-            || fx_tbl
-                .get::<Option<u32>>("api_version")
-                .ok()
-                .flatten()
-                .is_some_and(|v| v == 1);
-        // Auto-detect legacy 3-arg `render(state, draw, ctx)` / 2-arg `init(state, ctx)` scripts
-        // so user customizations on disk keep working cleanly alongside the new canvas API.
-        let inferred_legacy = if !explicit_legacy {
-            lua.load(
-                r#"
-                return function(fx)
-                    if type(debug) ~= "table" or type(debug.getinfo) ~= "function" then return false end
-                    if type(fx.render) == "function" then
-                        local info = debug.getinfo(fx.render, "u")
-                        if info and info.nparams == 3 then return true end
-                    end
-                    if type(fx.init) == "function" then
-                        local info = debug.getinfo(fx.init, "u")
-                        if info and info.nparams == 2 then return true end
-                    end
-                    return false
-                end
-                "#,
-            )
-            .eval::<Function>()
-            .and_then(|f| f.call::<bool>(fx_tbl.clone()))
-            .unwrap_or(false)
-        } else {
-            false
-        };
-        let legacy_stateful = explicit_legacy || inferred_legacy;
-
         let Ok(module_key) = lua.create_registry_value(fx_tbl) else {
             return;
         };
@@ -378,7 +461,6 @@ impl LuaCanvasInstance {
             module_key,
             state_key,
             init_called: false,
-            legacy_stateful,
             width,
             height,
             fps,
@@ -391,6 +473,8 @@ impl LuaCanvasInstance {
 
 #[allow(clippy::too_many_arguments)]
 fn build_script_ctx(
+    owner_name: &str,
+    owner_description: &str,
     theme_snap: &Theme,
     lua: &Lua,
     w: u16,
@@ -401,6 +485,8 @@ fn build_script_ctx(
     state_tbl: Option<Table>,
 ) -> mlua::Result<Table> {
     let ctx = lua.create_table()?;
+    ctx.set("name", owner_name)?;
+    ctx.set("description", owner_description)?;
     ctx.set("width", w)?;
     ctx.set("height", h)?;
     ctx.set("dt", dt)?;
@@ -417,7 +503,7 @@ fn build_script_ctx(
 }
 
 /// Hosts a Lua effect module (`effects.<name>`) behind EgoTop's `BackgroundEffect` trait,
-/// rendering onto the clipped `CanvasBuffer` at its configured FPS.
+/// rendering strictly onto the background's exclusive `CanvasBuffer` at its configured FPS.
 pub struct LuaEffectAdapter {
     spec: LuaEffectSpec,
     host: LuaCanvasInstance,
@@ -425,7 +511,14 @@ pub struct LuaEffectAdapter {
 
 impl LuaEffectAdapter {
     pub fn from_spec(spec: LuaEffectSpec, width: u16, height: u16, theme: Theme) -> Self {
-        let host = LuaCanvasInstance::from_spec(&spec, width, height, theme);
+        let host = LuaCanvasInstance::from_spec_named(
+            "background",
+            format!("Independent background effect '{}'", spec.name),
+            &spec,
+            width,
+            height,
+            theme,
+        );
         Self { spec, host }
     }
 

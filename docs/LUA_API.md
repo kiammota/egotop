@@ -1,6 +1,6 @@
 # EgoTop Lua API Reference
 
-All configuration, visual styling, effects, fonts, layouts, and programmable animations in **EgoTop** are written in **Lua 5.4** under `~/.config/egotop/`.
+All configuration, visual styling, effects, animations, fonts, and flat container layouts in **EgoTop** are written in **Lua 5.4** under `~/.config/egotop/`.
 
 ---
 
@@ -10,12 +10,10 @@ All configuration, visual styling, effects, fonts, layouts, and programmable ani
 ~/.config/egotop/
 ├── egotop.lua          # Main entrypoint and composition script
 ├── themes/             # Importable theme modules (`setup(overrides) -> table`)
-├── effects/            # Background effect modules (`setup(opts) -> effect`)
-├── animations/         # Programmable animations (`setup(api)`)
+├── effects/            # Background & container canvas effect modules (`setup(opts) -> effect`)
+├── animations/         # Isolated startup / boxed animations (`setup(api)`)
 └── fonts/              # ASCII / block font modules (`setup() -> font`)
 ```
-
-On first launch, EgoTop populates missing built-in modules in `~/.config/egotop/` so you can inspect, copy, or customize any built-in feature using the exact same public APIs. User files on disk always take priority over embedded fallbacks.
 
 ---
 
@@ -25,7 +23,7 @@ On first launch, EgoTop populates missing built-in modules in `~/.config/egotop/
 egotop.config({
     name = "egotop",
     greeting = "Hello, {user}!",
-    user_override = nil, -- optional string
+    user_override = nil,
     message = "Welcome back to your Linux environment.",
     refresh_rate_ms = 1000,
     animation_fps = 30,
@@ -45,8 +43,6 @@ egotop.config({
 ---
 
 ## 2. Wait Gate: `egotop.wait(tbl)` (Optional)
-
-If omitted, EgoTop opens straight into the dashboard. When declared, it pauses at startup until the configured input trigger fires:
 
 ```lua
 egotop.wait({
@@ -68,38 +64,32 @@ egotop.wait({
 
 ## 3. Themes API: `egotop.theme(tbl)`
 
-Each theme module in `themes/*.lua` exports a `setup(overrides)` function returning a palette and border style:
-
 ```lua
 local bamboo = require("themes.bamboo")
 
 egotop.theme({
     theme = bamboo.setup,
-    -- Local overrides without editing themes/bamboo.lua:
     background = "transparent",
     panel_background = "transparent",
     border_type = "rounded", -- "rounded" | "plain" | "double" | "thick" | "none"
 })
 ```
 
-Supported colors: `"transparent"` / `"reset"`, `#RRGGBB` hex, or named colors (`black`, `white`, `green`, `cyan`, etc.).
-
 ---
 
-## 4. Background & Effects API: `egotop.background(tbl)`
+## 4. Independent Background Layer: `egotop.background(tbl)`
 
-The background base (`transparent`, `solid`, or `gradient` with `opacity`) is completely decoupled from visual `effects`:
+The background is **not a container** and does not participate in container layout. It renders on its own dedicated background canvas behind containers:
 
 ```lua
 egotop.background({
     base = {
-        type = "gradient", -- "transparent" | "solid" | "gradient"
-        color = "#050A07",
-        opacity = 0.9,
+        type = "gradient", -- "theme" | "transparent" | "solid" | "gradient"
+        opacity = 1.0,
         gradient = {
             from = "#050A07",
             to = "#08110C",
-            direction = "vertical", -- "horizontal" | "vertical"
+            direction = "vertical",
         },
     },
     effects = {
@@ -111,81 +101,99 @@ egotop.background({
 })
 ```
 
-### Custom Effect & Shader Canvas Contract (`effects/*.lua`)
-
-Every effect and procedural canvas widget implements the structured frame lifecycle returned by `setup(opts)` (or exported directly at top level):
-
-```lua
-local fx = {}
-
-function fx.setup(opts)
-    return {
-        name = "custom_shader",
-        fps = opts.fps or 30,
-        options = opts,
-        init = function(ctx)
-            ctx.state.angle = 0.0
-        end,
-        resize = function(ctx) end,
-        update = function(dt, t, ctx)
-            ctx.state.angle = t * 0.85
-        end,
-        render = function(canvas, ctx)
-            local x = (canvas.width * 0.5) + ctx.cos(ctx.state.angle) * 6.0
-            local y = canvas.height * 0.5
-            local col = ctx.hsv_to_rgb((ctx.t * 0.1) % 1.0, 0.85, 1.0)
-            canvas:clear(" ", nil, nil)
-            canvas:put_z(x, y, 1.0, "@", col, nil, 1.0)
-            canvas:text(1, 0, "SHADER", ctx.theme.accent, nil, 1.0)
-        end,
-    }
-end
-
-return fx
-```
-
-#### Cell-Buffer `canvas` API & Math Helpers
-- **Bounds & Automatic Clipping**: `canvas.width`, `canvas.height` match the exact allocated panel or background viewport; out-of-bounds writes clip safely.
-- **Drawing Methods**:
-  - `canvas:clear(ch, fg, bg)`
-  - `canvas:put(x, y, char, fg_rgb, bg_rgb, intensity)` — supports `#RRGGBB`, `{ r, g, b }`, `nil`/`"transparent"`, and `intensity` scaling.
-  - `canvas:put_z(x, y, z, char, fg_rgb, bg_rgb, intensity)` — depth-buffered write (`z >= current_z` wins) for rotating 3D ASCII projections.
-  - `canvas:text(x, y, str, fg_rgb, bg_rgb, intensity)`
-- **Math & Color Helpers** (`ctx.*`, `ctx.math.*`, and `egotop.math.*`): `sin`, `cos`, `clamp`, `lerp`, `smoothstep`, `hsv_to_rgb`, `rgb_scale`, `rgb_lerp`, `rgb_hex`, `noise`, `hash`.
-- **Example Procedural 3D ASCII Shader**: See `lua/effects/christmas_tree.lua` and `lua/animations/christmas.lua` (which uses a 3D conifer foliage mesh with Z-buffered lighting, `@ # % * + : .` density ramp, glowing star, sinusoidal ornaments, gifts, and snowfall).
-
 ---
 
-## 5. Layout, Containers & Components: `egotop.layout(tbl)`
+## 5. Flat Containers & Automatic Layout: `egotop.layout(tbl)`
 
-Declare the full container tree explicitly with `egotop.layout`, `egotop.container`, and `egotop.component`:
+Containers are **independent, non-nestable units** (`children` is forbidden). Each container has `name`, `description`, an exclusive isolated canvas, optional layout hints (`region`, `order`, `row`, `width`, `height`), and visual/content settings.
 
-- **Sizes**: integer (`10`), percentage (`"50%"`), or `"fill"`.
-- **Container properties**: `id`, `direction` (`"vertical" | "horizontal"`), `width`, `height`, `min_width`, `max_width`, `min_height`, `max_height`, `padding`, `gap`, `transparent`, `background`, `opacity`, `gradient`, `border = { enabled, style, color, title }`, `children`.
-- **Component kinds**: `"header"`, `"greeting"`, `"system"`, `"hardware"`, `"environment"`, `"terminal"`, `"storage"`, `"activity"`, `"network"`, `"session"`, `"cpu"`, `"memory"`, `"temperature"`, `"processes"`, `"uptime"`, `"graph"`, `"ascii_logo"`, `"separator"`, `"spinner"`, `"typewriter"`, `"frames"`, `"matrix"`, `"particles"`, `"ascii_object"`, `"canvas"`, `"text"`.
-- **Mounting a Lua Canvas Widget** (strictly clipped inside its own bordered panel):
+Egotop distributes containers left-to-right in a linear queue, automatically computing dimensions, balancing rows on resize, and preventing overlap:
+
 ```lua
-egotop.component({
-    id = "tree_panel",
-    kind = "canvas",
-    script = "effects.christmas_tree",
-    width = "fill",
-    height = 18,
-    border = { enabled = true, style = "rounded", title = "Christmas" },
+egotop.layout({
+    padding = 1,
+    gap = 1,
+    min_container_width = 22,
+    containers = {
+        egotop.container({
+            name = "header",
+            description = "Top status bar",
+            region = "top",
+            kind = "header",
+            width = "100%",
+            height = 1,
+            transparent = true,
+        }),
+        egotop.container({
+            name = "system",
+            description = "System overview",
+            region = "main", -- "top" | "left" | "main" | "right" | "bottom"
+            kind = "system",
+            border = { enabled = true, style = "rounded", title = "System" },
+        }),
+        egotop.container({
+            name = "tree_panel",
+            description = "Procedural 3D Christmas tree canvas",
+            region = "main",
+            kind = "canvas",
+            script = "effects.christmas_tree",
+            border = { enabled = true, style = "rounded", title = "Christmas" },
+        }),
+    },
+})
+```
+
+### Inline Isolated Lua Canvas Containers
+
+A container can define `init(ctx)`, `update(dt, t, ctx)`, `resize(ctx)`, and `render(canvas, ctx)` directly. Each inline script runs in an **isolated Lua VM** bound exclusively to that container's `canvas`:
+
+```lua
+egotop.container({
+    name = "custom_widget",
+    description = "Self-contained Lua canvas widget",
+    region = "main",
+    border = { enabled = true, style = "rounded", title = "Custom" },
+    render = function(canvas, ctx)
+        canvas:clear(" ", nil, nil)
+        canvas:text(0, 0, canvas.name .. " (" .. canvas.width .. "x" .. canvas.height .. ")", ctx.theme.primary)
+        canvas:text(0, 1, canvas.description, ctx.theme.muted)
+    end,
 })
 ```
 
 ---
 
-## 6. Footer API: `egotop.footer(tbl)`
+## 6. Isolated Canvas API (`canvas` & `ctx`)
+
+Every rendering unit (each container, the background, and each animation) receives an isolated `LuaCanvasHandle` bound strictly to its own `CanvasBuffer`:
+
+- **Identity & Bounds (Read-Only)**:
+  - `canvas.name` — owning unit's `name`
+  - `canvas.description` — owning unit's `description`
+  - `canvas.width`, `canvas.height` — current local dimensions (updated automatically on terminal resize)
+- **Clipped Drawing Methods** (local coordinates `[0..width, 0..height)`, never global):
+  - `canvas:clear(ch, fg, bg)`
+  - `canvas:put(x, y, ch, fg, bg, intensity)`
+  - `canvas:put_z(x, y, z, ch, fg, bg, intensity)`
+  - `canvas:text(x, y, str, fg, bg, intensity)`
+  - `canvas:ascii(x, y, str_or_lines, fg, bg, intensity)`
+  - `canvas:fill(x, y, w, h, ch, fg, bg)`
+  - `canvas:blend(c1, c2, t)`
+- **Context (`ctx`)**:
+  - `ctx.name`, `ctx.description`, `ctx.width`, `ctx.height`, `ctx.dt`, `ctx.t`, `ctx.fps`, `ctx.state`, `ctx.theme`, `ctx.math` (`sin`, `cos`, `clamp`, `lerp`, `smoothstep`, `hsv_to_rgb`, `rgb_scale`, `rgb_lerp`, `rgb_hex`, `noise`, `hash`).
+  - There is **no** `ctx.screen`, global canvas registry, or cross-container access.
+
+---
+
+## 7. Footer API: `egotop.footer(tbl)`
 
 ```lua
 egotop.footer({
     enabled = true,
     text = "Monitoring system telemetry",
-    icon = "activity", -- "activity" | "dots" | "line" | "blocks" | "pulse" | "none"
+    icon = "activity",
     color = "#39FF88",
-    align = "left",    -- "left" | "center" | "right"
+    align = "left",
     animation = "spinner",
     fps = 12,
 })
@@ -193,80 +201,28 @@ egotop.footer({
 
 ---
 
-## 7. Programmable Animations API (`animations/*.lua`)
+## 8. Isolated Animations API (`animations/*.lua`)
 
-Every animation module exposes a single entry point: `setup(api)`:
+Animations receive `setup(api)` and return a module table with `init(ctx)`, `update(dt, t, ctx)`, `resize(ctx)`, and `render(canvas, ctx)` (plus optional `layer = "background" | "boxed" | "overlay"`, `title`, `fps`, `duration`):
 
 ```lua
 local animation = {}
 
 function animation.setup(api)
     api.ui.reveal(0.0)
-    local elem = api.element({
-        id = "star",
-        x = math.floor(api.screen.width() / 2),
-        y = 3,
-        text = "★",
-        fg = "#FFE66D",
-        bold = true,
-    })
-
-    api.tween({
-        from = 0.0,
-        to = 1.0,
-        duration_ms = 1200,
-        easing = "ease_out_cubic",
-        on_update = function(p)
-            api.ui.reveal(p)
+    return {
+        name = "my_boot",
+        description = "Isolated startup animation",
+        layer = "overlay",
+        fps = 30,
+        duration = 1.0,
+        render = function(canvas, ctx)
+            local p = math.min(1.0, ctx.t / 1.0)
+            ctx.reveal(p)
+            canvas:text(0, math.floor(canvas.height / 2), ("─"):rep(canvas.width), ctx.theme.primary)
         end,
-        on_complete = function()
-            elem:destroy()
-            api.finish()
-        end,
-    })
+    }
 end
 
 return animation
 ```
-
-### `api` Reference
-- **Screen & Clock**: `api.screen.width()`, `api.screen.height()`, `api.elapsed_ms()`, `api.dt()`, `api.finish()`
-- **Scheduling**: `api.after(delay_ms, fn)`, `api.every(interval_ms, fn)`, `api.tween(spec)`, `api.sequence(steps, on_complete)`, `api.parallel(fns)`
-- **Elements**: `elem = api.element({ id, x, y, text, lines, fg, bg, bold, visible })` with `:move(x, y)`, `:set_text(s)`, `:set_lines(tbl)`, `:set_color(fg, bg)`, `:set_visible(bool)`, `:destroy()`
-- **Text & Colors**: `api.figlet(text, font_name)`, `api.lerp_color(c1, c2, t)`
-- **UI Hooks**: `api.ui.reveal(progress)`, `api.ui.set_greeting_transform(function(ch, col, row) return { char = ch, fg = "#...", dy = 0, bold = true } end)`
-
----
-
-## 8. ASCII Fonts API (`fonts/*.lua`)
-
-```lua
-local font = {}
-
-function font.setup()
-    return {
-        name = "Custom",
-        height = 4,
-        spacing = 1,
-        fallback = "?",
-        characters = {
-            A = {
-                "  ██  ",
-                " █  █ ",
-                "██████",
-                "█    █",
-            },
-        },
-    }
-end
-
-return font
-```
-
----
-
-## Error Handling
-
-Lua syntax or runtime errors are isolated safely:
-- `egotop --config ~/.config/egotop/egotop.lua config validate` reports exact errors cleanly before launching.
-- Effect and animation callbacks catch errors in `last_error` without freezing input handling or crashing the terminal.

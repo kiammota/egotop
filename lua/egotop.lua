@@ -1,5 +1,5 @@
 -- ~/.config/egotop/egotop.lua — Primary EgoTop configuration & composition script.
--- Every visual element (themes, backgrounds, effects, animations, fonts, and layout)
+-- Every visual element (themes, backgrounds, effects, animations, fonts, and flat containers)
 -- is configured here using the public `egotop` Lua API.
 
 local matrix_theme = require("themes.matrix")
@@ -21,24 +21,20 @@ egotop.config({
     use_nerd_fonts = true,
 })
 
--- 2. Optional Wait-for-Input Gate (replaces legacy [init]; omit or leave disabled to launch directly)
+-- 2. Optional Wait-for-Input Gate
 -- egotop.wait({
 --     trigger = "any",          -- "key", "mouse", or "any"
 --     message = "Press any key to start",
 --     cursor = { character = "▌", color = "#39FF88", blink = true, blink_interval_ms = 500 },
 --     animation = "cursor_expand",
---     after = "reveal",
 -- })
 
 -- 3. Theme (importable module with optional local overrides)
 egotop.theme({
     theme = matrix_theme.setup,
-    -- Example local override:
-    -- background = "transparent",
-    -- panel_background = "transparent",
 })
 
--- 4. Background (base layer + independent visual effects)
+-- 4. Background (independent background canvas layer — does not participate in container layout)
 egotop.background({
     base = {
         type = "theme", -- "theme", "transparent", "solid", or "gradient"
@@ -68,28 +64,31 @@ egotop.footer({
     fps = 12,
 })
 
--- 6. Explicit Container & Component Tree (no hidden hardcoded Rust tree)
+-- 6. Flat Independent Containers (egotop calculates positions & sizes automatically)
 egotop.layout({
-    id = "root",
-    direction = "vertical",
-    width = "100%",
-    height = "100%",
     padding = 1,
     gap = 1,
-    transparent = true,
-    children = {
-        egotop.component({
-            id = "header",
+    min_container_width = 22,
+    containers = {
+        egotop.container({
+            name = "header",
+            description = "Top status bar with brand, active mode, effect, and clock",
+            region = "top",
+            row = 0,
             kind = "header",
             category = "dynamic",
-            width = "fill",
+            width = "100%",
             height = 1,
+            transparent = true,
         }),
-        egotop.component({
-            id = "greeting",
+        egotop.container({
+            name = "greeting",
+            description = "Welcome banner with FIGlet greeting and system logo",
+            region = "top",
+            row = 1,
             kind = "greeting",
             category = "static",
-            width = "fill",
+            width = "100%",
             height = 9,
             min_height = 6,
             align = "center",
@@ -97,117 +96,119 @@ egotop.layout({
             border = { enabled = true, style = "rounded", title = "Welcome" },
         }),
         egotop.container({
-            id = "middle_row",
-            direction = "horizontal",
-            width = "fill",
+            name = "system",
+            description = "Operating system, host, kernel, shell, and terminal metadata",
+            region = "main",
+            row = 0,
+            kind = "system",
+            category = "dynamic",
+            width = "50%",
             height = "fill",
             min_height = 6,
-            gap = 1,
-            transparent = true,
-            children = {
-                egotop.component({
-                    id = "system",
-                    kind = "system",
-                    category = "dynamic",
-                    width = "50%",
-                    height = "fill",
-                    padding = 1,
-                    border = { enabled = true, style = "rounded", title = "System" },
-                }),
-                egotop.component({
-                    id = "hardware",
-                    kind = "hardware",
-                    category = "dynamic",
-                    width = "50%",
-                    height = "fill",
-                    padding = 1,
-                    graph_style = "bar",
-                    border = { enabled = true, style = "rounded", title = "Hardware" },
-                }),
-            },
+            padding = 1,
+            border = { enabled = true, style = "rounded", title = "System" },
         }),
         egotop.container({
-            id = "info_row",
-            direction = "horizontal",
+            name = "hardware",
+            description = "CPU, RAM, disk, and GPU usage telemetry bars",
+            region = "main",
+            row = 0,
+            kind = "hardware",
+            category = "dynamic",
+            width = "50%",
+            height = "fill",
+            min_height = 6,
+            padding = 1,
+            graph_style = "bar",
+            border = { enabled = true, style = "rounded", title = "Hardware" },
+        }),
+        egotop.container({
+            name = "environment",
+            description = "Window manager, session protocol, display, and desktop theme",
+            region = "main",
+            row = 1,
+            kind = "environment",
+            category = "dynamic",
+            width = "40%",
+            height = "fill",
+            min_height = 5,
+            padding = 1,
+            border = { enabled = true, style = "rounded", title = "Environment" },
+        }),
+        egotop.container({
+            name = "terminal",
+            description = "Terminal emulator, shell, font, and viewport dimensions",
+            region = "main",
+            row = 1,
+            kind = "terminal",
+            category = "dynamic",
+            width = "30%",
+            height = "fill",
+            min_height = 5,
+            padding = 1,
+            border = { enabled = true, style = "rounded", title = "Terminal" },
+        }),
+        egotop.container({
+            name = "storage",
+            description = "Mounted filesystems and storage capacity bars",
+            region = "main",
+            row = 1,
+            kind = "storage",
+            category = "dynamic",
             width = "fill",
             height = "fill",
             min_height = 5,
-            gap = 1,
-            transparent = true,
-            children = {
-                egotop.component({
-                    id = "environment",
-                    kind = "environment",
-                    category = "dynamic",
-                    width = "40%",
-                    height = "fill",
-                    padding = 1,
-                    border = { enabled = true, style = "rounded", title = "Environment" },
-                }),
-                egotop.component({
-                    id = "terminal",
-                    kind = "terminal",
-                    category = "dynamic",
-                    width = "30%",
-                    height = "fill",
-                    padding = 1,
-                    border = { enabled = true, style = "rounded", title = "Terminal" },
-                }),
-                egotop.component({
-                    id = "storage",
-                    kind = "storage",
-                    category = "dynamic",
-                    width = "fill",
-                    height = "fill",
-                    padding = 1,
-                    border = { enabled = true, style = "rounded", title = "Storage" },
-                }),
-            },
+            padding = 1,
+            border = { enabled = true, style = "rounded", title = "Storage" },
         }),
         egotop.container({
-            id = "bottom_row",
-            direction = "horizontal",
+            name = "activity",
+            description = "Load averages, process counts, and CPU/RAM history sparklines",
+            region = "main",
+            row = 2,
+            kind = "activity",
+            category = "dynamic",
+            width = "40%",
+            height = "fill",
+            min_height = 6,
+            padding = 1,
+            graph_style = "sparkline",
+            border = { enabled = true, style = "rounded", title = "Activity" },
+        }),
+        egotop.container({
+            name = "network",
+            description = "Network interfaces and RX/TX transfer telemetry",
+            region = "main",
+            row = 2,
+            kind = "network",
+            category = "dynamic",
+            width = "30%",
+            height = "fill",
+            min_height = 6,
+            padding = 1,
+            border = { enabled = true, style = "rounded", title = "Network" },
+        }),
+        egotop.container({
+            name = "session",
+            description = "System uptime, boot timestamp, and active session status",
+            region = "main",
+            row = 2,
+            kind = "session",
+            category = "dynamic",
             width = "fill",
             height = "fill",
             min_height = 6,
-            gap = 1,
-            transparent = true,
-            children = {
-                egotop.component({
-                    id = "activity",
-                    kind = "activity",
-                    category = "dynamic",
-                    width = "40%",
-                    height = "fill",
-                    padding = 1,
-                    graph_style = "sparkline",
-                    border = { enabled = true, style = "rounded", title = "Activity" },
-                }),
-                egotop.component({
-                    id = "network",
-                    kind = "network",
-                    category = "dynamic",
-                    width = "30%",
-                    height = "fill",
-                    padding = 1,
-                    border = { enabled = true, style = "rounded", title = "Network" },
-                }),
-                egotop.component({
-                    id = "session",
-                    kind = "session",
-                    category = "dynamic",
-                    width = "fill",
-                    height = "fill",
-                    padding = 1,
-                    border = { enabled = true, style = "rounded", title = "Session & Uptime" },
-                }),
-            },
+            padding = 1,
+            border = { enabled = true, style = "rounded", title = "Session & Uptime" },
         }),
-        egotop.component({
-            id = "status_spinner",
+        egotop.container({
+            name = "status_spinner",
+            description = "Footer activity spinner and command-line bar",
+            region = "bottom",
+            row = 0,
             kind = "spinner",
             category = "animated",
-            width = "fill",
+            width = "100%",
             height = 3,
             border = { enabled = true, style = "rounded" },
             text = "Monitoring system telemetry",

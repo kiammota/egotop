@@ -1,6 +1,9 @@
 use crate::config::schema::BackgroundBaseType;
 use crate::config::{Config, StartupTrigger};
-use crate::ui::container::{ContainerConfig, ContainerDirection, ContainerNode, ContainerSize};
+use crate::ui::container::{
+    ComponentCategory, ContainerConfig, ContainerSize, EffectPolicy, GradientDirection,
+    LayoutRegion,
+};
 use std::fmt::Write;
 
 fn lua_str(s: &str) -> String {
@@ -22,63 +25,47 @@ fn lua_str(s: &str) -> String {
 
 fn size_to_lua(sz: ContainerSize) -> String {
     match sz {
+        ContainerSize::Auto => "\"auto\"".to_string(),
         ContainerSize::Fixed(n) => n.to_string(),
         ContainerSize::Percent(p) => format!("\"{p}%\""),
-        ContainerSize::Fill(_) => "\"fill\"".to_string(),
+        ContainerSize::Fill(1) => "\"fill\"".to_string(),
+        ContainerSize::Fill(w) => format!("\"fill({w})\""),
     }
 }
 
-fn component_kind_str(kind: crate::ui::container::ComponentKind) -> &'static str {
-    use crate::ui::container::ComponentKind::*;
-    match kind {
-        Header => "header",
-        Greeting => "greeting",
-        System => "system",
-        Hardware => "hardware",
-        Environment => "environment",
-        Terminal => "terminal",
-        Storage => "storage",
-        Activity => "activity",
-        Cpu => "cpu",
-        Memory => "memory",
-        Temperature => "temperature",
-        Processes => "processes",
-        Network => "network",
-        Uptime => "uptime",
-        Session => "session",
-        Graph => "graph",
-        AsciiLogo => "ascii_logo",
-        Separator => "separator",
-        Text => "text",
-        Spinner => "spinner",
-        Typewriter => "typewriter",
-        Frames => "frames",
-        Matrix => "matrix",
-        Particles => "particles",
-        AsciiObject => "ascii_object",
-        Canvas => "canvas",
-    }
-}
-
-fn write_container(out: &mut String, c: &ContainerConfig, indent: usize, is_root: bool) {
+fn write_container(out: &mut String, c: &ContainerConfig, indent: usize) {
     let pad = " ".repeat(indent);
-    if is_root {
-        let _ = writeln!(out, "{pad}egotop.layout({{");
-    } else {
-        let _ = writeln!(out, "{pad}egotop.container({{");
-    }
     let ip = " ".repeat(indent + 4);
-    let _ = writeln!(out, "{ip}id = {},", lua_str(&c.id));
+    let _ = writeln!(out, "{pad}egotop.container({{");
+    let _ = writeln!(out, "{ip}name = {},", lua_str(&c.name));
+    if !c.description.is_empty() {
+        let _ = writeln!(out, "{ip}description = {},", lua_str(&c.description));
+    }
     if !c.visible {
         let _ = writeln!(out, "{ip}visible = false,");
     }
-    let dir = match c.direction {
-        ContainerDirection::Horizontal => "horizontal",
-        ContainerDirection::Vertical => "vertical",
+    let cat = match c.category {
+        ComponentCategory::Static => "static",
+        ComponentCategory::Dynamic => "dynamic",
+        ComponentCategory::Animated => "animated",
     };
-    let _ = writeln!(out, "{ip}direction = \"{dir}\",");
-    let _ = writeln!(out, "{ip}width = {},", size_to_lua(c.width));
-    let _ = writeln!(out, "{ip}height = {},", size_to_lua(c.height));
+    let _ = writeln!(out, "{ip}category = \"{cat}\",");
+    let _ = writeln!(out, "{ip}kind = \"{}\",", c.kind.label());
+    if c.region != LayoutRegion::Main {
+        let _ = writeln!(out, "{ip}region = \"{}\",", c.region.label());
+    }
+    if c.order != 0 {
+        let _ = writeln!(out, "{ip}order = {},", c.order);
+    }
+    if let Some(row) = c.row {
+        let _ = writeln!(out, "{ip}row = {row},");
+    }
+    if c.width != ContainerSize::Auto {
+        let _ = writeln!(out, "{ip}width = {},", size_to_lua(c.width));
+    }
+    if c.height != ContainerSize::Auto {
+        let _ = writeln!(out, "{ip}height = {},", size_to_lua(c.height));
+    }
     if let Some(v) = c.min_width {
         let _ = writeln!(out, "{ip}min_width = {v},");
     }
@@ -94,10 +81,49 @@ fn write_container(out: &mut String, c: &ContainerConfig, indent: usize, is_root
     if c.padding > 0 {
         let _ = writeln!(out, "{ip}padding = {},", c.padding);
     }
-    if c.gap > 0 {
-        let _ = writeln!(out, "{ip}gap = {},", c.gap);
+    if c.transparent {
+        let _ = writeln!(out, "{ip}transparent = true,");
     }
-    let _ = writeln!(out, "{ip}transparent = {},", c.transparent);
+    if c.align != crate::config::Align::Left {
+        let al = match c.align {
+            crate::config::Align::Center => "center",
+            crate::config::Align::Right => "right",
+            crate::config::Align::Left => "left",
+        };
+        let _ = writeln!(out, "{ip}align = \"{al}\",");
+    }
+    if let Some(f) = &c.font {
+        let _ = writeln!(out, "{ip}font = {},", lua_str(f));
+    }
+    if let Some(gs) = c.graph_style {
+        let gs_s = match gs {
+            crate::config::GraphStyle::Bar => "bar",
+            crate::config::GraphStyle::Sparkline => "sparkline",
+        };
+        let _ = writeln!(out, "{ip}graph_style = \"{gs_s}\",");
+    }
+    if let Some(t) = &c.content.text {
+        let _ = writeln!(out, "{ip}text = {},", lua_str(t));
+    }
+    if let Some(s) = &c.content.script {
+        let _ = writeln!(out, "{ip}script = {},", lua_str(s));
+    }
+    if let Some(anim) = &c.animation {
+        let fps = anim.fps.unwrap_or(12);
+        let st = anim
+            .style
+            .as_deref()
+            .map(|s| format!(", style = {}", lua_str(s)))
+            .unwrap_or_default();
+        let _ = writeln!(
+            out,
+            "{ip}animation = {{ fps = {fps}, speed = {:.2}{st} }},",
+            anim.speed
+        );
+    }
+    if let Some(col) = &c.color {
+        let _ = writeln!(out, "{ip}color = {},", lua_str(col));
+    }
     if let Some(bg) = &c.background {
         let _ = writeln!(out, "{ip}background = {},", lua_str(bg));
     }
@@ -117,100 +143,7 @@ fn write_container(out: &mut String, c: &ContainerConfig, indent: usize, is_root
                 .unwrap_or_default()
         );
     }
-    if !c.children.is_empty() {
-        let _ = writeln!(out, "{ip}children = {{");
-        for child in &c.children {
-            match child {
-                ContainerNode::Container(sub) => write_container(out, sub, indent + 8, false),
-                ContainerNode::Component(comp) => {
-                    let cp = " ".repeat(indent + 8);
-                    let cip = " ".repeat(indent + 12);
-                    let _ = writeln!(out, "{cp}egotop.component({{");
-                    let _ = writeln!(out, "{cip}id = {},", lua_str(&comp.id));
-                    if !comp.visible {
-                        let _ = writeln!(out, "{cip}visible = false,");
-                    }
-                    let cat = match comp.category {
-                        crate::ui::container::ComponentCategory::Static => "static",
-                        crate::ui::container::ComponentCategory::Dynamic => "dynamic",
-                        crate::ui::container::ComponentCategory::Animated => "animated",
-                    };
-                    let kind = component_kind_str(comp.kind);
-                    let _ = writeln!(out, "{cip}category = \"{cat}\",");
-                    let _ = writeln!(out, "{cip}kind = \"{kind}\",");
-                    let _ = writeln!(out, "{cip}width = {},", size_to_lua(comp.width));
-                    let _ = writeln!(out, "{cip}height = {},", size_to_lua(comp.height));
-                    if let Some(v) = comp.min_height {
-                        let _ = writeln!(out, "{cip}min_height = {v},");
-                    }
-                    if comp.visual.padding > 0 {
-                        let _ = writeln!(out, "{cip}padding = {},", comp.visual.padding);
-                    }
-                    if comp.visual.align != crate::config::Align::Left {
-                        let al = match comp.visual.align {
-                            crate::config::Align::Center => "center",
-                            crate::config::Align::Right => "right",
-                            crate::config::Align::Left => "left",
-                        };
-                        let _ = writeln!(out, "{cip}align = \"{al}\",");
-                    }
-                    if let Some(f) = &comp.visual.font {
-                        let _ = writeln!(out, "{cip}font = {},", lua_str(f));
-                    }
-                    if let Some(gs) = comp.visual.graph_style {
-                        let gs_s = match gs {
-                            crate::config::GraphStyle::Bar => "bar",
-                            crate::config::GraphStyle::Sparkline => "sparkline",
-                        };
-                        let _ = writeln!(out, "{cip}graph_style = \"{gs_s}\",");
-                    }
-                    if let Some(t) = &comp.content.text {
-                        let _ = writeln!(out, "{cip}text = {},", lua_str(t));
-                    }
-                    if let Some(s) = &comp.content.script {
-                        let _ = writeln!(out, "{cip}script = {},", lua_str(s));
-                    }
-                    if let Some(anim) = &comp.animation {
-                        let fps = anim.fps.unwrap_or(12);
-                        let st = anim
-                            .style
-                            .as_deref()
-                            .map(|s| format!(", style = {}", lua_str(s)))
-                            .unwrap_or_default();
-                        let _ = writeln!(
-                            out,
-                            "{cip}animation = {{ fps = {fps}, speed = {:.2}{st} }},",
-                            anim.speed
-                        );
-                    }
-                    if let Some(bg) = &comp.visual.background {
-                        let _ = writeln!(out, "{cip}background = {},", lua_str(bg));
-                    }
-                    if comp.visual.border.enabled || comp.visual.border.title.is_some() {
-                        let _ = writeln!(
-                            out,
-                            "{cip}border = {{ enabled = {}, style = \"{}\"{} }},",
-                            comp.visual.border.enabled,
-                            comp.visual.border.style.label(),
-                            comp.visual
-                                .border
-                                .title
-                                .as_deref()
-                                .map(|t| format!(", title = {}", lua_str(t)))
-                                .unwrap_or_default()
-                        );
-                    }
-                    let _ = writeln!(out, "{cp}}}),");
-                }
-            }
-        }
-        let _ = writeln!(out, "{ip}}},");
-    }
-    if is_root {
-        let _ = writeln!(out, "{pad}}})");
-    } else {
-        let _ = writeln!(out, "{pad}}}),");
-    }
+    let _ = writeln!(out, "{pad}}}),");
 }
 
 /// Serializes `Config` into an idiomatic `egotop.lua` script that cleanly round-trips
@@ -395,8 +328,8 @@ pub fn serialize_config_to_lua(cfg: &Config) -> String {
 
     if !cfg.container_styles.is_empty() {
         let _ = writeln!(out, "egotop.container_styles({{");
-        for (id, st) in &cfg.container_styles {
-            let _ = writeln!(out, "    [{}] = {{", lua_str(id));
+        for (name, st) in &cfg.container_styles {
+            let _ = writeln!(out, "    [{}] = {{", lua_str(name));
             match &st.background {
                 crate::ui::container::BackgroundFill::Inherit => {
                     let _ = writeln!(out, "        background = \"inherit\",");
@@ -419,8 +352,8 @@ pub fn serialize_config_to_lua(cfg: &Config) -> String {
             }
             if let Some(grad) = &st.gradient {
                 let dir = match grad.direction {
-                    crate::ui::container::GradientDirection::Horizontal => "horizontal",
-                    crate::ui::container::GradientDirection::Vertical => "vertical",
+                    GradientDirection::Horizontal => "horizontal",
+                    GradientDirection::Vertical => "vertical",
                 };
                 let cols: Vec<String> = grad.colors.iter().map(|c| lua_str(c)).collect();
                 let _ = writeln!(
@@ -433,9 +366,9 @@ pub fn serialize_config_to_lua(cfg: &Config) -> String {
                 let _ = writeln!(out, "        opacity = {op:.2},");
             }
             let ef = match st.effects {
-                crate::ui::container::EffectPolicy::Allow => "allow",
-                crate::ui::container::EffectPolicy::Isolated => "isolated",
-                crate::ui::container::EffectPolicy::Exclude => "exclude",
+                EffectPolicy::Allow => "allow",
+                EffectPolicy::Isolated => "isolated",
+                EffectPolicy::Exclude => "exclude",
             };
             let _ = writeln!(out, "        effects = \"{ef}\",");
             let _ = writeln!(out, "    }},");
@@ -443,6 +376,15 @@ pub fn serialize_config_to_lua(cfg: &Config) -> String {
         let _ = writeln!(out, "}})\n");
     }
 
-    write_container(&mut out, &cfg.ui.root, 0, true);
+    let _ = writeln!(out, "egotop.layout({{");
+    let _ = writeln!(out, "    padding = {},", cfg.ui.padding);
+    let _ = writeln!(out, "    gap = {},", cfg.ui.gap);
+    let _ = writeln!(out, "    min_container_width = {},", cfg.ui.min_container_width);
+    let _ = writeln!(out, "    containers = {{");
+    for c in &cfg.ui.containers {
+        write_container(&mut out, c, 8);
+    }
+    let _ = writeln!(out, "    }},");
+    let _ = writeln!(out, "}})");
     out
 }

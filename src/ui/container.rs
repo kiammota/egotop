@@ -66,50 +66,55 @@ pub struct ContainerStyle {
     pub effects: EffectPolicy,
 }
 
-pub fn collect_all_container_ids(container: &ContainerConfig, out: &mut Vec<String>) {
-    out.push(container.id.clone());
-    for child in &container.children {
-        match child {
-            ContainerNode::Container(sub) => collect_all_container_ids(sub, out),
-            ContainerNode::Component(comp) => out.push(comp.id.clone()),
+/// Interface region in which a container is placed by the automatic layout engine.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum LayoutRegion {
+    Top,
+    Left,
+    #[default]
+    #[serde(alias = "center", alias = "flow")]
+    Main,
+    Right,
+    Bottom,
+}
+
+impl LayoutRegion {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Top => "top",
+            Self::Left => "left",
+            Self::Main => "main",
+            Self::Right => "right",
+            Self::Bottom => "bottom",
+        }
+    }
+
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "top" | "header" => Some(Self::Top),
+            "left" => Some(Self::Left),
+            "main" | "center" | "flow" | "body" => Some(Self::Main),
+            "right" => Some(Self::Right),
+            "bottom" | "footer" => Some(Self::Bottom),
+            _ => None,
         }
     }
 }
 
-pub fn has_container_id(container: &ContainerConfig, id: &str) -> bool {
-    if container.id == id {
-        return true;
-    }
-    container.children.iter().any(|child| match child {
-        ContainerNode::Container(sub) => has_container_id(sub, id),
-        ContainerNode::Component(comp) => comp.id == id,
-    })
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
-#[serde(rename_all = "lowercase")]
-pub enum ContainerDirection {
-    Horizontal,
-    #[default]
-    Vertical,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ContainerSize {
+    #[default]
+    Auto,
     Fixed(u16),
     Percent(u16),
     Fill(u16),
 }
 
-impl Default for ContainerSize {
-    fn default() -> Self {
-        Self::Fill(1)
-    }
-}
-
 impl Serialize for ContainerSize {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         match self {
+            Self::Auto => serializer.serialize_str("auto"),
             Self::Fixed(n) => serializer.serialize_u16(*n),
             Self::Percent(p) => serializer.serialize_str(&format!("{p}%")),
             Self::Fill(1) => serializer.serialize_str("fill"),
@@ -131,7 +136,10 @@ impl<'de> Deserialize<'de> for ContainerSize {
             Raw::Num(n) => Ok(Self::Fixed(n)),
             Raw::Text(s) => {
                 let t = s.trim().to_ascii_lowercase();
-                if t == "fill" || t == "auto" {
+                if t.is_empty() || t == "auto" {
+                    return Ok(Self::Auto);
+                }
+                if t == "fill" {
                     return Ok(Self::Fill(1));
                 }
                 if let Some(inner) = t.strip_prefix("fill(").and_then(|v| v.strip_suffix(')')) {
@@ -188,75 +196,6 @@ impl ContainerBorderConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(default)]
-pub struct ContainerConfig {
-    pub id: String,
-    pub visible: bool,
-    pub transparent: bool,
-    pub direction: ContainerDirection,
-    pub width: ContainerSize,
-    pub height: ContainerSize,
-    pub min_width: Option<u16>,
-    pub max_width: Option<u16>,
-    pub min_height: Option<u16>,
-    pub max_height: Option<u16>,
-    pub padding: u16,
-    pub gap: u16,
-    pub border: ContainerBorderConfig,
-    pub background: Option<String>,
-    pub gradient: Option<ContainerGradient>,
-    pub opacity: Option<f32>,
-    pub children: Vec<ContainerNode>,
-}
-
-impl Default for ContainerConfig {
-    fn default() -> Self {
-        Self {
-            id: "container".to_string(),
-            visible: true,
-            transparent: true,
-            direction: ContainerDirection::Vertical,
-            width: ContainerSize::Fill(1),
-            height: ContainerSize::Fill(1),
-            min_width: None,
-            max_width: None,
-            min_height: None,
-            max_height: None,
-            padding: 0,
-            gap: 0,
-            border: ContainerBorderConfig::default(),
-            background: None,
-            gradient: None,
-            opacity: None,
-            children: Vec::new(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(tag = "node", rename_all = "lowercase")]
-pub enum ContainerNode {
-    Container(ContainerConfig),
-    Component(ComponentConfig),
-}
-
-impl ContainerNode {
-    pub fn id(&self) -> &str {
-        match self {
-            Self::Container(c) => &c.id,
-            Self::Component(c) => &c.id,
-        }
-    }
-
-    pub fn visible(&self) -> bool {
-        match self {
-            Self::Container(c) => c.visible,
-            Self::Component(c) => c.visible,
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum ComponentCategory {
@@ -266,10 +205,11 @@ pub enum ComponentCategory {
     Animated,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
 #[serde(rename_all = "kebab-case")]
 pub enum ComponentKind {
     // Static
+    #[default]
     Text,
     AsciiLogo,
     Separator,
@@ -290,7 +230,7 @@ pub enum ComponentKind {
     Activity,
     Session,
     Header,
-    // Animated
+    // Animated / Procedural / Lua Canvas
     Spinner,
     Typewriter,
     Matrix,
@@ -298,12 +238,6 @@ pub enum ComponentKind {
     Frames,
     AsciiObject,
     Canvas,
-}
-
-impl Default for ComponentKind {
-    fn default() -> Self {
-        Self::Text
-    }
 }
 
 impl ComponentKind {
@@ -336,6 +270,37 @@ impl ComponentKind {
             | Self::Canvas => ComponentCategory::Animated,
         }
     }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Header => "header",
+            Self::Greeting => "greeting",
+            Self::System => "system",
+            Self::Hardware => "hardware",
+            Self::Environment => "environment",
+            Self::Terminal => "terminal",
+            Self::Storage => "storage",
+            Self::Activity => "activity",
+            Self::Cpu => "cpu",
+            Self::Memory => "memory",
+            Self::Temperature => "temperature",
+            Self::Processes => "processes",
+            Self::Network => "network",
+            Self::Uptime => "uptime",
+            Self::Session => "session",
+            Self::Graph => "graph",
+            Self::AsciiLogo => "ascii_logo",
+            Self::Separator => "separator",
+            Self::Text => "text",
+            Self::Spinner => "spinner",
+            Self::Typewriter => "typewriter",
+            Self::Matrix => "matrix",
+            Self::Particles => "particles",
+            Self::Frames => "frames",
+            Self::AsciiObject => "ascii_object",
+            Self::Canvas => "canvas",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
@@ -349,32 +314,6 @@ pub struct ComponentContent {
     pub fields: Option<Vec<String>>,
     pub metric: Option<String>,
     pub separator_char: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(default)]
-pub struct ComponentVisual {
-    pub align: Align,
-    pub padding: u16,
-    pub border: ContainerBorderConfig,
-    pub color: Option<String>,
-    pub background: Option<String>,
-    pub font: Option<String>,
-    pub graph_style: Option<GraphStyle>,
-}
-
-impl Default for ComponentVisual {
-    fn default() -> Self {
-        Self {
-            align: Align::Left,
-            padding: 0,
-            border: ContainerBorderConfig::default(),
-            color: None,
-            background: None,
-            font: None,
-            graph_style: None,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -401,288 +340,304 @@ impl Default for ComponentAnimationConfig {
     }
 }
 
+/// Dumped Lua bytecode callbacks for inline container `init` / `update` / `render` / `resize` functions.
+/// Loaded into an isolated per-container Lua VM so scripts can never access other containers' canvases.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct InlineLuaScript {
+    pub init_chunk: Option<Vec<u8>>,
+    pub update_chunk: Option<Vec<u8>>,
+    pub render_chunk: Option<Vec<u8>>,
+    pub resize_chunk: Option<Vec<u8>>,
+}
+
+/// Independent, non-nestable UI container.
+/// Each container owns an isolated rendering canvas and cannot contain child containers.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
-pub struct ComponentConfig {
-    pub id: String,
+pub struct ContainerConfig {
+    #[serde(alias = "id")]
+    pub name: String,
+    pub description: String,
     pub visible: bool,
-    pub category: ComponentCategory,
-    #[serde(rename = "type")]
-    pub kind: ComponentKind,
+    pub region: LayoutRegion,
+    pub order: i32,
+    pub row: Option<u16>,
     pub width: ContainerSize,
     pub height: ContainerSize,
     pub min_width: Option<u16>,
     pub max_width: Option<u16>,
     pub min_height: Option<u16>,
     pub max_height: Option<u16>,
+    pub padding: u16,
+    pub transparent: bool,
+    pub align: Align,
+    pub border: ContainerBorderConfig,
+    pub color: Option<String>,
+    pub background: Option<String>,
+    pub gradient: Option<ContainerGradient>,
+    pub opacity: Option<f32>,
+    pub font: Option<String>,
+    pub graph_style: Option<GraphStyle>,
+    pub effects: EffectPolicy,
+    pub category: ComponentCategory,
+    #[serde(rename = "type", alias = "kind")]
+    pub kind: ComponentKind,
     pub content: ComponentContent,
-    pub visual: ComponentVisual,
     pub animation: Option<ComponentAnimationConfig>,
     pub refresh_ms: Option<u64>,
+    #[serde(skip)]
+    pub inline_lua: Option<InlineLuaScript>,
 }
 
-impl Default for ComponentConfig {
+impl Default for ContainerConfig {
     fn default() -> Self {
         Self {
-            id: "component".to_string(),
+            name: "container".to_string(),
+            description: String::new(),
             visible: true,
-            category: ComponentCategory::Static,
-            kind: ComponentKind::Text,
-            width: ContainerSize::Fill(1),
-            height: ContainerSize::Fill(1),
+            region: LayoutRegion::Main,
+            order: 0,
+            row: None,
+            width: ContainerSize::Auto,
+            height: ContainerSize::Auto,
             min_width: None,
             max_width: None,
             min_height: None,
             max_height: None,
+            padding: 0,
+            transparent: false,
+            align: Align::Left,
+            border: ContainerBorderConfig::default(),
+            color: None,
+            background: None,
+            gradient: None,
+            opacity: None,
+            font: None,
+            graph_style: None,
+            effects: EffectPolicy::Exclude,
+            category: ComponentCategory::Static,
+            kind: ComponentKind::Text,
             content: ComponentContent::default(),
-            visual: ComponentVisual::default(),
             animation: None,
             refresh_ms: None,
+            inline_lua: None,
         }
     }
 }
 
-pub fn remove_container_node(container: &mut ContainerConfig, id: &str) -> bool {
-    let before = container.children.len();
-    container.children.retain(|child| child.id() != id);
-    if container.children.len() != before {
-        return true;
+pub fn collect_container_names(containers: &[ContainerConfig], out: &mut Vec<String>) {
+    for c in containers {
+        out.push(c.name.clone());
     }
-    for child in &mut container.children {
-        if let ContainerNode::Container(sub) = child
-            && remove_container_node(sub, id)
-        {
-            return true;
-        }
-    }
-    false
 }
 
-pub fn default_ui_tree() -> ContainerConfig {
-    ContainerConfig {
-        id: "root".to_string(),
-        visible: true,
-        direction: ContainerDirection::Vertical,
-        width: ContainerSize::Percent(100),
-        height: ContainerSize::Percent(100),
-        padding: 1,
-        gap: 1,
-        border: ContainerBorderConfig::default(),
-        children: vec![
-            ContainerNode::Component(ComponentConfig {
-                id: "header".to_string(),
-                visible: true,
-                category: ComponentCategory::Dynamic,
-                kind: ComponentKind::Header,
-                width: ContainerSize::Fill(1),
-                height: ContainerSize::Fixed(1),
-                ..ComponentConfig::default()
-            }),
-            ContainerNode::Component(ComponentConfig {
-                id: "greeting".to_string(),
-                visible: true,
-                category: ComponentCategory::Static,
-                kind: ComponentKind::Greeting,
-                width: ContainerSize::Fill(1),
-                height: ContainerSize::Fixed(9),
-                min_height: Some(6),
-                visual: ComponentVisual {
-                    align: Align::Center,
-                    padding: 0,
-                    border: ContainerBorderConfig::titled("Welcome"),
-                    font: Some("ANSI Shadow".to_string()),
-                    ..ComponentVisual::default()
-                },
-                ..ComponentConfig::default()
-            }),
-            ContainerNode::Container(ContainerConfig {
-                id: "middle_row".to_string(),
-                visible: true,
-                direction: ContainerDirection::Horizontal,
-                width: ContainerSize::Fill(1),
-                height: ContainerSize::Fill(1),
-                min_height: Some(6),
-                gap: 1,
-                children: vec![
-                    ContainerNode::Component(ComponentConfig {
-                        id: "system".to_string(),
-                        visible: true,
-                        category: ComponentCategory::Dynamic,
-                        kind: ComponentKind::System,
-                        width: ContainerSize::Percent(50),
-                        height: ContainerSize::Fill(1),
-                        visual: ComponentVisual {
-                            align: Align::Left,
-                            padding: 1,
-                            border: ContainerBorderConfig::titled("System"),
-                            ..ComponentVisual::default()
-                        },
-                        ..ComponentConfig::default()
-                    }),
-                    ContainerNode::Component(ComponentConfig {
-                        id: "hardware".to_string(),
-                        visible: true,
-                        category: ComponentCategory::Dynamic,
-                        kind: ComponentKind::Hardware,
-                        width: ContainerSize::Percent(50),
-                        height: ContainerSize::Fill(1),
-                        visual: ComponentVisual {
-                            align: Align::Left,
-                            padding: 1,
-                            border: ContainerBorderConfig::titled("Hardware"),
-                            graph_style: Some(GraphStyle::Bar),
-                            ..ComponentVisual::default()
-                        },
-                        ..ComponentConfig::default()
-                    }),
-                ],
-                ..ContainerConfig::default()
-            }),
-            ContainerNode::Container(ContainerConfig {
-                id: "info_row".to_string(),
-                visible: true,
-                direction: ContainerDirection::Horizontal,
-                width: ContainerSize::Fill(1),
-                height: ContainerSize::Fill(1),
-                min_height: Some(5),
-                gap: 1,
-                children: vec![
-                    ContainerNode::Component(ComponentConfig {
-                        id: "environment".to_string(),
-                        visible: true,
-                        category: ComponentCategory::Dynamic,
-                        kind: ComponentKind::Environment,
-                        width: ContainerSize::Percent(40),
-                        height: ContainerSize::Fill(1),
-                        visual: ComponentVisual {
-                            align: Align::Left,
-                            padding: 1,
-                            border: ContainerBorderConfig::titled("Environment"),
-                            ..ComponentVisual::default()
-                        },
-                        ..ComponentConfig::default()
-                    }),
-                    ContainerNode::Component(ComponentConfig {
-                        id: "terminal".to_string(),
-                        visible: true,
-                        category: ComponentCategory::Dynamic,
-                        kind: ComponentKind::Terminal,
-                        width: ContainerSize::Percent(30),
-                        height: ContainerSize::Fill(1),
-                        visual: ComponentVisual {
-                            align: Align::Left,
-                            padding: 1,
-                            border: ContainerBorderConfig::titled("Terminal"),
-                            ..ComponentVisual::default()
-                        },
-                        ..ComponentConfig::default()
-                    }),
-                    ContainerNode::Component(ComponentConfig {
-                        id: "storage".to_string(),
-                        visible: true,
-                        category: ComponentCategory::Dynamic,
-                        kind: ComponentKind::Storage,
-                        width: ContainerSize::Fill(1),
-                        height: ContainerSize::Fill(1),
-                        visual: ComponentVisual {
-                            align: Align::Left,
-                            padding: 1,
-                            border: ContainerBorderConfig::titled("Storage"),
-                            ..ComponentVisual::default()
-                        },
-                        ..ComponentConfig::default()
-                    }),
-                ],
-                ..ContainerConfig::default()
-            }),
-            ContainerNode::Container(ContainerConfig {
-                id: "bottom_row".to_string(),
-                visible: true,
-                direction: ContainerDirection::Horizontal,
-                width: ContainerSize::Fill(1),
-                height: ContainerSize::Fill(1),
-                min_height: Some(6),
-                gap: 1,
-                children: vec![
-                    ContainerNode::Component(ComponentConfig {
-                        id: "activity".to_string(),
-                        visible: true,
-                        category: ComponentCategory::Dynamic,
-                        kind: ComponentKind::Activity,
-                        width: ContainerSize::Percent(40),
-                        height: ContainerSize::Fill(1),
-                        visual: ComponentVisual {
-                            align: Align::Left,
-                            padding: 1,
-                            border: ContainerBorderConfig::titled("Activity"),
-                            graph_style: Some(GraphStyle::Sparkline),
-                            ..ComponentVisual::default()
-                        },
-                        ..ComponentConfig::default()
-                    }),
-                    ContainerNode::Component(ComponentConfig {
-                        id: "network".to_string(),
-                        visible: true,
-                        category: ComponentCategory::Dynamic,
-                        kind: ComponentKind::Network,
-                        width: ContainerSize::Percent(30),
-                        height: ContainerSize::Fill(1),
-                        visual: ComponentVisual {
-                            align: Align::Left,
-                            padding: 1,
-                            border: ContainerBorderConfig::titled("Network"),
-                            ..ComponentVisual::default()
-                        },
-                        ..ComponentConfig::default()
-                    }),
-                    ContainerNode::Component(ComponentConfig {
-                        id: "session".to_string(),
-                        visible: true,
-                        category: ComponentCategory::Dynamic,
-                        kind: ComponentKind::Session,
-                        width: ContainerSize::Fill(1),
-                        height: ContainerSize::Fill(1),
-                        visual: ComponentVisual {
-                            align: Align::Left,
-                            padding: 1,
-                            border: ContainerBorderConfig::titled("Session & Uptime"),
-                            ..ComponentVisual::default()
-                        },
-                        ..ComponentConfig::default()
-                    }),
-                ],
-                ..ContainerConfig::default()
-            }),
-            ContainerNode::Component(ComponentConfig {
-                id: "status_spinner".to_string(),
-                visible: true,
-                category: ComponentCategory::Animated,
-                kind: ComponentKind::Spinner,
-                width: ContainerSize::Fill(1),
-                height: ContainerSize::Fixed(3),
-                content: ComponentContent {
-                    text: Some("Monitoring system telemetry".to_string()),
-                    ..ComponentContent::default()
-                },
-                visual: ComponentVisual {
-                    border: ContainerBorderConfig {
-                        enabled: true,
-                        style: BorderStyle::Rounded,
-                        color: None,
-                        title: None,
-                    },
-                    ..ComponentVisual::default()
-                },
-                animation: Some(ComponentAnimationConfig {
-                    fps: Some(12),
-                    speed: 1.0,
-                    loop_anim: true,
-                    style: Some("braille".to_string()),
-                    ..ComponentAnimationConfig::default()
-                }),
-                ..ComponentConfig::default()
-            }),
-        ],
-        ..ContainerConfig::default()
+pub fn has_container(containers: &[ContainerConfig], name: &str) -> bool {
+    containers.iter().any(|c| c.name == name)
+}
+
+pub fn find_container<'a>(
+    containers: &'a [ContainerConfig],
+    name: &str,
+) -> Option<&'a ContainerConfig> {
+    containers.iter().find(|c| c.name == name)
+}
+
+pub fn remove_container(containers: &mut Vec<ContainerConfig>, name: &str) -> bool {
+    let before = containers.len();
+    containers.retain(|c| c.name != name);
+    containers.len() != before
+}
+
+pub fn toggle_container_visible(containers: &mut [ContainerConfig], name: &str) -> Option<bool> {
+    if let Some(c) = containers.iter_mut().find(|c| c.name == name) {
+        c.visible = !c.visible;
+        Some(c.visible)
+    } else {
+        None
     }
+}
+
+pub fn default_containers() -> Vec<ContainerConfig> {
+    vec![
+        ContainerConfig {
+            name: "header".to_string(),
+            description: "Top status bar with brand, active mode, effect, and clock".to_string(),
+            visible: true,
+            region: LayoutRegion::Top,
+            row: Some(0),
+            width: ContainerSize::Percent(100),
+            height: ContainerSize::Fixed(1),
+            transparent: true,
+            category: ComponentCategory::Dynamic,
+            kind: ComponentKind::Header,
+            ..ContainerConfig::default()
+        },
+        ContainerConfig {
+            name: "greeting".to_string(),
+            description: "Welcome banner with FIGlet greeting and system logo".to_string(),
+            visible: true,
+            region: LayoutRegion::Top,
+            row: Some(1),
+            width: ContainerSize::Percent(100),
+            height: ContainerSize::Fixed(9),
+            min_height: Some(6),
+            align: Align::Center,
+            border: ContainerBorderConfig::titled("Welcome"),
+            font: Some("ANSI Shadow".to_string()),
+            category: ComponentCategory::Static,
+            kind: ComponentKind::Greeting,
+            ..ContainerConfig::default()
+        },
+        ContainerConfig {
+            name: "system".to_string(),
+            description: "Operating system, host, kernel, shell, and terminal metadata".to_string(),
+            visible: true,
+            region: LayoutRegion::Main,
+            row: Some(0),
+            width: ContainerSize::Percent(50),
+            height: ContainerSize::Fill(1),
+            min_height: Some(6),
+            padding: 1,
+            border: ContainerBorderConfig::titled("System"),
+            category: ComponentCategory::Dynamic,
+            kind: ComponentKind::System,
+            ..ContainerConfig::default()
+        },
+        ContainerConfig {
+            name: "hardware".to_string(),
+            description: "CPU, RAM, disk, and GPU usage telemetry bars".to_string(),
+            visible: true,
+            region: LayoutRegion::Main,
+            row: Some(0),
+            width: ContainerSize::Percent(50),
+            height: ContainerSize::Fill(1),
+            min_height: Some(6),
+            padding: 1,
+            border: ContainerBorderConfig::titled("Hardware"),
+            graph_style: Some(GraphStyle::Bar),
+            category: ComponentCategory::Dynamic,
+            kind: ComponentKind::Hardware,
+            ..ContainerConfig::default()
+        },
+        ContainerConfig {
+            name: "environment".to_string(),
+            description: "Window manager, session protocol, display, and desktop theme".to_string(),
+            visible: true,
+            region: LayoutRegion::Main,
+            row: Some(1),
+            width: ContainerSize::Percent(40),
+            height: ContainerSize::Fill(1),
+            min_height: Some(5),
+            padding: 1,
+            border: ContainerBorderConfig::titled("Environment"),
+            category: ComponentCategory::Dynamic,
+            kind: ComponentKind::Environment,
+            ..ContainerConfig::default()
+        },
+        ContainerConfig {
+            name: "terminal".to_string(),
+            description: "Terminal emulator, shell, font, and viewport dimensions".to_string(),
+            visible: true,
+            region: LayoutRegion::Main,
+            row: Some(1),
+            width: ContainerSize::Percent(30),
+            height: ContainerSize::Fill(1),
+            min_height: Some(5),
+            padding: 1,
+            border: ContainerBorderConfig::titled("Terminal"),
+            category: ComponentCategory::Dynamic,
+            kind: ComponentKind::Terminal,
+            ..ContainerConfig::default()
+        },
+        ContainerConfig {
+            name: "storage".to_string(),
+            description: "Mounted filesystems and storage capacity bars".to_string(),
+            visible: true,
+            region: LayoutRegion::Main,
+            row: Some(1),
+            width: ContainerSize::Fill(1),
+            height: ContainerSize::Fill(1),
+            min_height: Some(5),
+            padding: 1,
+            border: ContainerBorderConfig::titled("Storage"),
+            category: ComponentCategory::Dynamic,
+            kind: ComponentKind::Storage,
+            ..ContainerConfig::default()
+        },
+        ContainerConfig {
+            name: "activity".to_string(),
+            description: "Load averages, process counts, and CPU/RAM history sparklines".to_string(),
+            visible: true,
+            region: LayoutRegion::Main,
+            row: Some(2),
+            width: ContainerSize::Percent(40),
+            height: ContainerSize::Fill(1),
+            min_height: Some(6),
+            padding: 1,
+            border: ContainerBorderConfig::titled("Activity"),
+            graph_style: Some(GraphStyle::Sparkline),
+            category: ComponentCategory::Dynamic,
+            kind: ComponentKind::Activity,
+            ..ContainerConfig::default()
+        },
+        ContainerConfig {
+            name: "network".to_string(),
+            description: "Network interfaces and RX/TX transfer telemetry".to_string(),
+            visible: true,
+            region: LayoutRegion::Main,
+            row: Some(2),
+            width: ContainerSize::Percent(30),
+            height: ContainerSize::Fill(1),
+            min_height: Some(6),
+            padding: 1,
+            border: ContainerBorderConfig::titled("Network"),
+            category: ComponentCategory::Dynamic,
+            kind: ComponentKind::Network,
+            ..ContainerConfig::default()
+        },
+        ContainerConfig {
+            name: "session".to_string(),
+            description: "System uptime, boot timestamp, and active session status".to_string(),
+            visible: true,
+            region: LayoutRegion::Main,
+            row: Some(2),
+            width: ContainerSize::Fill(1),
+            height: ContainerSize::Fill(1),
+            min_height: Some(6),
+            padding: 1,
+            border: ContainerBorderConfig::titled("Session & Uptime"),
+            category: ComponentCategory::Dynamic,
+            kind: ComponentKind::Session,
+            ..ContainerConfig::default()
+        },
+        ContainerConfig {
+            name: "status_spinner".to_string(),
+            description: "Footer activity spinner and command-line bar".to_string(),
+            visible: true,
+            region: LayoutRegion::Bottom,
+            row: Some(0),
+            width: ContainerSize::Percent(100),
+            height: ContainerSize::Fixed(3),
+            border: ContainerBorderConfig {
+                enabled: true,
+                style: BorderStyle::Rounded,
+                color: None,
+                title: None,
+            },
+            category: ComponentCategory::Animated,
+            kind: ComponentKind::Spinner,
+            content: ComponentContent {
+                text: Some("Monitoring system telemetry".to_string()),
+                ..ComponentContent::default()
+            },
+            animation: Some(ComponentAnimationConfig {
+                fps: Some(12),
+                speed: 1.0,
+                loop_anim: true,
+                style: Some("braille".to_string()),
+                ..ComponentAnimationConfig::default()
+            }),
+            ..ContainerConfig::default()
+        },
+    ]
 }

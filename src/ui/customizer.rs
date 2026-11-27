@@ -1,7 +1,9 @@
 use crate::animation::{AnimationCatalog, BackgroundEffect};
 use crate::config::{Config, EffectKind, ThemeEntry};
 use crate::runtime::{DiagnosticEngine, DiagnosticSeverity};
-use crate::ui::container::{ContainerConfig, ContainerNode};
+use crate::ui::container::{
+    ContainerConfig, collect_container_names, toggle_container_visible,
+};
 use crate::ui::theme::Theme;
 use crate::ui::widgets::{allocate_three_column_widths, pad_display_width, truncate_display_width};
 use ratatui::Frame;
@@ -110,31 +112,14 @@ impl CustomizerState {
     }
 }
 
-pub fn collect_component_ids(container: &ContainerConfig, out: &mut Vec<(String, bool)>) {
-    for child in &container.children {
-        match child {
-            ContainerNode::Container(sub) => collect_component_ids(sub, out),
-            ContainerNode::Component(comp) => out.push((comp.id.clone(), comp.visible)),
-        }
+pub fn collect_component_ids(containers: &[ContainerConfig], out: &mut Vec<(String, bool)>) {
+    for c in containers {
+        out.push((c.name.clone(), c.visible));
     }
 }
 
-pub fn toggle_component_visible(container: &mut ContainerConfig, id: &str) -> Option<bool> {
-    for child in &mut container.children {
-        match child {
-            ContainerNode::Component(comp) if comp.id == id => {
-                comp.visible = !comp.visible;
-                return Some(comp.visible);
-            }
-            ContainerNode::Container(sub) => {
-                if let Some(res) = toggle_component_visible(sub, id) {
-                    return Some(res);
-                }
-            }
-            _ => {}
-        }
-    }
-    None
+pub fn toggle_component_visible(containers: &mut [ContainerConfig], name: &str) -> Option<bool> {
+    toggle_container_visible(containers, name)
 }
 
 pub fn layout_items_summary(cfg: &Config) -> Vec<(String, String)> {
@@ -148,11 +133,17 @@ pub fn layout_items_summary(cfg: &Config) -> Vec<(String, String)> {
             cfg.background.effect.label().to_string(),
         ),
     ];
-    let mut comps = Vec::new();
-    collect_component_ids(&cfg.ui.root, &mut comps);
-    for (id, visible) in comps {
+    let mut names = Vec::new();
+    collect_container_names(&cfg.ui.containers, &mut names);
+    for name in names {
+        let visible = cfg
+            .ui
+            .containers
+            .iter()
+            .find(|c| c.name == name)
+            .is_some_and(|c| c.visible);
         items.push((
-            format!("Component: {id}"),
+            format!("Container: {name}"),
             if visible { "Visible" } else { "Hidden" }.to_string(),
         ));
     }

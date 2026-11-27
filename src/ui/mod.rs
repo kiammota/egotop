@@ -11,15 +11,14 @@ pub mod widgets;
 pub use borders::{BorderChars, BorderCharsConfig, parse_border_style, validate_border_char};
 pub use components::ComponentAnimationStore;
 pub use container::{
-    BackgroundFill, ComponentAnimationConfig, ComponentCategory, ComponentConfig, ComponentContent,
-    ComponentKind, ComponentVisual, ContainerBorderConfig, ContainerConfig, ContainerDirection,
-    ContainerGradient, ContainerNode, ContainerSize, ContainerStyle, EffectPolicy,
-    GradientDirection, collect_all_container_ids, default_ui_tree, has_container_id,
-    remove_container_node,
+    BackgroundFill, ComponentAnimationConfig, ComponentCategory, ComponentContent, ComponentKind,
+    ContainerBorderConfig, ContainerConfig, ContainerGradient, ContainerSize, ContainerStyle,
+    EffectPolicy, GradientDirection, InlineLuaScript, LayoutRegion, collect_container_names,
+    default_containers, find_container, has_container, remove_container, toggle_container_visible,
 };
 pub use layout::{
-    ComputedLayout, ExclusionMask, PlacedComponent, PlacedContainer, compute_container_layout,
-    compute_dashboard_layout, compute_inner_rect,
+    ComputedLayout, ExclusionMask, PlacedContainer, compute_dashboard_layout, compute_inner_rect,
+    compute_layout,
 };
 pub use theme::Theme;
 pub use typography::RevealState;

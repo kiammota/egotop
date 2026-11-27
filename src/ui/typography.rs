@@ -228,7 +228,6 @@ pub struct RevealState {
     pub progress: f32,
     pub duration_secs: f32,
     pub seed: u64,
-    pub greeting_transforms: std::collections::BTreeMap<(usize, usize), crate::lua::GreetingCellTransform>,
 }
 
 impl RevealState {
@@ -237,7 +236,6 @@ impl RevealState {
             progress: 0.0,
             duration_secs: duration_secs.max(0.1),
             seed: 0x5EED_CAFE_BABE_1337,
-            greeting_transforms: std::collections::BTreeMap::new(),
         }
     }
 
@@ -246,7 +244,6 @@ impl RevealState {
             progress: 1.0,
             duration_secs: 1.0,
             seed: 0x5EED_CAFE_BABE_1337,
-            greeting_transforms: std::collections::BTreeMap::new(),
         }
     }
 

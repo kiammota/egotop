@@ -52,7 +52,7 @@ fn summary_command(config_override: Option<&Path>) -> Result<i32> {
     };
 
     let mut components = Vec::new();
-    crate::ui::customizer::collect_component_ids(&cfg.ui.root, &mut components);
+    crate::ui::customizer::collect_component_ids(&cfg.ui.containers, &mut components);
     let enabled_components: Vec<String> = components
         .into_iter()
         .filter(|(_, visible)| *visible)
@@ -129,7 +129,7 @@ pub fn validate_command(config_override: Option<&Path>) -> Result<i32> {
     if errors.is_empty() {
         let cfg = load_from_path(&path)?;
         let mut comps = Vec::new();
-        crate::ui::customizer::collect_component_ids(&cfg.ui.root, &mut comps);
+        crate::ui::customizer::collect_component_ids(&cfg.ui.containers, &mut comps);
         println!(
             "Configuration OK: {} (theme='{}', effect='{}', components={})",
             path.display(),

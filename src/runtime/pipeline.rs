@@ -6,14 +6,14 @@ use crate::config::animation_loader::{
 use crate::config::schema::is_valid_color_spec;
 use crate::config::{
     AnimationDefinition, AnimationPackage, BorderStyle, Config, PackageOrigin, ThemeConfig,
-    ThemeEntry, ViewMode, load_packages_from_dir, validate_safe_asset_path,
+    ThemeEntry, UiConfig, ViewMode, load_packages_from_dir, validate_safe_asset_path,
 };
 use crate::runtime::diagnostics::{
     Diagnostic, line_col_from_offset, locate_field_in_toml, locate_value_in_toml,
 };
 use crate::runtime::registry::{ResourceId, ResourceKind, ResourceRegistry};
 use crate::ui::borders::BorderChars;
-use crate::ui::container::{ContainerConfig, ContainerNode};
+use crate::ui::container::ContainerConfig;
 use crate::ui::fonts::{FigletFont, available_fonts};
 use crate::ui::theme::{Theme, builtin_theme_names, preset_theme};
 use serde::Deserialize;
@@ -32,7 +32,7 @@ pub struct ValidationContext<'a> {
 pub struct LayoutPreset {
     pub name: String,
     pub view_mode: Option<ViewMode>,
-    pub root: ContainerConfig,
+    pub ui: UiConfig,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -40,7 +40,10 @@ pub struct LayoutPreset {
 struct RawLayoutFile {
     name: Option<String>,
     view_mode: Option<ViewMode>,
-    root: ContainerConfig,
+    padding: Option<u16>,
+    gap: Option<u16>,
+    min_container_width: Option<u16>,
+    containers: Vec<ContainerConfig>,
 }
 
 /// Typed payload emitted cleanly by Stage 1 (`parse_resource`).
@@ -165,7 +168,13 @@ pub fn parse_resource(
                 .filter(|n| !n.trim().is_empty())
                 .unwrap_or_else(|| key_hint.to_string());
             let mut deps = Vec::new();
-            collect_container_font_deps(&raw_layout.root, &mut deps);
+            collect_container_font_deps(&raw_layout.containers, &mut deps);
+            let ui = UiConfig {
+                padding: raw_layout.padding.unwrap_or(1),
+                gap: raw_layout.gap.unwrap_or(1),
+                min_container_width: raw_layout.min_container_width.unwrap_or(22),
+                containers: raw_layout.containers,
+            };
             let id = ResourceId::new(ResourceKind::Layout, &name);
             Ok(ParsedResource {
                 id,
@@ -175,7 +184,7 @@ pub fn parse_resource(
                 payload: ParsedPayload::Layout(Box::new(LayoutPreset {
                     name,
                     view_mode: raw_layout.view_mode,
-                    root: raw_layout.root,
+                    ui,
                 })),
                 dependencies: deps,
             })
@@ -503,12 +512,17 @@ pub fn validate_schema(parsed: &ParsedResource) -> Vec<Diagnostic> {
             }
         }
         ParsedPayload::Layout(preset) => {
-            if preset.root.id.trim().is_empty() {
-                diags.push(
-                    Diagnostic::error("E1005", "layout.root.id cannot be empty")
+            for (idx, c) in preset.ui.containers.iter().enumerate() {
+                if c.name.trim().is_empty() {
+                    diags.push(
+                        Diagnostic::error(
+                            "E1005",
+                            format!("ui.containers[{idx}].name cannot be empty"),
+                        )
                         .with_location(Some(path), Some(1), Some(1))
-                        .with_field("root.id"),
-                );
+                        .with_field("containers.name"),
+                    );
+                }
             }
         }
         ParsedPayload::Font { .. } => {}
@@ -757,7 +771,7 @@ pub fn validate_semantics(
             }
         }
         ParsedPayload::Layout(preset) => {
-            validate_container_semantics(&preset.root, path, raw, ctx, &mut diags);
+            validate_containers_semantics(&preset.ui.containers, path, raw, ctx, &mut diags);
         }
         ParsedPayload::Font { .. } => {}
     }
@@ -997,7 +1011,14 @@ fn check_unknown_fields(
         ResourceKind::Layout => {
             check_allowed_keys(
                 root,
-                &["name", "view_mode", "root"],
+                &[
+                    "name",
+                    "view_mode",
+                    "padding",
+                    "gap",
+                    "min_container_width",
+                    "containers",
+                ],
                 "",
                 path,
                 raw,
@@ -1008,54 +1029,50 @@ fn check_unknown_fields(
     }
 }
 
-fn collect_container_font_deps(container: &ContainerConfig, deps: &mut Vec<ResourceId>) {
-    for child in &container.children {
-        match child {
-            ContainerNode::Container(sub) => collect_container_font_deps(sub, deps),
-            ContainerNode::Component(comp) => {
-                if let Some(font) = &comp.visual.font {
-                    deps.push(ResourceId::new(ResourceKind::Font, font));
-                }
-            }
+fn collect_container_font_deps(containers: &[ContainerConfig], deps: &mut Vec<ResourceId>) {
+    for c in containers {
+        if let Some(font) = &c.font {
+            deps.push(ResourceId::new(ResourceKind::Font, font));
         }
     }
 }
 
-fn validate_container_semantics(
-    container: &ContainerConfig,
+fn validate_containers_semantics(
+    containers: &[ContainerConfig],
     path: &Path,
     raw: &str,
     ctx: &ValidationContext<'_>,
     diags: &mut Vec<Diagnostic>,
 ) {
-    if let Some(c) = &container.border.color
-        && !is_valid_color_spec(c)
-    {
-        diags.push(
-            Diagnostic::error("E1004", format!("Invalid container border color '{c}'"))
-                .with_location(Some(path), None, None)
-                .with_field("border.color"),
-        );
-    }
-    for child in &container.children {
-        match child {
-            ContainerNode::Container(sub) => {
-                validate_container_semantics(sub, path, raw, ctx, diags);
-            }
-            ContainerNode::Component(comp) => {
-                if let Some(font) = &comp.visual.font {
-                    validate_font_ref(font, "visual.font", path, raw, ctx.fonts, diags);
-                }
-                if let Some(c) = &comp.visual.color
-                    && !is_valid_color_spec(c)
-                {
-                    diags.push(
-                        Diagnostic::error("E1004", format!("Invalid component color '{c}'"))
-                            .with_location(Some(path), None, None)
-                            .with_field("visual.color"),
-                    );
-                }
-            }
+    let mut seen = BTreeSet::new();
+    for c in containers {
+        if !seen.insert(c.name.clone()) {
+            diags.push(
+                Diagnostic::error("E1005", format!("Duplicate container name '{}'", c.name))
+                    .with_location(Some(path), None, None)
+                    .with_field("containers.name"),
+            );
+        }
+        if let Some(col) = &c.border.color
+            && !is_valid_color_spec(col)
+        {
+            diags.push(
+                Diagnostic::error("E1004", format!("Invalid container border color '{col}'"))
+                    .with_location(Some(path), None, None)
+                    .with_field("border.color"),
+            );
+        }
+        if let Some(font) = &c.font {
+            validate_font_ref(font, "font", path, raw, ctx.fonts, diags);
+        }
+        if let Some(col) = &c.color
+            && !is_valid_color_spec(col)
+        {
+            diags.push(
+                Diagnostic::error("E1004", format!("Invalid container color '{col}'"))
+                    .with_location(Some(path), None, None)
+                    .with_field("color"),
+            );
         }
     }
 }

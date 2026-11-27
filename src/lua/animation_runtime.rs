@@ -3,7 +3,7 @@ use crate::config::paths;
 use crate::lua::canvas::{CanvasBuffer, LuaCanvasHandle, attach_math_helpers, build_theme_lua_table};
 use crate::lua::configure_lua_vm;
 use crate::ui::theme::{Theme, blend_color, parse_color};
-use mlua::{Function, Lua, RegistryKey, Table, UserData, UserDataMethods, Value};
+use mlua::{Function, Lua, RegistryKey, Table, Value};
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -18,89 +18,6 @@ pub enum AnimationLayer {
     Boxed,
     #[default]
     Overlay,
-}
-
-#[derive(Debug, Clone)]
-pub struct LuaSceneElement {
-    pub id: String,
-    pub x: i32,
-    pub y: i32,
-    pub lines: Vec<String>,
-    pub fg: Color,
-    pub bg: Option<Color>,
-    pub bold: bool,
-    pub visible: bool,
-}
-
-#[derive(Debug, Clone)]
-pub struct GreetingCellTransform {
-    pub ch: Option<String>,
-    pub fg: Option<Color>,
-    pub dy: i16,
-    pub bold: bool,
-}
-
-#[derive(Clone)]
-struct ElementHandle {
-    id: String,
-    elements: Arc<Mutex<Vec<LuaSceneElement>>>,
-}
-
-impl UserData for ElementHandle {
-    fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
-        methods.add_method("move", |_, this, (x, y): (i32, i32)| {
-            let mut list = this.elements.lock().unwrap();
-            if let Some(el) = list.iter_mut().find(|e| e.id == this.id) {
-                el.x = x;
-                el.y = y;
-            }
-            Ok(())
-        });
-        methods.add_method("set_text", |_, this, text: String| {
-            let mut list = this.elements.lock().unwrap();
-            if let Some(el) = list.iter_mut().find(|e| e.id == this.id) {
-                el.lines = text.lines().map(|l| l.to_string()).collect();
-                if el.lines.is_empty() && !text.is_empty() {
-                    el.lines.push(text);
-                }
-            }
-            Ok(())
-        });
-        methods.add_method("set_lines", |_, this, lines: Vec<String>| {
-            let mut list = this.elements.lock().unwrap();
-            if let Some(el) = list.iter_mut().find(|e| e.id == this.id) {
-                el.lines = lines;
-            }
-            Ok(())
-        });
-        methods.add_method(
-            "set_color",
-            |_, this, (fg, bg): (Option<String>, Option<String>)| {
-                let mut list = this.elements.lock().unwrap();
-                if let Some(el) = list.iter_mut().find(|e| e.id == this.id) {
-                    if let Some(f) = fg {
-                        el.fg = parse_color(&f, el.fg);
-                    }
-                    if let Some(b) = bg {
-                        el.bg = Some(parse_color(&b, Color::Reset));
-                    }
-                }
-                Ok(())
-            },
-        );
-        methods.add_method("set_visible", |_, this, visible: bool| {
-            let mut list = this.elements.lock().unwrap();
-            if let Some(el) = list.iter_mut().find(|e| e.id == this.id) {
-                el.visible = visible;
-            }
-            Ok(())
-        });
-        methods.add_method("destroy", |_, this, ()| {
-            let mut list = this.elements.lock().unwrap();
-            list.retain(|e| e.id != this.id);
-            Ok(())
-        });
-    }
 }
 
 struct ScheduledEvery {
@@ -144,6 +61,8 @@ struct ActiveSequence {
 
 #[derive(Clone)]
 struct RuntimeShared {
+    name: String,
+    description: String,
     screen_w: u16,
     screen_h: u16,
     elapsed_ms: f32,
@@ -154,23 +73,22 @@ struct RuntimeShared {
     layer: Arc<Mutex<AnimationLayer>>,
     box_title: Arc<Mutex<Option<String>>>,
     canvas_buf: Arc<Mutex<CanvasBuffer>>,
-    elements: Arc<Mutex<Vec<LuaSceneElement>>>,
     every_tasks: Arc<Mutex<Vec<ScheduledEvery>>>,
     after_tasks: Arc<Mutex<Vec<ScheduledAfter>>>,
     tweens: Arc<Mutex<Vec<ActiveTween>>>,
     sequences: Arc<Mutex<Vec<ActiveSequence>>>,
-    greeting_fn: Arc<Mutex<Option<RegistryKey>>>,
     shader_module: Arc<Mutex<Option<RegistryKey>>>,
     shader_state: Arc<Mutex<Option<RegistryKey>>>,
     shader_init_called: Arc<Mutex<bool>>,
     duration_limit_ms: Arc<Mutex<Option<f32>>>,
-    next_elem_id: Arc<Mutex<usize>>,
 }
 
-/// Robust, throttled, non-blocking Lua Animation Runtime hosting animations with `setup(api)`
-/// as well as shader-style `init(ctx)` / `update(dt, t, ctx)` / `render(canvas, ctx)` modules.
+/// Isolated, throttled Lua Animation Runtime.
+/// Each independent animation owns a private Lua VM and an exclusive `CanvasBuffer`
+/// with no access to global coordinates or other containers' canvases.
 pub struct LuaAnimationRuntime {
     pub active_id: String,
+    pub description: String,
     lua: Option<Lua>,
     shared: RuntimeShared,
     target_fps: u32,
@@ -180,10 +98,14 @@ pub struct LuaAnimationRuntime {
 
 impl LuaAnimationRuntime {
     pub fn start(name: &str, screen_w: u16, screen_h: u16, target_fps: u32) -> Self {
+        let desc = format!("Independent Lua animation '{name}'");
         let mut rt = Self {
             active_id: name.to_string(),
+            description: desc.clone(),
             lua: None,
             shared: RuntimeShared {
+                name: name.to_string(),
+                description: desc.clone(),
                 screen_w,
                 screen_h,
                 elapsed_ms: 0.0,
@@ -193,18 +115,17 @@ impl LuaAnimationRuntime {
                 paused: false,
                 layer: Arc::new(Mutex::new(AnimationLayer::Overlay)),
                 box_title: Arc::new(Mutex::new(None)),
-                canvas_buf: Arc::new(Mutex::new(CanvasBuffer::new(screen_w, screen_h))),
-                elements: Arc::new(Mutex::new(Vec::new())),
+                canvas_buf: Arc::new(Mutex::new(CanvasBuffer::new_named(
+                    name, desc, screen_w, screen_h,
+                ))),
                 every_tasks: Arc::new(Mutex::new(Vec::new())),
                 after_tasks: Arc::new(Mutex::new(Vec::new())),
                 tweens: Arc::new(Mutex::new(Vec::new())),
                 sequences: Arc::new(Mutex::new(Vec::new())),
-                greeting_fn: Arc::new(Mutex::new(None)),
                 shader_module: Arc::new(Mutex::new(None)),
                 shader_state: Arc::new(Mutex::new(None)),
                 shader_init_called: Arc::new(Mutex::new(false)),
                 duration_limit_ms: Arc::new(Mutex::new(None)),
-                next_elem_id: Arc::new(Mutex::new(1)),
             },
             target_fps: target_fps.clamp(1, 60),
             accum_dt: 0.0,
@@ -216,6 +137,11 @@ impl LuaAnimationRuntime {
 
     pub fn layer(&self) -> AnimationLayer {
         *self.shared.layer.lock().unwrap()
+    }
+
+    pub fn canvas_dims(&self) -> (u16, u16) {
+        let guard = self.shared.canvas_buf.lock().unwrap();
+        (guard.width, guard.height)
     }
 
     pub fn boxed_rect(&self, screen: Rect) -> Rect {
@@ -254,7 +180,6 @@ impl LuaAnimationRuntime {
     pub fn stop(&mut self) {
         *self.shared.finished.lock().unwrap() = true;
         *self.shared.reveal_progress.lock().unwrap() = 1.0;
-        self.shared.elements.lock().unwrap().clear();
         self.shared.canvas_buf.lock().unwrap().begin_frame();
     }
 
@@ -263,6 +188,16 @@ impl LuaAnimationRuntime {
         self.shared.screen_h = h;
         let (cw, ch) = self.effective_canvas_dims();
         self.shared.canvas_buf.lock().unwrap().resize(cw, ch);
+
+        if let Some(lua) = self.lua.as_ref()
+            && let Some(mod_key) = self.shared.shader_module.lock().unwrap().as_ref()
+            && let Ok(mod_tbl) = lua.registry_value::<Table>(mod_key)
+            && let Ok(Value::Function(resize_fn)) = mod_tbl.get::<Value>("resize")
+            && let Some(ctx) = self.build_shader_ctx(lua, cw, ch, 0.0)
+            && let Err(e) = resize_fn.call::<()>(ctx)
+        {
+            self.last_error = Some(e.to_string());
+        }
     }
 
     fn load_and_setup(&mut self, name: &str) {
@@ -315,6 +250,14 @@ impl LuaAnimationRuntime {
                     if let Ok(title) = stbl.get::<String>("title") {
                         *self.shared.box_title.lock().unwrap() = Some(title);
                     }
+                    if let Ok(desc) = stbl.get::<String>("description") {
+                        self.description = desc.clone();
+                        self.shared
+                            .canvas_buf
+                            .lock()
+                            .unwrap()
+                            .set_identity(&self.active_id, &desc);
+                    }
                     if let Ok(fps) = stbl.get::<u32>("fps") {
                         self.target_fps = fps.clamp(1, 60);
                     }
@@ -351,17 +294,16 @@ impl LuaAnimationRuntime {
         let api = lua.create_table()?;
         let shared = self.shared.clone();
 
-        // api.screen.width() / height()
-        let screen = lua.create_table()?;
-        {
-            let sw = shared.screen_w;
-            let sh = shared.screen_h;
-            screen.set("width", lua.create_function(move |_, ()| Ok(sw))?)?;
-            screen.set("height", lua.create_function(move |_, ()| Ok(sh))?)?;
-        }
-        api.set("screen", screen)?;
+        api.set("name", shared.name.clone())?;
+        api.set("description", shared.description.clone())?;
 
-        // api.elapsed_ms() / api.dt() / api.finish()
+        // Isolated canvas bound exclusively to this animation unit
+        let theme = Theme::from_config(&crate::config::ThemeConfig::default());
+        api.set(
+            "canvas",
+            LuaCanvasHandle::new(Arc::clone(&shared.canvas_buf), theme),
+        )?;
+
         {
             let sh = shared.clone();
             api.set(
@@ -374,23 +316,21 @@ impl LuaAnimationRuntime {
             api.set("dt", lua.create_function(move |_, ()| Ok(sh.dt_secs))?)?;
         }
 
-        let finished_flag = Arc::clone(&shared.finished);
         {
-            let ff = Arc::clone(&finished_flag);
-            let el = Arc::clone(&shared.elements);
+            let ff = Arc::clone(&shared.finished);
             let rp = Arc::clone(&shared.reveal_progress);
+            let cbuf = Arc::clone(&shared.canvas_buf);
             api.set(
                 "finish",
                 lua.create_function(move |_, ()| {
                     *ff.lock().unwrap() = true;
                     *rp.lock().unwrap() = 1.0;
-                    el.lock().unwrap().clear();
+                    cbuf.lock().unwrap().begin_frame();
                     Ok(())
                 })?,
             )?;
         }
 
-        // api.figlet(text, font_name)
         api.set(
             "figlet",
             lua.create_function(|_, (text, font_name): (String, Option<String>)| {
@@ -400,7 +340,6 @@ impl LuaAnimationRuntime {
             })?,
         )?;
 
-        // api.lerp_color(c1, c2, t)
         api.set(
             "lerp_color",
             lua.create_function(|_, (c1, c2, t): (String, String, f32)| {
@@ -413,61 +352,6 @@ impl LuaAnimationRuntime {
             })?,
         )?;
 
-        // api.element({ id, x, y, text, lines, fg, bg, bold, visible })
-        {
-            let els = Arc::clone(&shared.elements);
-            let next_id = Arc::clone(&shared.next_elem_id);
-            api.set(
-                "element",
-                lua.create_function(move |_, spec: Table| {
-                    let mut counter = next_id.lock().unwrap();
-                    let id = spec
-                        .get::<String>("id")
-                        .unwrap_or_else(|_| format!("elem_{}", *counter));
-                    *counter += 1;
-                    let x = spec.get::<i32>("x").unwrap_or(0);
-                    let y = spec.get::<i32>("y").unwrap_or(0);
-                    let lines = if let Ok(lv) = spec.get::<Vec<String>>("lines") {
-                        lv
-                    } else if let Ok(txt) = spec.get::<String>("text") {
-                        let mut v: Vec<String> = txt.lines().map(|l| l.to_string()).collect();
-                        if v.is_empty() && !txt.is_empty() {
-                            v.push(txt);
-                        }
-                        v
-                    } else {
-                        Vec::new()
-                    };
-                    let fg = spec
-                        .get::<String>("fg")
-                        .map(|s| parse_color(&s, Color::White))
-                        .unwrap_or(Color::White);
-                    let bg = spec
-                        .get::<Option<String>>("bg")
-                        .unwrap_or(None)
-                        .map(|s| parse_color(&s, Color::Reset));
-                    let bold = spec.get::<Option<bool>>("bold").ok().flatten().unwrap_or(false);
-                    let visible = spec.get::<Option<bool>>("visible").ok().flatten().unwrap_or(true);
-
-                    els.lock().unwrap().push(LuaSceneElement {
-                        id: id.clone(),
-                        x,
-                        y,
-                        lines,
-                        fg,
-                        bg,
-                        bold,
-                        visible,
-                    });
-                    Ok(ElementHandle {
-                        id,
-                        elements: Arc::clone(&els),
-                    })
-                })?,
-            )?;
-        }
-
-        // api.every(interval_ms, fn)
         {
             let every_tasks = Arc::clone(&shared.every_tasks);
             api.set(
@@ -484,7 +368,6 @@ impl LuaAnimationRuntime {
             )?;
         }
 
-        // api.after(delay_ms, fn)
         {
             let after_tasks = Arc::clone(&shared.after_tasks);
             api.set(
@@ -501,7 +384,6 @@ impl LuaAnimationRuntime {
             )?;
         }
 
-        // api.tween({ from, to, duration_ms, easing, on_update, on_complete })
         {
             let tweens = Arc::clone(&shared.tweens);
             api.set(
@@ -538,7 +420,6 @@ impl LuaAnimationRuntime {
             )?;
         }
 
-        // api.sequence(steps, on_complete)
         {
             let seqs = Arc::clone(&shared.sequences);
             api.set(
@@ -581,7 +462,6 @@ impl LuaAnimationRuntime {
             )?;
         }
 
-        // api.parallel(fns)
         api.set(
             "parallel",
             lua.create_function(|_, tasks: Table| {
@@ -592,30 +472,18 @@ impl LuaAnimationRuntime {
             })?,
         )?;
 
-        // api.ui.reveal(progress) & api.ui.set_greeting_transform(fn)
         let ui = lua.create_table()?;
         {
             let rc = Arc::clone(&shared.reveal_progress);
-            ui.set(
-                "reveal",
-                lua.create_function(move |_, p: f32| {
-                    *rc.lock().unwrap() = p.clamp(0.0, 1.0);
-                    Ok(())
-                })?,
-            )?;
+            let reveal_fn = lua.create_function(move |_, p: f32| {
+                *rc.lock().unwrap() = p.clamp(0.0, 1.0);
+                Ok(())
+            })?;
+            ui.set("reveal", reveal_fn.clone())?;
+            api.set("reveal", reveal_fn)?;
         }
-        {
-            let gfn = Arc::clone(&shared.greeting_fn);
-            ui.set(
-                "set_greeting_transform",
-                lua.create_function(move |lua, cb: Option<Function>| {
-                    let mut guard = gfn.lock().unwrap();
-                    *guard = cb.and_then(|f| lua.create_registry_value(f).ok());
-                    Ok(())
-                })?,
-            )?;
-        }
-        // api.layer("background" | "boxed" | "overlay"), api.box_title(str), api.math
+        api.set("ui", ui)?;
+
         {
             let lr = Arc::clone(&shared.layer);
             api.set(
@@ -636,54 +504,50 @@ impl LuaAnimationRuntime {
                 })?,
             )?;
         }
-        {
-            let cbuf = Arc::clone(&shared.canvas_buf);
-            api.set(
-                "canvas",
-                lua.create_function(move |_, ()| {
-                    Ok(LuaCanvasHandle::new(
-                        Arc::clone(&cbuf),
-                        Theme::from_config(&crate::config::ThemeConfig::default()),
-                    ))
-                })?,
-            )?;
-        }
+
         attach_math_helpers(lua, &api)?;
-
-        api.set("ui", ui)?;
-
         Ok(api)
     }
 
-    pub fn transform_greeting_char(
-        &self,
-        ch: char,
-        col: usize,
-        row: usize,
-    ) -> Option<GreetingCellTransform> {
-        let lua = self.lua.as_ref()?;
-        let key_guard = self.shared.greeting_fn.lock().unwrap();
-        let key = key_guard.as_ref()?;
-        let f = lua.registry_value::<Function>(key).ok()?;
-        let mut buf = [0u8; 4];
-        let s = ch.encode_utf8(&mut buf);
-        let val: Value = f.call((s.to_string(), col, row)).ok()?;
-        let Value::Table(tbl) = val else {
-            return None;
-        };
-        let out_ch = tbl.get::<Option<String>>("char").unwrap_or(None);
-        let fg = tbl
-            .get::<Option<String>>("fg")
-            .unwrap_or(None)
-            .map(|c| parse_color(&c, Color::White));
-        let dy = tbl.get::<i16>("dy").unwrap_or(0);
-        let bold = tbl.get::<Option<bool>>("bold").ok().flatten().unwrap_or(false);
-        Some(GreetingCellTransform {
-            ch: out_ch,
-            fg,
-            dy,
-            bold,
-        })
+    fn build_shader_ctx(&self, lua: &Lua, cw: u16, ch: u16, step_dt: f32) -> Option<Table> {
+        let t_secs = self.shared.elapsed_ms / 1000.0;
+        let theme = Theme::from_config(&crate::config::ThemeConfig::default());
+        let state_guard = self.shared.shader_state.lock().unwrap();
+        let st = state_guard
+            .as_ref()
+            .and_then(|k| lua.registry_value::<Table>(k).ok())?;
+        let ctx = lua.create_table().ok()?;
+        let _ = ctx.set("name", self.active_id.as_str());
+        let _ = ctx.set("description", self.description.as_str());
+        let _ = ctx.set("width", cw);
+        let _ = ctx.set("height", ch);
+        let _ = ctx.set("dt", step_dt);
+        let _ = ctx.set("t", t_secs);
+        let _ = ctx.set("time", t_secs);
+        let _ = ctx.set("elapsed", t_secs);
+        let _ = ctx.set("fps", self.target_fps);
+        let _ = ctx.set("state", st);
+        if let Ok(tt) = build_theme_lua_table(lua, &theme) {
+            let _ = ctx.set("theme", tt);
+        }
+        let rc = Arc::clone(&self.shared.reveal_progress);
+        if let Ok(rf) = lua.create_function(move |_, p: f32| {
+            *rc.lock().unwrap() = p.clamp(0.0, 1.0);
+            Ok(())
+        }) {
+            let _ = ctx.set("reveal", rf);
+        }
+        let ff = Arc::clone(&self.shared.finished);
+        let rp = Arc::clone(&self.shared.reveal_progress);
+        if let Ok(fin) = lua.create_function(move |_, ()| {
+            *ff.lock().unwrap() = true;
+            *rp.lock().unwrap() = 1.0;
+            Ok(())
+        }) {
+            let _ = ctx.set("finish", fin);
+        }
+        let _ = attach_math_helpers(lua, &ctx);
+        Some(ctx)
     }
 
     pub fn update(&mut self, dt_secs: f32) {
@@ -817,27 +681,7 @@ impl LuaAnimationRuntime {
             let (cw, ch) = self.effective_canvas_dims();
             let t_secs = self.shared.elapsed_ms / 1000.0;
             let theme = Theme::from_config(&crate::config::ThemeConfig::default());
-
-            let ctx_opt: Option<Table> = (|| {
-                let state_guard = self.shared.shader_state.lock().unwrap();
-                let st = state_guard
-                    .as_ref()
-                    .and_then(|k| lua.registry_value::<Table>(k).ok())?;
-                let ctx = lua.create_table().ok()?;
-                let _ = ctx.set("width", cw);
-                let _ = ctx.set("height", ch);
-                let _ = ctx.set("dt", step_dt);
-                let _ = ctx.set("t", t_secs);
-                let _ = ctx.set("time", t_secs);
-                let _ = ctx.set("elapsed", t_secs);
-                let _ = ctx.set("fps", self.target_fps);
-                let _ = ctx.set("state", st);
-                if let Ok(tt) = build_theme_lua_table(lua, &theme) {
-                    let _ = ctx.set("theme", tt);
-                }
-                let _ = attach_math_helpers(lua, &ctx);
-                Some(ctx)
-            })();
+            let ctx_opt = self.build_shader_ctx(lua, cw, ch, step_dt);
 
             let mod_tbl_opt = self
                 .shared
@@ -893,41 +737,8 @@ impl LuaAnimationRuntime {
         if area.width == 0 || area.height == 0 {
             return;
         }
-        // 1. Canvas buffer cells (automatically clipped to `area`)
-        {
-            let guard = self.shared.canvas_buf.lock().unwrap();
-            guard.blit_to_buffer(buf, area, Color::White);
-        }
-        // 2. Imperative `api.element` sprites (clipped to `area`)
-        let elements = self.shared.elements.lock().unwrap();
-        for el in elements.iter() {
-            if !el.visible {
-                continue;
-            }
-            for (row_offset, line) in el.lines.iter().enumerate() {
-                let y = el.y + row_offset as i32;
-                if y < area.y as i32 || y >= area.bottom() as i32 {
-                    continue;
-                }
-                for (col_offset, ch) in line.chars().enumerate() {
-                    let x = el.x + col_offset as i32;
-                    if x < area.x as i32 || x >= area.right() as i32 {
-                        continue;
-                    }
-                    if let Some(cell) = buf.cell_mut((x as u16, y as u16)) {
-                        let mut s = [0u8; 4];
-                        cell.set_symbol(ch.encode_utf8(&mut s));
-                        cell.set_fg(el.fg);
-                        if let Some(bg) = el.bg {
-                            cell.set_bg(bg);
-                        }
-                        if el.bold {
-                            cell.modifier.insert(Modifier::BOLD);
-                        }
-                    }
-                }
-            }
-        }
+        let guard = self.shared.canvas_buf.lock().unwrap();
+        guard.blit_to_buffer(buf, area, Color::White);
     }
 
     /// Renders a `Boxed` animation cleanly inside an isolated, bordered modal panel

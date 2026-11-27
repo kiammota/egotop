@@ -13,9 +13,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
-pub use animation_runtime::{
-    AnimationLayer, GreetingCellTransform, LuaAnimationRuntime, LuaSceneElement,
-};
+pub use animation_runtime::{AnimationLayer, LuaAnimationRuntime};
 pub use builtins::{BUILTIN_LUA_MODULES, ensure_lua_config_tree, ensure_lua_tree_at};
 pub use canvas::{CanvasBuffer, LuaCanvasHandle};
 pub use effects::{LuaCanvasInstance, LuaEffectAdapter, LuaEffectSpec};
@@ -287,9 +285,9 @@ mod tests {
         assert!(!bundle.config.init.wait_for_input);
         assert_eq!(bundle.effect_specs.len(), 1);
         assert_eq!(bundle.effect_specs[0].name, "matrix");
-        assert!(crate::ui::container::has_container_id(&bundle.config.ui.root, "system"));
-        assert!(crate::ui::container::has_container_id(&bundle.config.ui.root, "hardware"));
-        assert!(crate::ui::container::has_container_id(&bundle.config.ui.root, "session"));
+        assert!(crate::ui::container::has_container(&bundle.config.ui.containers, "system"));
+        assert!(crate::ui::container::has_container(&bundle.config.ui.containers, "hardware"));
+        assert!(crate::ui::container::has_container(&bundle.config.ui.containers, "session"));
 
         // 2. All builtin Lua themes resolve cleanly (including bamboo and mixed transparency themes)
         let themes = load_all_lua_themes();

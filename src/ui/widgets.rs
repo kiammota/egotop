@@ -3,23 +3,24 @@ use crate::config::{Align, BorderStyle, Config, GraphStyle, ViewMode};
 use crate::system::{SystemSnapshot, format_bytes, uptime::format_uptime};
 use crate::ui::borders::BorderChars;
 use crate::ui::components::{
-    ComponentAnimState, ComponentAnimationStore, render_animated_component, render_clipped,
+    ComponentAnimState, ComponentAnimationStore, blit_isolated_canvas, render_animated_to_canvas,
 };
 use crate::ui::container::{
-    BackgroundFill, ComponentCategory, ComponentConfig, ComponentKind, ContainerBorderConfig,
+    BackgroundFill, ComponentCategory, ComponentKind, ContainerBorderConfig, ContainerConfig,
     ContainerGradient, GradientDirection,
 };
-use crate::ui::layout::{ComputedLayout, PlacedComponent, PlacedContainer};
+use crate::ui::layout::{ComputedLayout, PlacedContainer};
 use crate::ui::theme::{Theme, blend_color, parse_color};
 use crate::ui::typography::{
     IconSet, RevealState, render_figlet_lines, resolve_logo_lines, slice_marquee_lines,
 };
 use chrono::Local;
 use ratatui::Frame;
+use ratatui::buffer::Buffer;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph, Sparkline, Wrap};
+use ratatui::widgets::{Block, Borders, Clear, Paragraph, Sparkline, Widget, Wrap};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 pub struct RenderContext<'a> {
@@ -57,104 +58,40 @@ impl<'a> RenderContext<'a> {
     }
 }
 
-pub fn render_container_tree(
+pub fn render_containers(
     frame: &mut Frame,
     layout: &ComputedLayout,
     anim_store: &ComponentAnimationStore,
     ctx: &RenderContext,
 ) {
+    let dest = frame.buffer_mut();
     for container in &layout.containers {
-        render_container_box(frame, container, ctx);
-    }
-
-    for component in &layout.components {
-        render_placed_component(frame, component, anim_store, ctx);
+        render_placed_container(dest, container, anim_store, ctx);
     }
 }
 
-fn render_container_box(frame: &mut Frame, container: &PlacedContainer, ctx: &RenderContext) {
-    let area = container.outer_rect.intersection(frame.area());
-    if area.width == 0 || area.height == 0 {
-        return;
-    }
-
-    let style_override = ctx.config.container_styles.get(&container.id);
-    let eff_grad = style_override
-        .and_then(|s| s.gradient.as_ref())
-        .or(container.gradient.as_ref());
-    let opacity = style_override
-        .and_then(|s| s.opacity)
-        .or(container.opacity)
-        .unwrap_or(1.0)
-        .clamp(0.0, 1.0);
-    if let Some(grad) = eff_grad {
-        render_gradient_bg_with_opacity(frame.buffer_mut(), area, grad, ctx.theme.panel_background, opacity);
-    }
-
-    let bg = match style_override.map(|s| &s.background) {
-        Some(BackgroundFill::Transparent) => Color::Reset,
-        Some(BackgroundFill::Solid(c)) => apply_color_opacity(parse_color(c, ctx.theme.panel_background), opacity),
-        Some(BackgroundFill::Inherit) | None => {
-            if container.transparent {
-                Color::Reset
-            } else {
-                let base = container
-                    .background
-                    .as_deref()
-                    .map(|c| parse_color(c, ctx.theme.panel_background))
-                    .unwrap_or(ctx.theme.panel_background);
-                apply_color_opacity(base, opacity)
-            }
-        }
-    };
-
-    let mut border = container.border.clone();
-    if let Some(ov) = style_override {
-        if let Some(c) = &ov.border_color {
-            border.color = Some(c.clone());
-        }
-        if let Some(st) = ov.border_style {
-            border.style = st;
-            border.enabled = st != BorderStyle::None;
-        }
-    }
-
-    let show_border = border.enabled
-        && border.style != BorderStyle::None
-        && ctx.config.theme.border_type != BorderStyle::None;
-    let has_grad = eff_grad.is_some();
-    if show_border && area.width >= 2 && area.height >= 2 {
-        render_border_block(frame, area, &border, bg, !has_grad, ctx);
-    } else {
-        if !has_grad && bg != Color::Reset {
-            frame.render_widget(Block::default().style(Style::default().bg(bg)), area);
-        }
-        render_borderless_title(frame, area, border.title.as_deref(), ctx);
-    }
-}
-
-fn render_placed_component(
-    frame: &mut Frame,
-    placed: &PlacedComponent,
+fn render_placed_container(
+    dest: &mut Buffer,
+    placed: &PlacedContainer,
     anim_store: &ComponentAnimationStore,
     ctx: &RenderContext,
 ) {
-    let outer = placed.outer_rect.intersection(frame.area());
+    let outer = placed.outer_rect.intersection(*dest.area());
     if outer.width == 0 || outer.height == 0 {
         return;
     }
 
-    let mut comp = placed.config.clone();
-    if comp.id == "status_spinner" {
+    let mut cont = placed.config.clone();
+    if cont.name == "status_spinner" {
         if !ctx.config.footer.enabled {
             return;
         }
-        comp.content.text = Some(ctx.config.footer.text.clone());
-        comp.visual.align = ctx.config.footer.align;
+        cont.content.text = Some(ctx.config.footer.text.clone());
+        cont.align = ctx.config.footer.align;
         if let Some(col) = &ctx.config.footer.color {
-            comp.visual.color = Some(col.clone());
+            cont.color = Some(col.clone());
         }
-        let anim = comp.animation.get_or_insert_with(Default::default);
+        let anim = cont.animation.get_or_insert_with(Default::default);
         anim.style = ctx
             .config
             .footer
@@ -163,80 +100,131 @@ fn render_placed_component(
             .or_else(|| ctx.config.footer.animation.clone());
         anim.fps = Some(ctx.config.footer.fps);
     }
-    let style_override = ctx.config.container_styles.get(&placed.id);
+
+    let style_override = ctx.config.container_styles.get(&placed.name);
     if let Some(ov) = style_override {
         if let Some(fg) = &ov.foreground {
-            comp.visual.color = Some(fg.clone());
+            cont.color = Some(fg.clone());
         }
         if let Some(c) = &ov.border_color {
-            comp.visual.border.color = Some(c.clone());
+            cont.border.color = Some(c.clone());
         }
         if let Some(st) = ov.border_style {
-            comp.visual.border.style = st;
-            comp.visual.border.enabled = st != BorderStyle::None;
+            cont.border.style = st;
+            cont.border.enabled = st != BorderStyle::None;
         }
     }
 
-    let has_grad = style_override.and_then(|s| s.gradient.as_ref()).is_some();
+    let eff_grad = style_override
+        .and_then(|s| s.gradient.as_ref())
+        .or(cont.gradient.as_ref());
+    let has_grad = eff_grad.is_some();
     let opacity = style_override
         .and_then(|s| s.opacity)
+        .or(cont.opacity)
         .unwrap_or(1.0)
         .clamp(0.0, 1.0);
-    if let Some(grad) = style_override.and_then(|s| s.gradient.as_ref()) {
-        render_gradient_bg_with_opacity(
-            frame.buffer_mut(),
-            outer,
-            grad,
-            ctx.theme.panel_background,
-            opacity,
-        );
-    }
 
     let bg = match style_override.map(|s| &s.background) {
         Some(BackgroundFill::Transparent) => Color::Reset,
         Some(BackgroundFill::Solid(c)) => {
             apply_color_opacity(parse_color(c, ctx.theme.panel_background), opacity)
         }
-        Some(BackgroundFill::Inherit) | None => apply_color_opacity(
-            comp.visual
-                .background
-                .as_deref()
-                .map(|c| parse_color(c, ctx.panel_bg()))
-                .unwrap_or_else(|| ctx.panel_bg()),
-            opacity,
-        ),
+        Some(BackgroundFill::Inherit) | None => {
+            if cont.transparent {
+                Color::Reset
+            } else {
+                let base = cont
+                    .background
+                    .as_deref()
+                    .map(|c| parse_color(c, ctx.panel_bg()))
+                    .unwrap_or_else(|| ctx.panel_bg());
+                apply_color_opacity(base, opacity)
+            }
+        }
     };
 
-    let mut border = comp.visual.border.clone();
+    let mut border = cont.border.clone();
     if border.title.is_none() {
-        border.title = comp.content.title.clone();
+        border.title = cont.content.title.clone();
     }
     let show_border = border.enabled
         && border.style != BorderStyle::None
         && (ctx.config.theme.border_type != BorderStyle::None
             || style_override.and_then(|s| s.border_style).is_some());
+
+    // Paint the container's outer surface (background, gradient, border/title) inside an isolated buffer.
+    let local_outer = Rect::new(0, 0, outer.width, outer.height);
+    let mut outer_buf = Buffer::empty(local_outer);
+
+    if let Some(grad) = eff_grad {
+        render_gradient_bg_with_opacity(
+            &mut outer_buf,
+            local_outer,
+            grad,
+            ctx.theme.panel_background,
+            opacity,
+        );
+    }
+
     if show_border && outer.width >= 2 && outer.height >= 2 {
-        render_border_block(frame, outer, &border, bg, !has_grad, ctx);
+        render_border_block_to_buf(&mut outer_buf, local_outer, &border, bg, !has_grad, ctx);
     } else {
         if !has_grad && bg != Color::Reset {
-            frame.render_widget(
-                Block::default().style(Style::default().fg(ctx.theme.text).bg(bg)),
-                outer,
-            );
+            Block::default()
+                .style(Style::default().fg(ctx.theme.text).bg(bg))
+                .render(local_outer, &mut outer_buf);
         }
-        render_borderless_title(frame, outer, border.title.as_deref(), ctx);
+        render_borderless_title_to_buf(&mut outer_buf, local_outer, border.title.as_deref(), ctx);
     }
+
+    blit_buffer_strict(dest, outer, &outer_buf);
 
     let inner = placed.inner_rect.intersection(outer);
     if inner.width == 0 || inner.height == 0 {
         return;
     }
 
-    match comp.category {
-        ComponentCategory::Static => render_static_component(frame, inner, &comp, anim_store, ctx),
-        ComponentCategory::Dynamic => render_dynamic_component(frame, inner, &comp, ctx),
-        ComponentCategory::Animated => {
-            render_animated_component(frame, inner, &comp, anim_store, ctx.config, ctx.theme);
+    // Render all container content strictly into its own isolated [0..inner.w, 0..inner.h) canvas.
+    blit_isolated_canvas(dest, inner, |canvas_buf, local_inner| {
+        if cont.inline_lua.is_some() || cont.kind == ComponentKind::Canvas {
+            render_animated_to_canvas(canvas_buf, local_inner, &cont, anim_store, ctx.config, ctx.theme);
+        } else {
+            match cont.category {
+                ComponentCategory::Static => {
+                    render_static_to_canvas(canvas_buf, local_inner, &cont, anim_store, ctx)
+                }
+                ComponentCategory::Dynamic => {
+                    render_dynamic_to_canvas(canvas_buf, local_inner, &cont, ctx)
+                }
+                ComponentCategory::Animated => render_animated_to_canvas(
+                    canvas_buf,
+                    local_inner,
+                    &cont,
+                    anim_store,
+                    ctx.config,
+                    ctx.theme,
+                ),
+            }
+        }
+    });
+}
+
+fn blit_buffer_strict(dest: &mut Buffer, target: Rect, src: &Buffer) {
+    let clipped = target.intersection(*dest.area());
+    let max_w = clipped.width.min(src.area().width);
+    let max_h = clipped.height.min(src.area().height);
+    for dy in 0..max_h {
+        for dx in 0..max_w {
+            let s = &src[(dx, dy)];
+            if s.symbol() == " " && s.bg == Color::Reset {
+                continue;
+            }
+            if let Some(d) = dest.cell_mut((clipped.x + dx, clipped.y + dy)) {
+                let preserved_bg = if s.bg == Color::Reset { d.bg } else { s.bg };
+                *d = s.clone();
+                d.set_bg(preserved_bg);
+            }
         }
     }
 }
@@ -302,8 +290,8 @@ pub fn render_gradient_bg_with_opacity(
     }
 }
 
-fn render_border_block(
-    frame: &mut Frame,
+fn render_border_block_to_buf(
+    buf: &mut Buffer,
     area: Rect,
     border: &ContainerBorderConfig,
     bg: Color,
@@ -346,13 +334,13 @@ fn render_border_block(
     }
 
     if clear_if_opaque && bg != Color::Reset {
-        frame.render_widget(Clear, area);
+        Clear.render(area, buf);
     }
-    frame.render_widget(block, area);
+    block.render(area, buf);
 }
 
-fn render_borderless_title(
-    frame: &mut Frame,
+fn render_borderless_title_to_buf(
+    buf: &mut Buffer,
     area: Rect,
     title: Option<&str>,
     ctx: &RenderContext,
@@ -364,7 +352,6 @@ fn render_borderless_title(
         return;
     }
 
-    // Preserve the exact horizontal offset (x + 1) and spacing (" {title} ") used by bordered blocks.
     let (title_x, max_w) = if area.width >= 3 {
         (area.x.saturating_add(1), area.width.saturating_sub(2))
     } else {
@@ -378,47 +365,47 @@ fn render_borderless_title(
             .fg(ctx.theme.primary)
             .add_modifier(Modifier::BOLD),
     );
-    frame.render_widget(Paragraph::new(Line::from(span)), title_area);
+    Paragraph::new(Line::from(span)).render(title_area, buf);
 }
 
-fn render_static_component(
-    frame: &mut Frame,
+fn render_static_to_canvas(
+    buf: &mut Buffer,
     area: Rect,
-    comp: &ComponentConfig,
+    cont: &ContainerConfig,
     anim_store: &ComponentAnimationStore,
     ctx: &RenderContext,
 ) {
-    match comp.kind {
-        ComponentKind::Greeting => render_greeting_component(frame, area, comp, anim_store, ctx),
-        ComponentKind::AsciiLogo => render_logo_component(frame, area, comp, ctx),
-        ComponentKind::Separator => render_separator_component(frame, area, comp, ctx),
-        _ => render_text_component(frame, area, comp, ctx),
+    match cont.kind {
+        ComponentKind::Greeting => render_greeting_to_canvas(buf, area, cont, anim_store, ctx),
+        ComponentKind::AsciiLogo => render_logo_to_canvas(buf, area, cont, ctx),
+        ComponentKind::Separator => render_separator_to_canvas(buf, area, cont, ctx),
+        _ => render_text_to_canvas(buf, area, cont, ctx),
     }
 }
 
-fn render_dynamic_component(
-    frame: &mut Frame,
+fn render_dynamic_to_canvas(
+    buf: &mut Buffer,
     area: Rect,
-    comp: &ComponentConfig,
+    cont: &ContainerConfig,
     ctx: &RenderContext,
 ) {
-    match comp.kind {
-        ComponentKind::Header => render_header_component(frame, area, ctx),
-        ComponentKind::System => render_system_component(frame, area, comp, ctx),
-        ComponentKind::Hardware => render_hardware_component(frame, area, ctx),
-        ComponentKind::Environment => render_environment_component(frame, area, ctx),
-        ComponentKind::Terminal => render_terminal_component(frame, area, ctx),
-        ComponentKind::Storage => render_storage_component(frame, area, ctx),
-        ComponentKind::Activity => render_activity_component(frame, area, comp, ctx),
-        ComponentKind::Session => render_session_component(frame, area, ctx),
-        ComponentKind::Cpu => render_cpu_component(frame, area, ctx),
-        ComponentKind::Memory => render_memory_component(frame, area, ctx),
-        ComponentKind::Temperature => render_temperature_component(frame, area, ctx),
-        ComponentKind::Processes => render_processes_component(frame, area, ctx),
-        ComponentKind::Network => render_network_component(frame, area, ctx),
-        ComponentKind::Uptime => render_uptime_component(frame, area, ctx),
-        ComponentKind::Graph => render_graph_component(frame, area, comp, ctx),
-        _ => render_text_component(frame, area, comp, ctx),
+    match cont.kind {
+        ComponentKind::Header => render_header_to_canvas(buf, area, ctx),
+        ComponentKind::System => render_system_to_canvas(buf, area, cont, ctx),
+        ComponentKind::Hardware => render_hardware_to_canvas(buf, area, ctx),
+        ComponentKind::Environment => render_environment_to_canvas(buf, area, ctx),
+        ComponentKind::Terminal => render_terminal_to_canvas(buf, area, ctx),
+        ComponentKind::Storage => render_storage_to_canvas(buf, area, ctx),
+        ComponentKind::Activity => render_activity_to_canvas(buf, area, cont, ctx),
+        ComponentKind::Session => render_session_to_canvas(buf, area, ctx),
+        ComponentKind::Cpu => render_cpu_to_canvas(buf, area, ctx),
+        ComponentKind::Memory => render_memory_to_canvas(buf, area, ctx),
+        ComponentKind::Temperature => render_temperature_to_canvas(buf, area, ctx),
+        ComponentKind::Processes => render_processes_to_canvas(buf, area, ctx),
+        ComponentKind::Network => render_network_to_canvas(buf, area, ctx),
+        ComponentKind::Uptime => render_uptime_to_canvas(buf, area, ctx),
+        ComponentKind::Graph => render_graph_to_canvas(buf, area, cont, ctx),
+        _ => render_text_to_canvas(buf, area, cont, ctx),
     }
 }
 
@@ -430,96 +417,88 @@ fn to_alignment(align: Align) -> Alignment {
     }
 }
 
-fn render_text_component(
-    frame: &mut Frame,
+fn render_text_to_canvas(
+    buf: &mut Buffer,
     area: Rect,
-    comp: &ComponentConfig,
+    cont: &ContainerConfig,
     ctx: &RenderContext,
 ) {
-    let text = comp
+    let text = cont
         .content
         .text
         .as_deref()
         .unwrap_or(&ctx.config.general.message);
-    let fg = comp
-        .visual
+    let fg = cont
         .color
         .as_deref()
         .map(|c| parse_color(c, ctx.theme.text))
         .unwrap_or(ctx.theme.text);
-    let bg = comp
-        .visual
+    let bg = cont
         .background
         .as_deref()
         .map(|c| parse_color(c, ctx.panel_bg()))
         .unwrap_or_else(|| ctx.panel_bg());
 
     let mut span_style = Style::default().fg(fg);
-    if comp.visual.background.is_some() && bg != Color::Reset {
+    if cont.background.is_some() && bg != Color::Reset {
         span_style = span_style.bg(bg);
     }
     let lines: Vec<Line> = text
         .lines()
         .map(|l| Line::from(Span::styled(l.to_string(), span_style)))
         .collect();
-    frame.render_widget(
-        Paragraph::new(lines)
-            .alignment(to_alignment(comp.visual.align))
-            .wrap(Wrap { trim: true }),
-        area,
-    );
+    Paragraph::new(lines)
+        .alignment(to_alignment(cont.align))
+        .wrap(Wrap { trim: true })
+        .render(area, buf);
 }
 
-fn render_separator_component(
-    frame: &mut Frame,
+fn render_separator_to_canvas(
+    buf: &mut Buffer,
     area: Rect,
-    comp: &ComponentConfig,
+    cont: &ContainerConfig,
     ctx: &RenderContext,
 ) {
-    let ch = comp
+    let ch = cont
         .content
         .separator_char
         .as_deref()
         .and_then(|s| s.chars().next())
         .unwrap_or('─');
-    let fg = comp
-        .visual
+    let fg = cont
         .color
         .as_deref()
         .map(|c| parse_color(c, ctx.theme.border))
         .unwrap_or(ctx.theme.border);
     let bg = ctx.panel_bg();
 
-    render_clipped(frame, area, |buf, local| {
-        let style = Style::default().fg(fg).bg(bg);
-        if local.height == 1 {
-            let line: String = std::iter::repeat_n(ch, local.width as usize).collect();
-            buf.set_stringn(0, 0, &line, local.width as usize, style);
-        } else {
-            let x = local.width / 2;
-            for y in 0..local.height {
-                if let Some(cell) = buf.cell_mut((x, y)) {
-                    cell.set_char(ch);
-                    cell.set_style(style);
-                }
+    let style = Style::default().fg(fg).bg(bg);
+    if area.height == 1 {
+        let line: String = std::iter::repeat_n(ch, area.width as usize).collect();
+        buf.set_stringn(area.x, area.y, &line, area.width as usize, style);
+    } else {
+        let x = area.x + area.width / 2;
+        for y in area.y..area.bottom() {
+            if let Some(cell) = buf.cell_mut((x, y)) {
+                cell.set_char(ch);
+                cell.set_style(style);
             }
         }
-    });
+    }
 }
 
-fn render_logo_component(
-    frame: &mut Frame,
+fn render_logo_to_canvas(
+    buf: &mut Buffer,
     area: Rect,
-    comp: &ComponentConfig,
+    cont: &ContainerConfig,
     ctx: &RenderContext,
 ) {
-    let logo_lines = if let Some(custom) = &comp.content.text {
+    let logo_lines = if let Some(custom) = &cont.content.text {
         custom.lines().map(ToString::to_string).collect()
     } else {
         resolve_logo_lines(&ctx.config.typography, ctx.snapshot)
     };
-    let fg = comp
-        .visual
+    let fg = cont
         .color
         .as_deref()
         .map(|c| parse_color(c, ctx.theme.secondary))
@@ -533,17 +512,15 @@ fn render_logo_component(
             ))
         })
         .collect();
-    frame.render_widget(
-        Paragraph::new(center_vertically(lines, area.height))
-            .alignment(to_alignment(comp.visual.align)),
-        area,
-    );
+    Paragraph::new(center_vertically(lines, area.height))
+        .alignment(to_alignment(cont.align))
+        .render(area, buf);
 }
 
-fn render_greeting_component(
-    frame: &mut Frame,
+fn render_greeting_to_canvas(
+    buf: &mut Buffer,
     area: Rect,
-    comp: &ComponentConfig,
+    cont: &ContainerConfig,
     anim_store: &ComponentAnimationStore,
     ctx: &RenderContext,
 ) {
@@ -567,7 +544,7 @@ fn render_greeting_component(
         .as_deref()
         .unwrap_or("Terminal");
 
-    let raw_template = comp
+    let raw_template = cont
         .content
         .text
         .as_deref()
@@ -604,16 +581,15 @@ fn render_greeting_component(
                 ))
             })
             .collect();
-        let logo_para = Paragraph::new(center_vertically(logo_styled, cols[0].height))
-            .alignment(Alignment::Center);
-        frame.render_widget(logo_para, cols[0]);
+        Paragraph::new(center_vertically(logo_styled, cols[0].height))
+            .alignment(Alignment::Center)
+            .render(cols[0], buf);
         cols[1]
     } else {
         area
     };
 
-    let font_name = comp
-        .visual
+    let font_name = cont
         .font
         .as_deref()
         .unwrap_or(&ctx.config.typography.font);
@@ -631,7 +607,7 @@ fn render_greeting_component(
     let widest = raw_figlet.iter().map(|l| l.width()).max().unwrap_or(0);
     let is_marquee = widest > text_area.width as usize && text_area.width > 0;
     let figlet_lines = if is_marquee {
-        let offset = match anim_store.get(&comp.id) {
+        let offset = match anim_store.get(&cont.name) {
             Some(ComponentAnimState::Marquee(st)) => st.offset_cols.floor() as usize,
             _ => 0,
         };
@@ -640,8 +616,7 @@ fn render_greeting_component(
         raw_figlet
     };
 
-    let accent_color = comp
-        .visual
+    let accent_color = cont
         .color
         .as_deref()
         .map(|c| parse_color(c, ctx.theme.primary))
@@ -652,40 +627,12 @@ fn render_greeting_component(
         .enumerate()
         .map(|(i, l)| {
             let shown = if is_marquee { l } else { ctx.reveal.mask_line(&l, i) };
-            if ctx.reveal.greeting_transforms.is_empty() {
-                Line::from(Span::styled(
-                    shown,
-                    Style::default()
-                        .fg(accent_color)
-                        .add_modifier(Modifier::BOLD),
-                ))
-            } else {
-                let spans: Vec<Span<'static>> = shown
-                    .chars()
-                    .enumerate()
-                    .map(|(col, ch)| {
-                        if let Some(tr) = ctx.reveal.greeting_transforms.get(&(i, col)) {
-                            let mut s = ch.to_string();
-                            if let Some(rep) = &tr.ch {
-                                s = rep.clone();
-                            }
-                            let mut st = Style::default().fg(tr.fg.unwrap_or(accent_color));
-                            if tr.bold {
-                                st = st.add_modifier(Modifier::BOLD);
-                            }
-                            Span::styled(s, st)
-                        } else {
-                            Span::styled(
-                                ch.to_string(),
-                                Style::default()
-                                    .fg(accent_color)
-                                    .add_modifier(Modifier::BOLD),
-                            )
-                        }
-                    })
-                    .collect();
-                Line::from(spans)
-            }
+            Line::from(Span::styled(
+                shown,
+                Style::default()
+                    .fg(accent_color)
+                    .add_modifier(Modifier::BOLD),
+            ))
         })
         .collect();
 
@@ -703,13 +650,14 @@ fn render_greeting_component(
     let align = if is_marquee {
         Alignment::Left
     } else {
-        to_alignment(comp.visual.align)
+        to_alignment(cont.align)
     };
-    let para = Paragraph::new(center_vertically(lines, text_area.height)).alignment(align);
-    frame.render_widget(para, text_area);
+    Paragraph::new(center_vertically(lines, text_area.height))
+        .alignment(align)
+        .render(text_area, buf);
 }
 
-fn render_header_component(frame: &mut Frame, area: Rect, ctx: &RenderContext) {
+fn render_header_to_canvas(buf: &mut Buffer, area: Rect, ctx: &RenderContext) {
     if area.width == 0 || area.height == 0 {
         return;
     }
@@ -788,38 +736,33 @@ fn render_header_component(frame: &mut Frame, area: Rect, ctx: &RenderContext) {
     let right_rect = Rect::new(right_x, area.y, right_w, area.height);
 
     if left_rect.width > 0 {
-        frame.render_widget(
-            Paragraph::new(Line::from(left_spans)).style(ctx.panel_style()),
-            left_rect,
-        );
+        Paragraph::new(Line::from(left_spans))
+            .style(ctx.panel_style())
+            .render(left_rect, buf);
     }
     if center_rect.width > 0 {
-        frame.render_widget(
-            Paragraph::new(Line::from(brand_span))
-                .alignment(Alignment::Center)
-                .style(ctx.panel_style()),
-            center_rect,
-        );
+        Paragraph::new(Line::from(brand_span))
+            .alignment(Alignment::Center)
+            .style(ctx.panel_style())
+            .render(center_rect, buf);
     }
     if right_rect.width > 0 {
-        frame.render_widget(
-            Paragraph::new(Line::from(Span::styled(
-                right_text,
-                Style::default()
-                    .fg(ctx.theme.accent)
-                    .add_modifier(Modifier::BOLD),
-            )))
-            .alignment(Alignment::Right)
-            .style(ctx.panel_style()),
-            right_rect,
-        );
+        Paragraph::new(Line::from(Span::styled(
+            right_text,
+            Style::default()
+                .fg(ctx.theme.accent)
+                .add_modifier(Modifier::BOLD),
+        )))
+        .alignment(Alignment::Right)
+        .style(ctx.panel_style())
+        .render(right_rect, buf);
     }
 }
 
-fn render_system_component(
-    frame: &mut Frame,
+fn render_system_to_canvas(
+    buf: &mut Buffer,
     area: Rect,
-    comp: &ComponentConfig,
+    cont: &ContainerConfig,
     ctx: &RenderContext,
 ) {
     let icons = IconSet::from_config(&ctx.config.typography);
@@ -869,7 +812,7 @@ fn render_system_component(
 
     let mut rows: Vec<(String, String)> = Vec::new();
     for (key, label, value) in candidates {
-        if let Some(allowed) = &comp.content.fields
+        if let Some(allowed) = &cont.content.fields
             && !allowed.iter().any(|f| f.eq_ignore_ascii_case(key))
         {
             continue;
@@ -887,7 +830,7 @@ fn render_system_component(
         .map(|(l, v)| kv_line_aligned(&l, &v, label_w, area.width, ctx.theme))
         .collect();
 
-    frame.render_widget(Paragraph::new(lines), area);
+    Paragraph::new(lines).render(area, buf);
 }
 
 enum HardwareRow {
@@ -895,7 +838,7 @@ enum HardwareRow {
     Bar(String, f32, String),
 }
 
-fn render_hardware_component(frame: &mut Frame, area: Rect, ctx: &RenderContext) {
+fn render_hardware_to_canvas(buf: &mut Buffer, area: Rect, ctx: &RenderContext) {
     let icons = IconSet::from_config(&ctx.config.typography);
     let hw = &ctx.snapshot.hardware;
     let hide = ctx.config.general.hide_unavailable;
@@ -1035,13 +978,13 @@ fn render_hardware_component(frame: &mut Frame, area: Rect, ctx: &RenderContext)
         })
         .collect();
 
-    frame.render_widget(Paragraph::new(lines), area);
+    Paragraph::new(lines).render(area, buf);
 }
 
-fn render_activity_component(
-    frame: &mut Frame,
+fn render_activity_to_canvas(
+    buf: &mut Buffer,
     area: Rect,
-    comp: &ComponentConfig,
+    cont: &ContainerConfig,
     ctx: &RenderContext,
 ) {
     let act = &ctx.snapshot.activity;
@@ -1072,7 +1015,7 @@ fn render_activity_component(
         .map(|(l, v)| kv_line_aligned(&l, &v, label_w, area.width, ctx.theme))
         .collect();
 
-    let graph_style = comp.visual.graph_style.unwrap_or(GraphStyle::Sparkline);
+    let graph_style = cont.graph_style.unwrap_or(GraphStyle::Sparkline);
     if area.height >= 7 && graph_style == GraphStyle::Sparkline {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
@@ -1083,14 +1026,12 @@ fn render_activity_component(
             ])
             .split(area);
 
-        frame.render_widget(Paragraph::new(info_lines), chunks[0]);
-        frame.render_widget(
-            Paragraph::new(Line::from(Span::styled(
-                "cpu % / ram % history:",
-                Style::default().fg(ctx.theme.muted),
-            ))),
-            chunks[1],
-        );
+        Paragraph::new(info_lines).render(chunks[0], buf);
+        Paragraph::new(Line::from(Span::styled(
+            "cpu % / ram % history:",
+            Style::default().fg(ctx.theme.muted),
+        )))
+        .render(chunks[1], buf);
 
         let graph_cols = Layout::default()
             .direction(Direction::Horizontal)
@@ -1100,26 +1041,22 @@ fn render_activity_component(
         let cpu_data: Vec<u64> = ctx.snapshot.cpu_history.iter().copied().collect();
         let mem_data: Vec<u64> = ctx.snapshot.mem_history.iter().copied().collect();
 
-        frame.render_widget(
-            Sparkline::default()
-                .data(&cpu_data)
-                .max(100)
-                .style(Style::default().fg(ctx.theme.primary)),
-            graph_cols[0],
-        );
-        frame.render_widget(
-            Sparkline::default()
-                .data(&mem_data)
-                .max(100)
-                .style(Style::default().fg(ctx.theme.secondary)),
-            graph_cols[1],
-        );
+        Sparkline::default()
+            .data(&cpu_data)
+            .max(100)
+            .style(Style::default().fg(ctx.theme.primary))
+            .render(graph_cols[0], buf);
+        Sparkline::default()
+            .data(&mem_data)
+            .max(100)
+            .style(Style::default().fg(ctx.theme.secondary))
+            .render(graph_cols[1], buf);
     } else {
-        frame.render_widget(Paragraph::new(info_lines), area);
+        Paragraph::new(info_lines).render(area, buf);
     }
 }
 
-fn render_session_component(frame: &mut Frame, area: Rect, ctx: &RenderContext) {
+fn render_session_to_canvas(buf: &mut Buffer, area: Rect, ctx: &RenderContext) {
     let icons = IconSet::from_config(&ctx.config.typography);
     let act = &ctx.snapshot.activity;
     let sess = &ctx.snapshot.session;
@@ -1164,10 +1101,10 @@ fn render_session_component(frame: &mut Frame, area: Rect, ctx: &RenderContext) 
         .map(|(l, v)| kv_line_aligned(&l, &v, label_w, area.width, ctx.theme))
         .collect();
 
-    frame.render_widget(Paragraph::new(lines), area);
+    Paragraph::new(lines).render(area, buf);
 }
 
-fn render_cpu_component(frame: &mut Frame, area: Rect, ctx: &RenderContext) {
+fn render_cpu_to_canvas(buf: &mut Buffer, area: Rect, ctx: &RenderContext) {
     let cpu = &ctx.snapshot.hardware.cpu;
     let mut rows: Vec<HardwareRow> = Vec::new();
     if let Some(model) = &cpu.model {
@@ -1201,10 +1138,10 @@ fn render_cpu_component(frame: &mut Frame, area: Rect, ctx: &RenderContext) {
             }
         })
         .collect();
-    frame.render_widget(Paragraph::new(lines), area);
+    Paragraph::new(lines).render(area, buf);
 }
 
-fn render_memory_component(frame: &mut Frame, area: Rect, ctx: &RenderContext) {
+fn render_memory_to_canvas(buf: &mut Buffer, area: Rect, ctx: &RenderContext) {
     let mem = &ctx.snapshot.hardware.memory;
     let mut rows: Vec<HardwareRow> = Vec::new();
     if let (Some(used), Some(total), Some(pct)) =
@@ -1243,20 +1180,20 @@ fn render_memory_component(frame: &mut Frame, area: Rect, ctx: &RenderContext) {
             }
         })
         .collect();
-    frame.render_widget(Paragraph::new(lines), area);
+    Paragraph::new(lines).render(area, buf);
 }
 
-fn render_temperature_component(frame: &mut Frame, area: Rect, ctx: &RenderContext) {
+fn render_temperature_to_canvas(buf: &mut Buffer, area: Rect, ctx: &RenderContext) {
     let temp = ctx.snapshot.hardware.cpu.temp_celsius;
     let val = match temp {
         Some(t) => format!("{t:.1} °C"),
         None => "Unavailable".to_string(),
     };
     let line = kv_line_aligned("CPU Temp", &val, 8, area.width, ctx.theme);
-    frame.render_widget(Paragraph::new(vec![line]), area);
+    Paragraph::new(vec![line]).render(area, buf);
 }
 
-fn render_processes_component(frame: &mut Frame, area: Rect, ctx: &RenderContext) {
+fn render_processes_to_canvas(buf: &mut Buffer, area: Rect, ctx: &RenderContext) {
     let act = &ctx.snapshot.activity;
     let rows = vec![
         (
@@ -1283,10 +1220,10 @@ fn render_processes_component(frame: &mut Frame, area: Rect, ctx: &RenderContext
         .into_iter()
         .map(|(l, v)| kv_line_aligned(l, &v, label_w, area.width, ctx.theme))
         .collect();
-    frame.render_widget(Paragraph::new(lines), area);
+    Paragraph::new(lines).render(area, buf);
 }
 
-fn render_network_component(frame: &mut Frame, area: Rect, ctx: &RenderContext) {
+fn render_network_to_canvas(buf: &mut Buffer, area: Rect, ctx: &RenderContext) {
     let net = &ctx.snapshot.network;
     let mut rows = vec![
         (
@@ -1314,10 +1251,10 @@ fn render_network_component(frame: &mut Frame, area: Rect, ctx: &RenderContext) 
         .into_iter()
         .map(|(l, v)| kv_line_aligned(&l, &v, label_w, area.width, ctx.theme))
         .collect();
-    frame.render_widget(Paragraph::new(lines), area);
+    Paragraph::new(lines).render(area, buf);
 }
 
-fn render_environment_component(frame: &mut Frame, area: Rect, ctx: &RenderContext) {
+fn render_environment_to_canvas(buf: &mut Buffer, area: Rect, ctx: &RenderContext) {
     let os = &ctx.snapshot.os;
     let sess = &ctx.snapshot.session;
     let icons = IconSet::from_config(&ctx.config.typography);
@@ -1359,10 +1296,10 @@ fn render_environment_component(frame: &mut Frame, area: Rect, ctx: &RenderConte
         .into_iter()
         .map(|(l, v)| kv_line_aligned(&l, &v, label_w, area.width, ctx.theme))
         .collect();
-    frame.render_widget(Paragraph::new(lines), area);
+    Paragraph::new(lines).render(area, buf);
 }
 
-fn render_terminal_component(frame: &mut Frame, area: Rect, ctx: &RenderContext) {
+fn render_terminal_to_canvas(buf: &mut Buffer, area: Rect, ctx: &RenderContext) {
     let os = &ctx.snapshot.os;
     let sess = &ctx.snapshot.session;
     let icons = IconSet::from_config(&ctx.config.typography);
@@ -1389,10 +1326,10 @@ fn render_terminal_component(frame: &mut Frame, area: Rect, ctx: &RenderContext)
         .into_iter()
         .map(|(l, v)| kv_line_aligned(&l, &v, label_w, area.width, ctx.theme))
         .collect();
-    frame.render_widget(Paragraph::new(lines), area);
+    Paragraph::new(lines).render(area, buf);
 }
 
-fn render_storage_component(frame: &mut Frame, area: Rect, ctx: &RenderContext) {
+fn render_storage_to_canvas(buf: &mut Buffer, area: Rect, ctx: &RenderContext) {
     let icons = IconSet::from_config(&ctx.config.typography);
     let disks = &ctx.snapshot.hardware.disks;
     let mut rows: Vec<HardwareRow> = Vec::new();
@@ -1429,20 +1366,20 @@ fn render_storage_component(frame: &mut Frame, area: Rect, ctx: &RenderContext) 
             }
         })
         .collect();
-    frame.render_widget(Paragraph::new(lines), area);
+    Paragraph::new(lines).render(area, buf);
 }
 
-fn render_uptime_component(frame: &mut Frame, area: Rect, ctx: &RenderContext) {
-    render_session_component(frame, area, ctx);
+fn render_uptime_to_canvas(buf: &mut Buffer, area: Rect, ctx: &RenderContext) {
+    render_session_to_canvas(buf, area, ctx);
 }
 
-fn render_graph_component(
-    frame: &mut Frame,
+fn render_graph_to_canvas(
+    buf: &mut Buffer,
     area: Rect,
-    comp: &ComponentConfig,
+    cont: &ContainerConfig,
     ctx: &RenderContext,
 ) {
-    let metric = comp
+    let metric = cont
         .content
         .metric
         .as_deref()
@@ -1475,13 +1412,11 @@ fn render_graph_component(
             ctx.theme.primary,
         ),
     };
-    frame.render_widget(
-        Sparkline::default()
-            .data(&data)
-            .max(max_val)
-            .style(Style::default().fg(color)),
-        area,
-    );
+    Sparkline::default()
+        .data(&data)
+        .max(max_val)
+        .style(Style::default().fg(color))
+        .render(area, buf);
 }
 
 fn center_vertically(lines: Vec<Line<'static>>, available_height: u16) -> Vec<Line<'static>> {

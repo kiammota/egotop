@@ -13,7 +13,7 @@ use egotop::command::{
 use egotop::config::{
     AnimationDefinition, AnimationPackage, BackgroundConfig, BorderStyle, Config,
     DeclarativeAnimation, EffectKind, PackageOrigin, RegionConfig, RegionUnit, StartupMode,
-    ThemeEntry, ViewMode, load_from_path, load_or_create, load_packages_from_dir,
+    ThemeEntry, UiConfig, ViewMode, load_from_path, load_or_create, load_packages_from_dir,
     validate_safe_asset_path,
 };
 use egotop::system::SystemCollector;
@@ -38,10 +38,10 @@ use egotop::ui::widgets::{
     truncate_display_width,
 };
 use egotop::ui::{
-    BackgroundFill, ComponentAnimationStore, ComponentCategory, ComponentConfig, ComponentKind,
-    ContainerBorderConfig, ContainerConfig, ContainerDirection, ContainerGradient, ContainerNode,
-    ContainerSize, ContainerStyle, EffectPolicy, ExclusionMask, GradientDirection, RevealState,
-    compute_container_layout, compute_dashboard_layout, has_container_id,
+    BackgroundFill, ComponentAnimationStore, ComponentCategory, ComponentKind,
+    ContainerBorderConfig, ContainerConfig, ContainerGradient, ContainerSize, ContainerStyle,
+    EffectPolicy, ExclusionMask, GradientDirection, LayoutRegion, RevealState,
+    compute_dashboard_layout, compute_layout, has_container, remove_container,
 };
 use unicode_width::UnicodeWidthStr;
 use ratatui::Terminal;
@@ -104,93 +104,79 @@ fn config_rejects_invalid_lua_and_out_of_range_values() {
 }
 
 #[test]
-fn container_tree_layout_fixed_relative_fill_padding_gap_visibility() {
-    let root = ContainerConfig {
-        id: "root".to_string(),
-        visible: true,
-        direction: ContainerDirection::Vertical,
-        width: ContainerSize::Percent(100),
-        height: ContainerSize::Percent(100),
+fn flat_container_layout_fixed_relative_fill_padding_gap_visibility() {
+    let ui = UiConfig {
         padding: 1,
         gap: 1,
-        border: ContainerBorderConfig::titled("Root"),
-        children: vec![
-            ContainerNode::Component(ComponentConfig {
-                id: "top_fixed".to_string(),
+        min_container_width: 16,
+        containers: vec![
+            ContainerConfig {
+                name: "top_fixed".to_string(),
+                description: "Fixed header container".to_string(),
                 visible: true,
-                category: ComponentCategory::Static,
-                kind: ComponentKind::Text,
-                width: ContainerSize::Fill(1),
+                region: LayoutRegion::Top,
+                row: Some(0),
+                width: ContainerSize::Percent(100),
                 height: ContainerSize::Fixed(3),
-                ..ComponentConfig::default()
-            }),
-            ContainerNode::Component(ComponentConfig {
-                id: "hidden_node".to_string(),
+                border: ContainerBorderConfig::titled("Top"),
+                ..ContainerConfig::default()
+            },
+            ContainerConfig {
+                name: "hidden_node".to_string(),
+                description: "Hidden container".to_string(),
                 visible: false,
-                category: ComponentCategory::Static,
-                kind: ComponentKind::Text,
-                width: ContainerSize::Fill(1),
+                region: LayoutRegion::Main,
+                width: ContainerSize::Percent(100),
                 height: ContainerSize::Fixed(10),
-                ..ComponentConfig::default()
-            }),
-            ContainerNode::Container(ContainerConfig {
-                id: "row".to_string(),
+                ..ContainerConfig::default()
+            },
+            ContainerConfig {
+                name: "left_pct".to_string(),
+                description: "Left 30% clamped container".to_string(),
                 visible: true,
-                direction: ContainerDirection::Horizontal,
+                region: LayoutRegion::Main,
+                row: Some(0),
+                width: ContainerSize::Percent(30),
+                max_width: Some(25),
+                height: ContainerSize::Fill(1),
+                category: ComponentCategory::Dynamic,
+                kind: ComponentKind::Cpu,
+                ..ContainerConfig::default()
+            },
+            ContainerConfig {
+                name: "right_fill".to_string(),
+                description: "Right fill container".to_string(),
+                visible: true,
+                region: LayoutRegion::Main,
+                row: Some(0),
                 width: ContainerSize::Fill(1),
                 height: ContainerSize::Fill(1),
-                gap: 2,
-                children: vec![
-                    ContainerNode::Component(ComponentConfig {
-                        id: "left_pct".to_string(),
-                        visible: true,
-                        category: ComponentCategory::Dynamic,
-                        kind: ComponentKind::Cpu,
-                        width: ContainerSize::Percent(30),
-                        max_width: Some(25),
-                        height: ContainerSize::Fill(1),
-                        ..ComponentConfig::default()
-                    }),
-                    ContainerNode::Component(ComponentConfig {
-                        id: "right_fill".to_string(),
-                        visible: true,
-                        category: ComponentCategory::Dynamic,
-                        kind: ComponentKind::Memory,
-                        width: ContainerSize::Fill(1),
-                        height: ContainerSize::Fill(1),
-                        ..ComponentConfig::default()
-                    }),
-                ],
+                category: ComponentCategory::Dynamic,
+                kind: ComponentKind::Memory,
                 ..ContainerConfig::default()
-            }),
+            },
         ],
-        ..ContainerConfig::default()
     };
 
     let viewport = Rect::new(0, 0, 100, 30);
-    let layout = compute_container_layout(viewport, &root);
+    let layout = compute_layout(viewport, &ui);
 
-    // Hidden node must not be placed or consume gap
-    assert!(layout.find_component("hidden_node").is_none());
+    // Hidden container must not be placed or consume gap
+    assert!(layout.find_container("hidden_node").is_none());
 
-    let root_placed = layout.find_container("root").unwrap();
-    // 1 cell border + 1 cell padding on all sides => inset 2
-    assert_eq!(root_placed.inner_rect, Rect::new(2, 2, 96, 26));
+    // Inner work area has padding 1 => (1, 1, 98, 28)
+    let top = layout.find_container("top_fixed").unwrap();
+    assert_eq!(top.outer_rect, Rect::new(1, 1, 98, 3));
+    assert_eq!(top.inner_rect, Rect::new(2, 2, 96, 1));
 
-    let top = layout.find_component("top_fixed").unwrap();
-    assert_eq!(top.outer_rect, Rect::new(2, 2, 96, 3));
+    // Main row starts at y = 1 + 3 + 1 (gap) = 5; height = 28 - 3 - 1 = 24
+    let left = layout.find_container("left_pct").unwrap();
+    // 30% of (98 - 1 gap) = 29, clamped by max_width=25
+    assert_eq!(left.outer_rect, Rect::new(1, 5, 25, 24));
 
-    let row = layout.find_container("row").unwrap();
-    // y = 2 + 3 (top) + 1 (gap) = 6; height = 26 - 3 - 1 = 22
-    assert_eq!(row.outer_rect, Rect::new(2, 6, 96, 22));
-
-    let left = layout.find_component("left_pct").unwrap();
-    // 30% of (96 - 2 gap) = 28, clamped by max_width=25
-    assert_eq!(left.outer_rect, Rect::new(2, 6, 25, 22));
-
-    let right = layout.find_component("right_fill").unwrap();
-    // x = 2 + 25 + 2 (gap) = 29; width = 96 - 2 - 25 = 69
-    assert_eq!(right.outer_rect, Rect::new(29, 6, 69, 22));
+    let right = layout.find_container("right_fill").unwrap();
+    // x = 1 + 25 + 1 (gap) = 27; width = 98 - 1 - 25 = 72
+    assert_eq!(right.outer_rect, Rect::new(27, 5, 72, 24));
 }
 
 #[test]
@@ -354,7 +340,7 @@ fn border_chars_validation_and_runtime_application() {
     no_border_cfg.theme.border_type = BorderStyle::None;
     let layout_no_border =
         compute_dashboard_layout(Rect::new(0, 0, 100, 30), &no_border_cfg, ViewMode::Dashboard);
-    let sys_no_border = layout_no_border.find_component("system").unwrap();
+    let sys_no_border = layout_no_border.find_container("system").unwrap();
     // No 1-cell border inset, only 1-cell padding
     assert_eq!(sys_no_border.inner_rect.x, sys_no_border.outer_rect.x + 1);
 
@@ -605,24 +591,24 @@ fn container_layout_small_terminal_resize_no_overlap_and_clipping() {
         let screen = Rect::new(0, 0, w, h);
         for mode in [ViewMode::Dashboard, ViewMode::Compact, ViewMode::Minimal] {
             let layout = compute_dashboard_layout(screen, &cfg, mode);
-            for comp in &layout.components {
+            for comp in &layout.containers {
                 assert!(comp.outer_rect.right() <= screen.right());
                 assert!(comp.outer_rect.bottom() <= screen.bottom());
                 assert!(comp.inner_rect.right() <= comp.outer_rect.right());
                 assert!(comp.inner_rect.bottom() <= comp.outer_rect.bottom());
             }
-            // Verify zero pairwise overlap among all placed components
-            for i in 0..layout.components.len() {
-                for j in (i + 1)..layout.components.len() {
-                    let a = layout.components[i].outer_rect;
-                    let b = layout.components[j].outer_rect;
+            // Verify zero pairwise overlap among all placed containers
+            for i in 0..layout.containers.len() {
+                for j in (i + 1)..layout.containers.len() {
+                    let a = layout.containers[i].outer_rect;
+                    let b = layout.containers[j].outer_rect;
                     let overlap_x = a.x < b.right() && b.x < a.right();
                     let overlap_y = a.y < b.bottom() && b.y < a.bottom();
                     assert!(
                         !(overlap_x && overlap_y),
-                        "Components {} ({a:?}) and {} ({b:?}) overlapped at {w}x{h} ({mode:?})",
-                        layout.components[i].id,
-                        layout.components[j].id
+                        "Containers {} ({a:?}) and {} ({b:?}) overlapped at {w}x{h} ({mode:?})",
+                        layout.containers[i].name,
+                        layout.containers[j].name
                     );
                 }
             }
@@ -1946,63 +1932,51 @@ fn cli_commands_parse_and_execute_with_appropriate_exit_codes() {
 }
 
 #[test]
-fn toml_container_tree_and_animated_state_preservation() {
+fn toml_flat_containers_and_animated_state_preservation() {
     let toml_cfg = r#"
-[ui.root]
-id = "root"
-direction = "vertical"
-width = "100%"
-height = "100%"
+[ui]
 padding = 1
 gap = 1
 
-[[ui.root.children]]
-node = "component"
-id = "hdr"
+[[ui.containers]]
+name = "hdr"
+description = "Header bar"
+region = "top"
 category = "dynamic"
 type = "header"
-width = "fill"
+width = "100%"
 height = 1
 
-[[ui.root.children]]
-node = "container"
-id = "anim_row"
-direction = "horizontal"
-width = "fill"
-height = "fill"
-gap = 1
-
-[[ui.root.children.children]]
-node = "component"
-id = "spin"
+[[ui.containers]]
+name = "spin"
+description = "Spinner panel"
+region = "main"
 category = "animated"
 type = "spinner"
 width = "50%"
 height = "fill"
-
-[ui.root.children.children.content]
+[ui.containers.content]
 text = "Loading"
-
-[ui.root.children.children.animation]
+[ui.containers.animation]
 fps = 10
 speed = 1.0
 style = "braille"
 
-[[ui.root.children.children]]
-node = "component"
-id = "typer"
+[[ui.containers]]
+name = "typer"
+description = "Typewriter panel"
+region = "main"
 category = "animated"
 type = "typewriter"
 width = "50%"
 height = "fill"
-
-[ui.root.children.children.content]
+[ui.containers.content]
 text = "Hello EgoTop"
 "#;
 
     let parsed_cfg: Config = toml::from_str(toml_cfg).unwrap();
-    assert_eq!(parsed_cfg.ui.root.id, "root");
-    assert_eq!(parsed_cfg.ui.root.children.len(), 2);
+    assert_eq!(parsed_cfg.ui.containers.len(), 3);
+    assert_eq!(parsed_cfg.ui.containers[0].name, "hdr");
 
     let parsed_res = egotop::runtime::parse_resource(
         ResourceKind::ApplicationConfig,
@@ -2015,7 +1989,7 @@ text = "Hello EgoTop"
 
     let catalog = AnimationCatalog::load();
     let mut anim_store = ComponentAnimationStore::new();
-    let layout = compute_container_layout(Rect::new(0, 0, 80, 20), &parsed_cfg.ui.root);
+    let layout = compute_layout(Rect::new(0, 0, 80, 20), &parsed_cfg.ui);
 
     // Advance animation across multiple frames and verify state is preserved & progresses
     anim_store.update_all(0.15, &layout, &parsed_cfg, &catalog);
@@ -2238,7 +2212,7 @@ fn transparency_preserves_background_animation_and_colors() {
     // and that transparent containers keep Color::Reset (preserving terminal background).
     let full_buf = full_term.backend().buffer();
     let layout = compute_dashboard_layout(Rect::new(0, 0, 80, 24), &cfg, ViewMode::Dashboard);
-    let greeting_inner = layout.find_component("greeting").unwrap().inner_rect;
+    let greeting_inner = layout.find_container("greeting").unwrap().inner_rect;
     for x in greeting_inner.x..greeting_inner.right() {
         // Bottom row of greeting_inner (empty area if no subtitle at bottom) must not have Matrix glyphs
         let cell = &full_buf[(x, greeting_inner.bottom().saturating_sub(1))];
@@ -2246,30 +2220,28 @@ fn transparency_preserves_background_animation_and_colors() {
     }
     assert_eq!(full_buf[(0, 0)].bg, Color::Reset);
 
-    // Verify ExclusionMask blocks global effect inside a transparent container with an empty Text component
+    // Verify ExclusionMask blocks global effect inside a transparent container with an empty Text content
     let mut masked_cfg = Config::default();
     masked_cfg.background.enabled = true;
     masked_cfg.background.effect = EffectKind::Matrix;
-    masked_cfg.ui.root = ContainerConfig {
-        id: "root".to_string(),
-        visible: true,
-        transparent: true,
+    masked_cfg.ui = UiConfig {
         padding: 2,
-        children: vec![ContainerNode::Component(ComponentConfig {
-            id: "empty_box".to_string(),
+        gap: 1,
+        min_container_width: 20,
+        containers: vec![ContainerConfig {
+            name: "empty_box".to_string(),
+            description: "Empty transparent box".to_string(),
             visible: true,
+            transparent: true,
             category: ComponentCategory::Static,
             kind: ComponentKind::Text,
             width: ContainerSize::Fill(1),
             height: ContainerSize::Fill(1),
-            ..ComponentConfig::default()
-        })],
-        ..ContainerConfig::default()
+            ..ContainerConfig::default()
+        }],
     };
     let mut empty_text_cfg = masked_cfg.clone();
-    if let ContainerNode::Component(c) = &mut empty_text_cfg.ui.root.children[0] {
-        c.content.text = Some(String::new());
-    }
+    empty_text_cfg.ui.containers[0].content.text = Some(String::new());
     let mut term_masked = Terminal::new(TestBackend::new(80, 24)).unwrap();
     let rctx_m = RenderContext {
         config: &empty_text_cfg,
@@ -2303,7 +2275,7 @@ fn transparency_preserves_background_animation_and_colors() {
         .unwrap();
     let masked_buf = term_masked.backend().buffer();
     let box_rect = compute_dashboard_layout(Rect::new(0, 0, 80, 24), &empty_text_cfg, ViewMode::Dashboard)
-        .find_component("empty_box")
+        .find_container("empty_box")
         .unwrap()
         .outer_rect;
     for y in box_rect.y..box_rect.bottom() {
@@ -2324,52 +2296,35 @@ fn container_isolation_and_independent_transparency_flags() {
     let mut cfg = Config::default();
     cfg.background.enabled = false;
     cfg.theme.background_transparent = false;
-    cfg.ui.root = ContainerConfig {
-        id: "root".to_string(),
-        visible: true,
-        transparent: true,
-        direction: ContainerDirection::Horizontal,
-        width: ContainerSize::Percent(100),
-        height: ContainerSize::Percent(100),
+    cfg.ui = UiConfig {
+        padding: 0,
         gap: 2,
-        children: vec![
-            ContainerNode::Container(ContainerConfig {
-                id: "opaque_box".to_string(),
+        min_container_width: 10,
+        containers: vec![
+            ContainerConfig {
+                name: "opaque_box".to_string(),
+                description: "Opaque matrix container".to_string(),
                 visible: true,
                 transparent: false,
                 width: ContainerSize::Percent(50),
                 height: ContainerSize::Fill(1),
                 background: Some("#112233".to_string()),
-                children: vec![ContainerNode::Component(ComponentConfig {
-                    id: "matrix_left".to_string(),
-                    visible: true,
-                    category: ComponentCategory::Animated,
-                    kind: ComponentKind::Matrix,
-                    width: ContainerSize::Fill(1),
-                    height: ContainerSize::Fill(1),
-                    ..ComponentConfig::default()
-                })],
+                category: ComponentCategory::Animated,
+                kind: ComponentKind::Matrix,
                 ..ContainerConfig::default()
-            }),
-            ContainerNode::Container(ContainerConfig {
-                id: "transparent_box".to_string(),
+            },
+            ContainerConfig {
+                name: "transparent_box".to_string(),
+                description: "Transparent text container".to_string(),
                 visible: true,
                 transparent: true,
                 width: ContainerSize::Fill(1),
                 height: ContainerSize::Fill(1),
-                children: vec![ContainerNode::Component(ComponentConfig {
-                    id: "text_right".to_string(),
-                    visible: true,
-                    category: ComponentCategory::Static,
-                    kind: ComponentKind::Text,
-                    width: ContainerSize::Fill(1),
-                    height: ContainerSize::Fill(1),
-                    ..ComponentConfig::default()
-                })],
+                category: ComponentCategory::Static,
+                kind: ComponentKind::Text,
                 ..ContainerConfig::default()
-            }),
+            },
         ],
-        ..ContainerConfig::default()
     };
 
     let theme = Theme::from_config(&cfg.theme);
@@ -2423,10 +2378,9 @@ fn container_isolation_and_independent_transparency_flags() {
     let opaque_rect = layout.find_container("opaque_box").unwrap().outer_rect;
     let trans_rect = layout.find_container("transparent_box").unwrap().outer_rect;
 
-    // Opaque container must have #112233 background inside its rect (or panel_background when child inherits theme)
-    assert_eq!(buf[(opaque_rect.x, opaque_rect.y)].bg, theme.panel_background);
-    // Transparent container's child component inherits theme.panel_background when theme is solid
-    assert_eq!(buf[(trans_rect.x, trans_rect.y)].bg, theme.panel_background);
+    // Opaque container paints its own #112233 background, transparent container inherits theme.background
+    assert_eq!(buf[(opaque_rect.x, opaque_rect.y)].bg, Color::Rgb(0x11, 0x22, 0x33));
+    assert_eq!(buf[(trans_rect.x, trans_rect.y)].bg, theme.background);
 
     // Now set theme background & panel_background to "transparent" -> transparent container must have Color::Reset,
     // while opaque container still keeps #112233
@@ -2549,8 +2503,8 @@ fn container_styling_system_commands_gradient_effects_and_toml() {
 
     // 3. Runtime rendering: gradient + effect policy (allow vs exclude) + TOML persistence
     let mut cfg = Config::default();
-    assert!(!has_container_id(&cfg.ui.root, "nonexistent_id"));
-    assert!(has_container_id(&cfg.ui.root, "system"));
+    assert!(!has_container(&cfg.ui.containers, "nonexistent_id"));
+    assert!(has_container(&cfg.ui.containers, "system"));
 
     cfg.container_styles.insert(
         "greeting".to_string(),
@@ -2578,8 +2532,8 @@ fn container_styling_system_commands_gradient_effects_and_toml() {
     // ExclusionMask respects EffectPolicy::Allow (not excluded) vs Exclude (excluded)
     let layout = compute_dashboard_layout(Rect::new(0, 0, 100, 36), &cfg, ViewMode::Dashboard);
     let mask = ExclusionMask::from_layout_with_styles(&layout, &cfg.container_styles);
-    let greet_rect = layout.find_component("greeting").unwrap().outer_rect;
-    let sys_rect = layout.find_component("system").unwrap().outer_rect;
+    let greet_rect = layout.find_container("greeting").unwrap().outer_rect;
+    let sys_rect = layout.find_container("system").unwrap().outer_rect;
     assert!(!mask.contains(greet_rect.x + 1, greet_rect.y + 1));
     assert!(mask.contains(sys_rect.x + 1, sys_rect.y + 1));
 
@@ -2662,32 +2616,34 @@ fn fastfetch_collector_container_add_remove_persistence_and_restore() {
     // 3. Adding & removing container persists across save/reload, and restore recovers Config::default()
     let path = temp_config_path("add_remove_restore");
     let mut cfg = Config::default();
-    cfg.ui.root.children.push(ContainerNode::Component(ComponentConfig {
-        id: "custom_net".to_string(),
+    cfg.ui.containers.push(ContainerConfig {
+        name: "custom_net".to_string(),
+        description: "Custom network panel".to_string(),
         visible: true,
+        region: LayoutRegion::Main,
         category: ComponentCategory::Dynamic,
         kind: ComponentKind::Network,
         width: ContainerSize::Fill(1),
         height: ContainerSize::Fixed(6),
-        ..ComponentConfig::default()
-    }));
+        ..ContainerConfig::default()
+    });
     egotop::config::save_config_to_path(&path, &cfg).unwrap();
     let reloaded = load_from_path(&path).unwrap();
-    assert!(has_container_id(&reloaded.ui.root, "custom_net"));
+    assert!(has_container(&reloaded.ui.containers, "custom_net"));
 
     let mut modified = reloaded;
-    assert!(egotop::ui::remove_container_node(&mut modified.ui.root, "custom_net"));
-    assert!(!has_container_id(&modified.ui.root, "custom_net"));
+    assert!(remove_container(&mut modified.ui.containers, "custom_net"));
+    assert!(!has_container(&modified.ui.containers, "custom_net"));
 
     // Restore official defaults
     let restored = Config::default();
     egotop::config::save_config_to_path(&path, &restored).unwrap();
     let after_restore = load_from_path(&path).unwrap();
     assert_eq!(after_restore, Config::default());
-    assert!(has_container_id(&after_restore.ui.root, "environment"));
-    assert!(has_container_id(&after_restore.ui.root, "terminal"));
-    assert!(has_container_id(&after_restore.ui.root, "storage"));
-    assert!(has_container_id(&after_restore.ui.root, "network"));
+    assert!(has_container(&after_restore.ui.containers, "environment"));
+    assert!(has_container(&after_restore.ui.containers, "terminal"));
+    assert!(has_container(&after_restore.ui.containers, "storage"));
+    assert!(has_container(&after_restore.ui.containers, "network"));
     let _ = std::fs::remove_file(&path);
 }
 
@@ -2823,12 +2779,12 @@ fn container_titles_render_without_borders_and_avoid_content_overlap() {
     let layout = compute_dashboard_layout(area, &cfg, ViewMode::Dashboard);
 
     // Greeting has padding = 0 and title = "Welcome": inner_rect must reserve 1 top row for title
-    let greeting = layout.find_component("greeting").unwrap();
+    let greeting = layout.find_container("greeting").unwrap();
     assert_eq!(greeting.inner_rect.y, greeting.outer_rect.y + 1);
     assert_eq!(greeting.inner_rect.height, greeting.outer_rect.height - 1);
 
     // System has padding = 1 and title = "System": inner_rect.y is outer_rect.y + 1
-    let system = layout.find_component("system").unwrap();
+    let system = layout.find_container("system").unwrap();
     assert_eq!(system.inner_rect.y, system.outer_rect.y + 1);
 
     let theme = Theme::from_config(&cfg.theme);
@@ -2921,23 +2877,22 @@ fn container_titles_render_without_borders_and_avoid_content_overlap() {
 
 #[test]
 fn animations_respect_container_bounds_exclusion_mask_and_resize() {
-    use egotop::ui::container::ComponentVisual;
     let mut cfg = Config::default();
     cfg.theme.background_transparent = true;
-    // Add an animated Matrix component inside a titled, bordered container
-    cfg.ui.root.children.push(ContainerNode::Component(ComponentConfig {
-        id: "anim_box".to_string(),
+    // Add an animated Matrix container inside Main region
+    cfg.ui.containers.push(ContainerConfig {
+        name: "anim_box".to_string(),
+        description: "Animated matrix box".to_string(),
         visible: true,
+        region: LayoutRegion::Main,
+        row: Some(3),
         category: ComponentCategory::Animated,
         kind: ComponentKind::Matrix,
         width: ContainerSize::Fill(1),
         height: ContainerSize::Fixed(5),
-        visual: ComponentVisual {
-            border: ContainerBorderConfig::titled("AnimBox"),
-            ..ComponentVisual::default()
-        },
-        ..ComponentConfig::default()
-    }));
+        border: ContainerBorderConfig::titled("AnimBox"),
+        ..ContainerConfig::default()
+    });
 
     let theme = Theme::from_config(&cfg.theme);
     let catalog = AnimationCatalog::load();
@@ -2998,7 +2953,7 @@ fn animations_respect_container_bounds_exclusion_mask_and_resize() {
             .unwrap();
 
         let buf = terminal.backend().buffer();
-        let anim_box = layout.find_component("anim_box").unwrap();
+        let anim_box = layout.find_container("anim_box").unwrap();
         let top_row: String = (anim_box.outer_rect.x..anim_box.outer_rect.right())
             .map(|x| buf.cell((x, anim_box.outer_rect.y)).unwrap().symbol())
             .collect();
@@ -3007,7 +2962,7 @@ fn animations_respect_container_bounds_exclusion_mask_and_resize() {
             "Scene/background animation overwrote AnimBox title at {w}x{h}: {top_row:?}"
         );
 
-        let sys = layout.find_component("system").unwrap();
+        let sys = layout.find_container("system").unwrap();
         let sys_top: String = (sys.outer_rect.x..sys.outer_rect.right())
             .map(|x| buf.cell((x, sys.outer_rect.y)).unwrap().symbol())
             .collect();
@@ -3076,7 +3031,7 @@ fn column_alignment_and_normal_casing_across_sections() {
         .unwrap();
 
     let buf = terminal.backend().buffer();
-    let header_rect = layout.find_component("header").unwrap().inner_rect;
+    let header_rect = layout.find_container("header").unwrap().inner_rect;
     let header_line: String = (header_rect.x..header_rect.right())
         .map(|x| buf.cell((x, header_rect.y)).unwrap().symbol())
         .collect();
@@ -3086,7 +3041,7 @@ fn column_alignment_and_normal_casing_across_sections() {
     assert!(!header_line.contains("EGOTOP") && !header_line.contains("[FX:") && !header_line.contains("EgoTop"));
 
     // Hardware progress bars must all align to the exact same start column
-    let hw = layout.find_component("hardware").unwrap();
+    let hw = layout.find_container("hardware").unwrap();
     let mut bar_cols = Vec::new();
     for y in hw.inner_rect.y..hw.inner_rect.bottom() {
         let row: String = (hw.inner_rect.x..hw.inner_rect.right())
@@ -3160,17 +3115,16 @@ egotop.footer({
     align = "center",
 })
 egotop.layout({
-    id = "root",
-    direction = "vertical",
-    width = "100%",
-    height = "100%",
-    transparent = true,
-    children = {
-        egotop.component({
-            id = "status_spinner",
+    padding = 0,
+    gap = 1,
+    containers = {
+        egotop.container({
+            name = "status_spinner",
+            description = "Footer spinner",
+            region = "bottom",
             kind = "spinner",
             category = "animated",
-            width = "fill",
+            width = "100%",
             height = 1,
         }),
     },
@@ -3188,33 +3142,36 @@ egotop.layout({
     assert_eq!(bundle.config.footer.text, "Custom Lua telemetry");
     assert_eq!(bundle.config.footer.align, egotop::config::Align::Center);
 
-    // Lua Greeting Fire character animation
+    // Lua Greeting Fire isolated boxed animation renders without error and adapts on resize
     let mut fire = egotop::lua::LuaAnimationRuntime::start("greeting_fire", 80, 24, 30);
     for _ in 0..4 {
         fire.update(0.05);
     }
-    let cell_tr = fire.transform_greeting_char('E', 2, 1);
-    assert!(cell_tr.is_some());
+    assert!(fire.last_error.is_none(), "{:?}", fire.last_error);
+    fire.resize(100, 30);
+    fire.update(0.05);
+    assert!(fire.last_error.is_none(), "{:?}", fire.last_error);
 }
 
 #[test]
 fn lua_canvas_api_zbuffer_clipping_christmas_tree_and_layout_alignment() {
     use egotop::lua::{AnimationLayer, CanvasBuffer, LuaAnimationRuntime, LuaCanvasHandle};
     use egotop::lua::load_lua_font;
-    use egotop::ui::container::{ComponentContent, ComponentVisual};
+    use egotop::ui::container::ComponentContent;
     use egotop::ui::theme::Theme;
     use mlua::Lua;
     use std::sync::{Arc, Mutex};
 
-    // 1. CanvasBuffer clipping, intensity & Z-buffer precedence
+    // 1. CanvasBuffer identity, clipping, intensity & Z-buffer precedence
     let lua = Lua::new();
-    let buf_arc = Arc::new(Mutex::new(CanvasBuffer::new(10, 5)));
+    let buf_arc = Arc::new(Mutex::new(CanvasBuffer::new_named("test_panel", "Isolated test canvas", 10, 5)));
     let handle = LuaCanvasHandle::new(Arc::clone(&buf_arc), Theme::from_config(&Config::default().theme));
     lua.globals().set("canvas", handle).unwrap();
     let math_tbl = egotop::lua::canvas::create_math_table(&lua).unwrap();
     lua.globals().set("emath", math_tbl).unwrap();
     lua.load(
         r##"
+        assert(canvas.name == "test_panel" and canvas.description == "Isolated test canvas")
         assert(canvas.width == 10 and canvas.height == 5)
         canvas:clear(" ", nil, nil)
         -- Out-of-bounds puts clip cleanly without panicking
@@ -3246,7 +3203,6 @@ fn lua_canvas_api_zbuffer_clipping_christmas_tree_and_layout_alignment() {
     let ansi = load_lua_font("ANSI Shadow").expect("ANSI Shadow lua font must load");
     let lines = ansi.render_lines("HELLO, KIMAS!");
     assert_eq!(lines.len(), 6);
-    // "HELLO," ends before ", " space gap; verify total width includes proper word spacing
     let without_space = ansi.render_lines("HELLO,KIMAS!");
     assert!(
         lines[0].chars().count() > without_space[0].chars().count(),
@@ -3256,25 +3212,24 @@ fn lua_canvas_api_zbuffer_clipping_christmas_tree_and_layout_alignment() {
     // 3. Dedicated ComponentKind::Canvas (Christmas tree) & boxed animation respect strict bounds
     let mut cfg = Config::default();
     cfg.background.effect = EffectKind::Matrix;
-    cfg.ui.root.children.insert(
+    cfg.ui.containers.insert(
         2,
-        ContainerNode::Component(ComponentConfig {
-            id: "tree_box".to_string(),
+        ContainerConfig {
+            name: "tree_box".to_string(),
+            description: "3D procedural Christmas tree canvas".to_string(),
             visible: true,
+            region: LayoutRegion::Main,
             category: ComponentCategory::Animated,
             kind: ComponentKind::Canvas,
-            width: ContainerSize::Fill(1),
+            width: ContainerSize::Percent(100),
             height: ContainerSize::Fixed(14),
             content: ComponentContent {
                 script: Some("effects.christmas_tree".to_string()),
                 ..ComponentContent::default()
             },
-            visual: ComponentVisual {
-                border: ContainerBorderConfig::titled("Christmas Tree"),
-                ..ComponentVisual::default()
-            },
-            ..ComponentConfig::default()
-        }),
+            border: ContainerBorderConfig::titled("Christmas Tree"),
+            ..ContainerConfig::default()
+        },
     );
 
     let area = Rect::new(0, 0, 120, 44);
@@ -3343,7 +3298,7 @@ fn lua_canvas_api_zbuffer_clipping_christmas_tree_and_layout_alignment() {
         .unwrap();
 
     let rendered = terminal.backend().buffer();
-    let tree_comp = layout.find_component("tree_box").unwrap();
+    let tree_comp = layout.find_container("tree_box").unwrap();
     let tree_top_row: String = (tree_comp.outer_rect.x..tree_comp.outer_rect.right())
         .map(|x| rendered[(x, tree_comp.outer_rect.y)].symbol())
         .collect();
@@ -3351,7 +3306,7 @@ fn lua_canvas_api_zbuffer_clipping_christmas_tree_and_layout_alignment() {
         tree_top_row.contains(" christmas tree "),
         "Christmas Canvas border/title corrupted: {tree_top_row:?}"
     );
-    let footer_comp = layout.find_component("status_spinner").unwrap();
+    let footer_comp = layout.find_container("status_spinner").unwrap();
     assert!(footer_comp.outer_rect.height >= 3, "footer should be bordered");
     let footer_inner: String = (footer_comp.inner_rect.x..footer_comp.inner_rect.right())
         .map(|x| rendered[(x, footer_comp.inner_rect.y)].symbol())
@@ -3366,4 +3321,153 @@ fn lua_canvas_api_zbuffer_clipping_christmas_tree_and_layout_alignment() {
     assert_eq!(xmas.layer(), AnimationLayer::Boxed);
     xmas.update(0.1);
     assert!(xmas.last_error.is_none(), "{:?}", xmas.last_error);
+}
+
+#[test]
+fn flat_layout_linear_queue_lua_isolation_and_animation_resize() {
+    use egotop::lua::{LuaAnimationRuntime, list_lua_animations, load_lua_config_str};
+
+    // 1. Nested containers must be rejected by Lua API
+    let nested_lua = r#"
+    egotop.layout({
+        containers = {
+            egotop.container({
+                name = "parent",
+                children = { egotop.container({ name = "child" }) },
+            })
+        }
+    })
+    "#;
+    assert!(load_lua_config_str(nested_lua, "nested.lua", None).is_err());
+
+    // 2. Auto linear queue layout distributes left-to-right and wraps cleanly on narrow terminals
+    let auto_lua = r#"
+    egotop.layout({
+        padding = 0,
+        gap = 1,
+        min_container_width = 20,
+        containers = {
+            egotop.container({ name = "a", description = "First", kind = "text", text = "AAA" }),
+            egotop.container({ name = "b", description = "Second", kind = "text", text = "BBB" }),
+            egotop.container({ name = "c", description = "Third", kind = "text", text = "CCC" }),
+            egotop.container({ name = "d", description = "Fourth", kind = "text", text = "DDD" }),
+        }
+    })
+    "#;
+    let bundle = load_lua_config_str(auto_lua, "auto.lua", None).unwrap();
+    let wide = compute_layout(Rect::new(0, 0, 100, 20), &bundle.config.ui);
+    // All 4 fit side-by-side left-to-right on a 100-col terminal
+    assert_eq!(wide.containers.len(), 4);
+    assert_eq!(wide.containers[0].outer_rect.y, wide.containers[3].outer_rect.y);
+    assert!(wide.containers[0].outer_rect.x < wide.containers[1].outer_rect.x);
+    assert!(wide.containers[1].outer_rect.x < wide.containers[2].outer_rect.x);
+    assert!(wide.containers[2].outer_rect.x < wide.containers[3].outer_rect.x);
+
+    // On a 50-col terminal (min_container_width=20), 4 items balance into 2 rows of 2
+    let narrow = compute_layout(Rect::new(0, 0, 50, 20), &bundle.config.ui);
+    assert_eq!(narrow.containers.len(), 4);
+    assert_eq!(narrow.containers[0].outer_rect.y, narrow.containers[1].outer_rect.y);
+    assert_eq!(narrow.containers[2].outer_rect.y, narrow.containers[3].outer_rect.y);
+    assert!(narrow.containers[2].outer_rect.y > narrow.containers[0].outer_rect.y);
+
+    // 3. Inline Lua container canvas isolation: out-of-bounds writes in "rogue" cannot leak into "neighbor"
+    let isolated_lua = r##"
+    egotop.background({ enabled = false })
+    egotop.layout({
+        padding = 0,
+        gap = 1,
+        containers = {
+            egotop.container({
+                name = "rogue",
+                description = "Attempts out-of-bounds draws",
+                width = "50%",
+                height = "fill",
+                render = function(canvas, ctx)
+                    assert(canvas.name == "rogue")
+                    assert(canvas.description == "Attempts out-of-bounds draws")
+                    assert(ctx.screen == nil)
+                    canvas:clear(" ", nil, nil)
+                    canvas:text(-5, 0, "ZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ", "#FF0000", nil, 1.0)
+                    canvas:put(canvas.width + 10, 1, "!", "#FF0000", nil, 1.0)
+                end,
+            }),
+            egotop.container({
+                name = "neighbor",
+                description = "Clean neighbor container",
+                width = "fill",
+                height = "fill",
+                kind = "text",
+                text = "SAFE",
+            }),
+        }
+    })
+    "##;
+    let iso_bundle = load_lua_config_str(isolated_lua, "iso.lua", None).unwrap();
+    let cfg = iso_bundle.config;
+    let theme = Theme::from_config(&cfg.theme);
+    let area = Rect::new(0, 0, 40, 6);
+    let iso_layout = compute_dashboard_layout(area, &cfg, ViewMode::Dashboard);
+    let catalog = AnimationCatalog::load();
+    let mut anim_store = ComponentAnimationStore::new();
+    anim_store.update_all(0.1, &iso_layout, &cfg, &catalog);
+    let mut collector = SystemCollector::new();
+    let snap = collector.collect(40, 6);
+    let effect = create_effect(EffectKind::None, 40, 6, &cfg.background);
+    let transition = TransitionPlayer::new("none", &catalog, 0);
+    let mut customizer = CustomizerState::default();
+    let cmd_line = CommandLineState::default();
+    let startup = CursorStartupState::new(false);
+    let reveal = RevealState::complete();
+    let themes = vec![];
+    let rctx = RenderContext {
+        config: &cfg,
+        theme: &theme,
+        snapshot: &snap,
+        reveal: &reveal,
+        view_mode: ViewMode::Dashboard,
+        paused: false,
+        show_help: false,
+        fps: 30.0,
+        status_toast: None,
+        transparent_bg: false,
+        config_error_count: 0,
+    };
+    let mut term = Terminal::new(TestBackend::new(40, 6)).unwrap();
+    term.draw(|frame| {
+        draw_frame(
+            frame,
+            &cfg,
+            effect.as_ref(),
+            &transition,
+            &anim_store,
+            &mut customizer,
+            &cmd_line,
+            &startup,
+            &themes,
+            &catalog,
+            &rctx,
+        );
+    })
+    .unwrap();
+    let buf = term.backend().buffer();
+    let neighbor = iso_layout.find_container("neighbor").unwrap();
+    let neighbor_row: String = (neighbor.inner_rect.x..neighbor.inner_rect.right())
+        .map(|x| buf[(x, neighbor.inner_rect.y)].symbol())
+        .collect();
+    assert!(neighbor_row.contains("SAFE"));
+    assert!(!neighbor_row.contains('Z'));
+    assert!(!neighbor_row.contains('!'));
+
+    // 4. All built-in Lua animations run cleanly and adapt on resize
+    for anim_name in list_lua_animations() {
+        let mut rt = LuaAnimationRuntime::start(&anim_name, 60, 20, 30);
+        rt.update(0.05);
+        rt.resize(90, 28);
+        rt.update(0.05);
+        assert!(
+            rt.last_error.is_none(),
+            "Lua animation '{anim_name}' errored: {:?}",
+            rt.last_error
+        );
+    }
 }

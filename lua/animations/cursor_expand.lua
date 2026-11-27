@@ -1,39 +1,30 @@
--- Cursor expansion ripple reveal animation (implemented in Lua).
+-- Cursor expansion ripple reveal animation (isolated canvas API).
 local animation = {}
 
 function animation.setup(api)
-    local w = math.max(10, api.screen.width())
-    local h = math.max(6, api.screen.height())
-    local cx = math.floor(w / 2)
-    local cy = math.floor(h / 2)
+    local duration = 0.75
     api.ui.reveal(0.0)
 
-    local cursor = api.element({
-        id = "cursor_expand_glyph",
-        x = cx,
-        y = cy,
-        text = "▌",
-        fg = "#39FF88",
-        bold = true,
-    })
-
-    api.tween({
-        from = 0.0,
-        to = 1.0,
-        duration_ms = 750,
-        easing = "ease_out_cubic",
-        on_update = function(p)
-            local span = math.max(1, math.floor(1 + p * math.min(w, 28)))
-            cursor:move(math.max(0, cx - math.floor(span / 2)), cy)
-            cursor:set_text(("═"):rep(span))
-            api.ui.reveal(p)
+    return {
+        name = "cursor_expand",
+        description = "Cursor expansion ripple inside its isolated canvas",
+        fps = 30,
+        duration = duration,
+        render = function(canvas, ctx)
+            local t = math.min(1.0, ctx.t / duration)
+            local eased = 1.0 - math.pow(1.0 - t, 3)
+            ctx.reveal(eased)
+            local w, h = canvas.width, canvas.height
+            if w <= 0 or h <= 0 then
+                return
+            end
+            local cx = math.floor(w / 2)
+            local cy = math.floor(h / 2)
+            local span = math.max(1, math.floor(1 + eased * math.min(w, 28)))
+            local x0 = math.max(0, cx - math.floor(span / 2))
+            canvas:text(x0, cy, ("═"):rep(span), "#39FF88", nil, 1.0)
         end,
-        on_complete = function()
-            cursor:destroy()
-            api.ui.reveal(1.0)
-            api.finish()
-        end,
-    })
+    }
 end
 
 return animation

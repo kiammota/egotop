@@ -1,40 +1,35 @@
--- Morphing geometric ASCII emblem animation (implemented in Lua).
+-- Morphing geometric ASCII emblem animation (isolated canvas API).
 local animation = {}
 
+local FRAMES = {
+    { "  /\\  ", " /  \\ ", "/____\\" },
+    { " +--+ ", " |  | ", " +--+ " },
+    { "  /\\  ", "<    >", "  \\/  " },
+    { " .--. ", "| ** |", " '--' " },
+}
+
 function animation.setup(api)
-    local w = math.max(16, api.screen.width())
-    local h = math.max(10, api.screen.height())
-    local cx = math.floor(w / 2) - 3
-    local cy = math.floor(h / 2) - 1
+    local duration = 1.2
     api.ui.reveal(0.2)
 
-    local frames = {
-        { "  /\\  ", " /  \\ ", "/____\\" },
-        { " +--+ ", " |  | ", " +--+ " },
-        { "  /\\  ", "<    >", "  \\/  " },
-        { " .--. ", "| ** |", " '--' " },
+    return {
+        name = "shape_morph",
+        description = "Morphing geometric ASCII emblem inside an isolated canvas",
+        fps = 24,
+        duration = duration,
+        render = function(canvas, ctx)
+            local p = math.min(1.0, ctx.t / duration)
+            ctx.reveal(0.2 + p * 0.8)
+            local w, h = canvas.width, canvas.height
+            if w < 6 or h < 3 then
+                return
+            end
+            local idx = (math.floor(ctx.t / 0.22) % #FRAMES) + 1
+            local cx = math.floor(w / 2) - 3
+            local cy = math.floor(h / 2) - 1
+            canvas:ascii(cx, cy, FRAMES[idx], "#88C0D0", nil, 1.0)
+        end,
     }
-
-    local shape = api.element({
-        id = "morph_shape",
-        x = cx,
-        y = cy,
-        lines = frames[1],
-        fg = "#88C0D0",
-        bold = true,
-    })
-
-    local idx = 1
-    api.every(220, function()
-        idx = (idx % #frames) + 1
-        shape:set_lines(frames[idx])
-    end)
-
-    api.after(1200, function()
-        shape:destroy()
-        api.ui.reveal(1.0)
-        api.finish()
-    end)
 end
 
 return animation

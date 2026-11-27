@@ -1,7 +1,7 @@
 use crate::animation::BackgroundLayerSpec;
 use crate::ui::borders::BorderCharsConfig;
 use crate::ui::container::{
-    BackgroundFill, ContainerConfig, ContainerGradient, ContainerStyle, default_ui_tree,
+    BackgroundFill, ContainerConfig, ContainerGradient, ContainerStyle, default_containers,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -25,13 +25,19 @@ pub enum ConfigError {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct UiConfig {
-    pub root: ContainerConfig,
+    pub padding: u16,
+    pub gap: u16,
+    pub min_container_width: u16,
+    pub containers: Vec<ContainerConfig>,
 }
 
 impl Default for UiConfig {
     fn default() -> Self {
         Self {
-            root: default_ui_tree(),
+            padding: 1,
+            gap: 1,
+            min_container_width: 22,
+            containers: default_containers(),
         }
     }
 }

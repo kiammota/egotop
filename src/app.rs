@@ -31,10 +31,9 @@ use crate::ui::customizer::{
 use crate::ui::theme::Theme;
 use crate::ui::widgets::RenderContext;
 use crate::ui::{
-    ComponentAnimationStore, ComponentConfig, ComponentKind, ComponentVisual,
-    ContainerBorderConfig, ContainerGradient, ContainerNode, ContainerSize, ContainerStyle,
-    RevealState, collect_all_container_ids, compute_dashboard_layout, has_container_id,
-    remove_container_node,
+    ComponentAnimationStore, ComponentKind, ContainerBorderConfig, ContainerConfig,
+    ContainerGradient, ContainerSize, ContainerStyle, LayoutRegion, RevealState,
+    collect_container_names, compute_dashboard_layout, has_container, remove_container,
 };
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
@@ -117,7 +116,7 @@ impl App {
         let layouts_map = lkg.layouts;
         let layout_names: Vec<String> = layouts_map.keys().cloned().collect();
         let mut container_ids = Vec::new();
-        collect_all_container_ids(&config.ui.root, &mut container_ids);
+        collect_container_names(&config.ui.containers, &mut container_ids);
 
         let is_cursor_startup = config.startup.mode == StartupMode::Cursor;
         let wait_init = is_cursor_startup || config.init.wait_for_input;
@@ -287,27 +286,6 @@ impl App {
                 if let Some(la) = &mut self.lua_anim {
                     la.update(dt);
                     self.reveal.progress = la.reveal_progress();
-                    self.reveal.greeting_transforms.clear();
-                    for row in 0..8usize {
-                        for col in 0..80usize {
-                            if let Some(tr) = la.transform_greeting_char('#', col, row)
-                                && (tr.fg.is_some() || tr.bold)
-                            {
-                                // Sample transform palette per cell coordinate
-                                self.reveal.greeting_transforms.insert(
-                                    (row, col),
-                                    crate::lua::GreetingCellTransform {
-                                        ch: None,
-                                        fg: tr.fg,
-                                        dy: tr.dy,
-                                        bold: tr.bold,
-                                    },
-                                );
-                            } else {
-                                break;
-                            }
-                        }
-                    }
                     if la.is_finished() {
                         self.reveal = RevealState::complete();
                         self.lua_anim = None;
@@ -467,6 +445,12 @@ impl App {
         match ev {
             InputEvent::Resize(w, h) => {
                 self.effect.resize(w, h, &self.config.background);
+                if let Some(le) = &mut self.lua_effect {
+                    le.resize(w, h, &self.config.background);
+                }
+                if let Some(la) = &mut self.lua_anim {
+                    la.resize(w, h);
+                }
                 self.snapshot = self.collector.collect(w, h);
                 let layout = compute_dashboard_layout(
                     Rect::new(0, 0, w, h),
@@ -705,7 +689,7 @@ impl App {
                 LayoutSelection::Preset(name) => {
                     let key = name.trim().to_ascii_lowercase();
                     if let Some(preset) = self.layouts_map.get(&key).cloned() {
-                        self.config.ui.root = preset.root;
+                        self.config.ui = preset.ui;
                         if let Some(vm) = preset.view_mode {
                             self.view_mode = vm;
                         }
@@ -888,12 +872,14 @@ impl App {
                 }
                 comp_idx => {
                     let mut comps = Vec::new();
-                    collect_component_ids(&self.config.ui.root, &mut comps);
-                    if let Some((id, _)) = comps.get(comp_idx.saturating_sub(2)) {
-                        let id = id.clone();
-                        if let Some(now_on) = toggle_component_visible(&mut self.config.ui.root, &id) {
+                    collect_component_ids(&self.config.ui.containers, &mut comps);
+                    if let Some((name, _)) = comps.get(comp_idx.saturating_sub(2)) {
+                        let name = name.clone();
+                        if let Some(now_on) =
+                            toggle_component_visible(&mut self.config.ui.containers, &name)
+                        {
                             self.set_toast(format!(
-                                "{id}: {}",
+                                "{name}: {}",
                                 if now_on { "visible" } else { "hidden" }
                             ));
                         }
@@ -1163,10 +1149,11 @@ impl App {
                 LayoutSelection::Preset(name) => {
                     let key = name.trim().to_ascii_lowercase();
                     if let Some(preset) = self.layouts_map.get(&key).cloned() {
-                        self.config.ui.root = preset.root;
+                        self.config.ui = preset.ui;
                         if let Some(vm) = preset.view_mode {
                             self.view_mode = vm;
                         }
+                        self.refresh_container_ids();
                         self.set_toast(format!("Applied layout preset '{}'", preset.name));
                     } else {
                         self.set_toast(format!(
@@ -1185,19 +1172,19 @@ impl App {
     fn execute_container_command(&mut self, cmd: ContainerCommand) {
         match cmd {
             ContainerCommand::List => {
-                let mut ids = Vec::new();
-                collect_all_container_ids(&self.config.ui.root, &mut ids);
-                self.set_toast(format!("Containers: {}", ids.join(", ")));
+                let mut names = Vec::new();
+                collect_container_names(&self.config.ui.containers, &mut names);
+                self.set_toast(format!("Containers: {}", names.join(", ")));
             }
-            ContainerCommand::Inspect(id) => {
-                if !has_container_id(&self.config.ui.root, &id) {
-                    self.set_toast(format!("Unknown container '{id}'"));
+            ContainerCommand::Inspect(name) => {
+                if !has_container(&self.config.ui.containers, &name) {
+                    self.set_toast(format!("Unknown container '{name}'"));
                     return;
                 }
                 let style = self
                     .config
                     .container_styles
-                    .get(&id)
+                    .get(&name)
                     .cloned()
                     .unwrap_or_default();
                 let grad = style
@@ -1206,7 +1193,7 @@ impl App {
                     .map(|g| format!("{:?}({})", g.direction, g.colors.join("→")))
                     .unwrap_or_else(|| "none".to_string());
                 self.set_toast(format!(
-                    "{id}: bg={:?} fg={} border={} effects={:?} grad={grad}",
+                    "{name}: bg={:?} fg={} border={} effects={:?} grad={grad}",
                     style.background,
                     style.foreground.as_deref().unwrap_or("inherit"),
                     style.border_color.as_deref().unwrap_or("inherit"),
@@ -1214,66 +1201,61 @@ impl App {
                 ));
             }
             ContainerCommand::Add { id, kind } => {
-                let clean_id = id.trim().to_string();
-                if clean_id.is_empty() {
-                    self.set_toast("Container ID cannot be empty");
+                let clean_name = id.trim().to_string();
+                if clean_name.is_empty() {
+                    self.set_toast("Container name cannot be empty");
                     return;
                 }
-                if has_container_id(&self.config.ui.root, &clean_id) {
-                    self.set_toast(format!("Container '{clean_id}' already exists"));
+                if has_container(&self.config.ui.containers, &clean_name) {
+                    self.set_toast(format!("Container '{clean_name}' already exists"));
                     return;
                 }
                 let comp_kind = kind.unwrap_or_else(|| {
-                    crate::command::parser::parse_component_kind(&clean_id)
+                    crate::command::parser::parse_component_kind(&clean_name)
                         .unwrap_or(ComponentKind::Text)
                 });
-                let new_node = ContainerNode::Component(ComponentConfig {
-                    id: clean_id.clone(),
+                let new_container = ContainerConfig {
+                    name: clean_name.clone(),
+                    description: format!("{} container", comp_kind.label()),
                     visible: true,
+                    region: LayoutRegion::Main,
                     category: comp_kind.expected_category(),
                     kind: comp_kind,
-                    width: ContainerSize::Fill(1),
-                    height: ContainerSize::Fixed(6),
-                    visual: ComponentVisual {
-                        padding: 1,
-                        border: ContainerBorderConfig::titled(clean_id.clone()),
-                        ..ComponentVisual::default()
-                    },
-                    ..ComponentConfig::default()
-                });
+                    width: ContainerSize::Auto,
+                    height: ContainerSize::Fill(1),
+                    min_height: Some(6),
+                    padding: 1,
+                    border: ContainerBorderConfig::titled(clean_name.clone()),
+                    ..ContainerConfig::default()
+                };
                 let insert_pos = self
                     .config
                     .ui
-                    .root
-                    .children
+                    .containers
                     .iter()
-                    .position(|c| c.id() == "status_spinner")
-                    .unwrap_or(self.config.ui.root.children.len());
-                self.config.ui.root.children.insert(insert_pos, new_node);
+                    .position(|c| c.region == LayoutRegion::Bottom || c.name == "status_spinner")
+                    .unwrap_or(self.config.ui.containers.len());
+                self.config.ui.containers.insert(insert_pos, new_container);
                 self.refresh_container_ids();
                 match save_config_to_path(&self.config_path, &self.config) {
-                    Ok(()) => self.set_toast(format!("Added container '{clean_id}' and saved")),
-                    Err(e) => self.set_toast(format!("Added '{clean_id}' (save error: {e})")),
+                    Ok(()) => self.set_toast(format!("Added container '{clean_name}' and saved")),
+                    Err(e) => self.set_toast(format!("Added '{clean_name}' (save error: {e})")),
                 }
             }
-            ContainerCommand::Remove(id) => {
-                if id == "root" {
-                    self.set_toast("Cannot remove root container");
+            ContainerCommand::Remove(name) => {
+                if !remove_container(&mut self.config.ui.containers, &name) {
+                    self.set_toast(format!("Unknown container '{name}'"));
                     return;
                 }
-                if !remove_container_node(&mut self.config.ui.root, &id) {
-                    self.set_toast(format!("Unknown container '{id}'"));
-                    return;
-                }
-                self.config.container_styles.remove(&id);
+                self.config.container_styles.remove(&name);
                 self.refresh_container_ids();
                 match save_config_to_path(&self.config_path, &self.config) {
-                    Ok(()) => self.set_toast(format!("Removed container '{id}' and saved")),
-                    Err(e) => self.set_toast(format!("Removed '{id}' (save error: {e})")),
+                    Ok(()) => self.set_toast(format!("Removed container '{name}' and saved")),
+                    Err(e) => self.set_toast(format!("Removed '{name}' (save error: {e})")),
                 }
             }
             ContainerCommand::Set { id, property } => {
-                if !has_container_id(&self.config.ui.root, &id) {
+                if !has_container(&self.config.ui.containers, &id) {
                     self.set_toast(format!("Unknown container '{id}'"));
                     return;
                 }
@@ -1311,7 +1293,7 @@ impl App {
                 direction,
                 colors,
             } => {
-                if !has_container_id(&self.config.ui.root, &id) {
+                if !has_container(&self.config.ui.containers, &id) {
                     self.set_toast(format!("Unknown container '{id}'"));
                     return;
                 }
@@ -1324,7 +1306,7 @@ impl App {
                 self.set_toast(format!("Applied {direction:?} gradient to '{id}'"));
             }
             ContainerCommand::Reset(id) => {
-                if !has_container_id(&self.config.ui.root, &id) {
+                if !has_container(&self.config.ui.containers, &id) {
                     self.set_toast(format!("Unknown container '{id}'"));
                     return;
                 }
@@ -1465,7 +1447,7 @@ impl App {
 
     fn refresh_container_ids(&mut self) {
         self.container_ids.clear();
-        collect_all_container_ids(&self.config.ui.root, &mut self.container_ids);
+        collect_container_names(&self.config.ui.containers, &mut self.container_ids);
     }
 
     fn restore_default_config(&mut self, guard: &TerminalGuard) -> Result<()> {

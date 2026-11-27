@@ -14,9 +14,12 @@ pub struct CanvasCell {
     pub intensity: f32,
 }
 
-/// Reusable, clipping, z-buffered cell canvas shared between Rust and Lua frame render callbacks.
+/// Isolated, clipping, z-buffered cell canvas bound exclusively to a single rendering unit
+/// (a container, the background layer, or an independent animation).
 #[derive(Debug, Clone)]
 pub struct CanvasBuffer {
+    pub owner_name: String,
+    pub owner_description: String,
     pub width: u16,
     pub height: u16,
     cells: Vec<Option<CanvasCell>>,
@@ -25,13 +28,29 @@ pub struct CanvasBuffer {
 
 impl CanvasBuffer {
     pub fn new(width: u16, height: u16) -> Self {
+        Self::new_named("canvas", "", width, height)
+    }
+
+    pub fn new_named(
+        owner_name: impl Into<String>,
+        owner_description: impl Into<String>,
+        width: u16,
+        height: u16,
+    ) -> Self {
         let len = (width as usize).saturating_mul(height as usize);
         Self {
+            owner_name: owner_name.into(),
+            owner_description: owner_description.into(),
             width,
             height,
             cells: vec![None; len],
             zbuf: vec![f32::NEG_INFINITY; len],
         }
+    }
+
+    pub fn set_identity(&mut self, name: impl Into<String>, description: impl Into<String>) {
+        self.owner_name = name.into();
+        self.owner_description = description.into();
     }
 
     pub fn resize(&mut self, width: u16, height: u16) {
@@ -68,7 +87,7 @@ impl CanvasBuffer {
         }
     }
 
-    /// Writes a cell at integer coordinates `(x, y)` with strict automatic clipping to `[0..width, 0..height)`.
+    /// Writes a cell at local coordinates `(x, y)` with strict automatic clipping to `[0..width, 0..height)`.
     pub fn put(
         &mut self,
         x: i32,
@@ -157,6 +176,31 @@ impl CanvasBuffer {
         }
     }
 
+    /// Draws multi-line ASCII art anchored at local `(x, y)` with strict clipping.
+    pub fn ascii(
+        &mut self,
+        x: i32,
+        y: i32,
+        art: &str,
+        fg: Option<Color>,
+        bg: Option<Color>,
+        intensity: f32,
+    ) {
+        if intensity <= 0.0 {
+            return;
+        }
+        for (row_offset, line) in art.lines().enumerate() {
+            let py = y + row_offset as i32;
+            if py < 0 {
+                continue;
+            }
+            if py >= self.height as i32 {
+                break;
+            }
+            self.text(x, py, line, fg, bg, intensity);
+        }
+    }
+
     pub fn get_cell(&self, x: u16, y: u16) -> Option<&CanvasCell> {
         if x >= self.width || y >= self.height {
             return None;
@@ -166,15 +210,20 @@ impl CanvasBuffer {
             .and_then(|c| c.as_ref())
     }
 
+    /// Blits cells strictly within `area ∩ buf.area()` so this canvas can never touch external cells.
     pub fn blit_to_buffer(&self, buf: &mut Buffer, area: Rect, fallback_fg: Color) {
-        let max_w = self.width.min(area.width);
-        let max_h = self.height.min(area.height);
+        let clipped = area.intersection(*buf.area());
+        if clipped.width == 0 || clipped.height == 0 {
+            return;
+        }
+        let max_w = self.width.min(clipped.width);
+        let max_h = self.height.min(clipped.height);
         for y in 0..max_h {
             for x in 0..max_w {
                 let Some(cell) = self.get_cell(x, y) else {
                     continue;
                 };
-                if let Some(dst) = buf.cell_mut((area.x + x, area.y + y)) {
+                if let Some(dst) = buf.cell_mut((clipped.x + x, clipped.y + y)) {
                     dst.set_symbol(&cell.ch);
                     let base_fg = cell.fg.unwrap_or(fallback_fg);
                     dst.set_fg(scale_color_intensity(base_fg, cell.intensity));
@@ -197,11 +246,12 @@ fn normalize_cell_glyph(ch: &str) -> String {
     }
 }
 
-/// Lua UserData handle wrapping a shared `CanvasBuffer`.
+/// Isolated Lua UserData handle bound explicitly to ONE unit's `CanvasBuffer`.
+/// Exposes only local dimensions, unit identity (`name`, `description`), and local clipped drawing.
 #[derive(Clone)]
 pub struct LuaCanvasHandle {
-    pub buffer: Arc<Mutex<CanvasBuffer>>,
-    pub theme: Theme,
+    buffer: Arc<Mutex<CanvasBuffer>>,
+    theme: Theme,
 }
 
 impl LuaCanvasHandle {
@@ -212,6 +262,12 @@ impl LuaCanvasHandle {
 
 impl UserData for LuaCanvasHandle {
     fn add_fields<F: UserDataFields<Self>>(fields: &mut F) {
+        fields.add_field_method_get("name", |_, this| {
+            Ok(this.buffer.lock().unwrap().owner_name.clone())
+        });
+        fields.add_field_method_get("description", |_, this| {
+            Ok(this.buffer.lock().unwrap().owner_description.clone())
+        });
         fields.add_field_method_get("width", |_, this| {
             Ok(this.buffer.lock().unwrap().width)
         });
@@ -324,7 +380,45 @@ impl UserData for LuaCanvasHandle {
             },
         );
 
-        // Legacy compatibility aliases (`cell`, `fill`, `blend`)
+        methods.add_method(
+            "ascii",
+            |_,
+             this,
+             (x, y, art, fg, bg, intensity): (
+                f64,
+                f64,
+                Value,
+                Option<Value>,
+                Option<Value>,
+                Option<f32>,
+            )| {
+                let fg_col = fg
+                    .as_ref()
+                    .and_then(|v| parse_lua_color(v, true))
+                    .or(Some(this.theme.text));
+                let bg_col = bg.as_ref().and_then(|v| parse_lua_color(v, true));
+                let intens = intensity.unwrap_or(1.0);
+                let text = match art {
+                    Value::String(s) => s.to_str().map(|x| x.to_string()).unwrap_or_default(),
+                    Value::Table(tbl) => tbl
+                        .sequence_values::<String>()
+                        .flatten()
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                    _ => String::new(),
+                };
+                this.buffer.lock().unwrap().ascii(
+                    x.floor() as i32,
+                    y.floor() as i32,
+                    &text,
+                    fg_col,
+                    bg_col,
+                    intens,
+                );
+                Ok(())
+            },
+        );
+
         methods.add_method(
             "cell",
             |_, this, (x, y, ch, fg, bg): (f64, f64, String, Option<Value>, Option<Value>)| {
@@ -380,7 +474,6 @@ impl UserData for LuaCanvasHandle {
             Ok(color_to_hex(out))
         });
 
-        // Math & color convenience methods callable as `canvas:lerp(...)` etc.
         methods.add_method("clamp", |_, _, (v, lo, hi): (f64, f64, f64)| {
             Ok(v.clamp(lo.min(hi), lo.max(hi)))
         });
@@ -474,8 +567,6 @@ pub fn create_math_table(lua: &Lua) -> mlua::Result<Table> {
     Ok(tbl)
 }
 
-/// Also exposes top-level helper functions directly onto `ctx` (`ctx.sin`, `ctx.hsv_to_rgb`, etc.)
-/// or `egotop` so shader scripts can call them concisely.
 pub fn attach_math_helpers(lua: &Lua, target: &Table) -> mlua::Result<()> {
     let math_tbl = create_math_table(lua)?;
     for pair in math_tbl.clone().pairs::<String, Function>() {

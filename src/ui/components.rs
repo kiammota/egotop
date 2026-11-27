@@ -5,10 +5,9 @@ use crate::animation::{
 };
 use crate::config::{BackgroundConfig, Config};
 use crate::lua::LuaCanvasInstance;
-use crate::ui::container::{ComponentAnimationConfig, ComponentConfig, ComponentKind};
+use crate::ui::container::{ComponentAnimationConfig, ComponentKind, ContainerConfig};
 use crate::ui::layout::ComputedLayout;
 use crate::ui::theme::{Theme, parse_color};
-use ratatui::Frame;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
@@ -62,7 +61,7 @@ pub struct MarqueeState {
 
 pub struct LuaCanvasState {
     pub instance: LuaCanvasInstance,
-    pub script: String,
+    pub script_key: String,
     pub width: u16,
     pub height: u16,
 }
@@ -92,8 +91,8 @@ impl ComponentAnimationStore {
         self.states.clear();
     }
 
-    pub fn get(&self, id: &str) -> Option<&ComponentAnimState> {
-        self.states.get(id)
+    pub fn get(&self, name: &str) -> Option<&ComponentAnimState> {
+        self.states.get(name)
     }
 
     pub fn update_all(
@@ -103,18 +102,113 @@ impl ComponentAnimationStore {
         config: &Config,
         _catalog: &AnimationCatalog,
     ) {
-        for placed in &layout.components {
-            let comp = &placed.config;
-            let anim_cfg = comp.animation.clone().unwrap_or_default();
+        for placed in &layout.containers {
+            let cont = &placed.config;
+            let anim_cfg = cont.animation.clone().unwrap_or_default();
             let speed = anim_cfg.speed.clamp(0.05, 10.0);
             let w = placed.inner_rect.width.max(1);
             let h = placed.inner_rect.height.max(1);
 
-            match comp.kind {
+            if cont.inline_lua.is_some() || cont.kind == ComponentKind::Canvas {
+                let fps = anim_cfg
+                    .fps
+                    .unwrap_or(config.general.animation_fps)
+                    .clamp(1, 60);
+                let density = anim_cfg.density.unwrap_or(0.65);
+                let theme = Theme::from_config(&config.theme);
+
+                if let Some(inline) = &cont.inline_lua {
+                    let key = format!("inline:{}", cont.name);
+                    let needs_recreate = match self.states.get(&cont.name) {
+                        Some(ComponentAnimState::LuaCanvas(st)) => st.script_key != key,
+                        _ => true,
+                    };
+                    if needs_recreate {
+                        let mut instance = LuaCanvasInstance::from_inline_named(
+                            &cont.name,
+                            &cont.description,
+                            inline,
+                            w,
+                            h,
+                            fps,
+                            theme,
+                        );
+                        instance.update(dt_secs, speed);
+                        self.states.insert(
+                            cont.name.clone(),
+                            ComponentAnimState::LuaCanvas(LuaCanvasState {
+                                instance,
+                                script_key: key,
+                                width: w,
+                                height: h,
+                            }),
+                        );
+                    } else if let Some(ComponentAnimState::LuaCanvas(st)) =
+                        self.states.get_mut(&cont.name)
+                    {
+                        st.instance.set_theme(theme);
+                        if st.width != w || st.height != h {
+                            st.instance.resize(w, h);
+                            st.width = w;
+                            st.height = h;
+                        }
+                        st.instance.update(dt_secs, speed);
+                    }
+                } else {
+                    let script_name = cont
+                        .content
+                        .script
+                        .as_deref()
+                        .or(cont.content.preset.as_deref())
+                        .or(anim_cfg.style.as_deref())
+                        .unwrap_or("effects.christmas_tree")
+                        .to_string();
+                    let needs_recreate = match self.states.get(&cont.name) {
+                        Some(ComponentAnimState::LuaCanvas(st)) => st.script_key != script_name,
+                        _ => true,
+                    };
+                    if needs_recreate {
+                        let mut instance = LuaCanvasInstance::from_script_name_named(
+                            &cont.name,
+                            &cont.description,
+                            &script_name,
+                            w,
+                            h,
+                            fps,
+                            speed,
+                            density,
+                            theme,
+                        );
+                        instance.update(dt_secs, speed);
+                        self.states.insert(
+                            cont.name.clone(),
+                            ComponentAnimState::LuaCanvas(LuaCanvasState {
+                                instance,
+                                script_key: script_name,
+                                width: w,
+                                height: h,
+                            }),
+                        );
+                    } else if let Some(ComponentAnimState::LuaCanvas(st)) =
+                        self.states.get_mut(&cont.name)
+                    {
+                        st.instance.set_theme(theme);
+                        if st.width != w || st.height != h {
+                            st.instance.resize(w, h);
+                            st.width = w;
+                            st.height = h;
+                        }
+                        st.instance.update(dt_secs, speed);
+                    }
+                }
+                continue;
+            }
+
+            match cont.kind {
                 ComponentKind::Spinner => {
                     let fps = anim_cfg.fps.unwrap_or(10).clamp(1, 60) as f32;
                     let frames = spinner_frames(anim_cfg.style.as_deref());
-                    let entry = self.states.entry(comp.id.clone()).or_insert_with(|| {
+                    let entry = self.states.entry(cont.name.clone()).or_insert_with(|| {
                         ComponentAnimState::Spinner(SpinnerState {
                             elapsed_secs: 0.0,
                             frame_idx: 0,
@@ -130,14 +224,21 @@ impl ComponentAnimationStore {
                     }
                 }
                 ComponentKind::Typewriter => {
-                    let entry = self.states.entry(comp.id.clone()).or_insert_with(|| {
+                    let entry = self.states.entry(cont.name.clone()).or_insert_with(|| {
                         ComponentAnimState::Typewriter(TypewriterState {
                             elapsed_secs: 0.0,
                             progress: 0.0,
                         })
                     });
                     if let ComponentAnimState::Typewriter(st) = entry {
-                        let text_len = comp.content.text.as_deref().unwrap_or("EgoTop").chars().count().max(1);
+                        let text_len = cont
+                            .content
+                            .text
+                            .as_deref()
+                            .unwrap_or("EgoTop")
+                            .chars()
+                            .count()
+                            .max(1);
                         let duration = (text_len as f32 / (14.0 * speed)).max(0.4);
                         st.elapsed_secs += dt_secs;
                         if anim_cfg.loop_anim {
@@ -151,8 +252,8 @@ impl ComponentAnimationStore {
                 }
                 ComponentKind::Frames => {
                     let fps = anim_cfg.fps.unwrap_or(8).clamp(1, 60) as f32;
-                    let frame_count = comp.content.frames.len().max(1);
-                    let entry = self.states.entry(comp.id.clone()).or_insert_with(|| {
+                    let frame_count = cont.content.frames.len().max(1);
+                    let entry = self.states.entry(cont.name.clone()).or_insert_with(|| {
                         ComponentAnimState::Frames(FramesState {
                             elapsed_secs: 0.0,
                             frame_idx: 0,
@@ -173,7 +274,7 @@ impl ComponentAnimationStore {
                 }
                 ComponentKind::Matrix => {
                     let bg_cfg = component_matrix_bg_config(config, &anim_cfg);
-                    let entry = self.states.entry(comp.id.clone()).or_insert_with(|| {
+                    let entry = self.states.entry(cont.name.clone()).or_insert_with(|| {
                         let mut eff = MatrixEffect::new();
                         eff.resize(w, h, &bg_cfg);
                         ComponentAnimState::Matrix(MatrixComponentState {
@@ -193,7 +294,7 @@ impl ComponentAnimationStore {
                 }
                 ComponentKind::Particles => {
                     let bg_cfg = component_particles_bg_config(config, &anim_cfg);
-                    let entry = self.states.entry(comp.id.clone()).or_insert_with(|| {
+                    let entry = self.states.entry(cont.name.clone()).or_insert_with(|| {
                         let mut eff = ParticlesEffect::new();
                         eff.resize(w, h, &bg_cfg);
                         ComponentAnimState::Particles(ParticlesComponentState {
@@ -212,7 +313,7 @@ impl ComponentAnimationStore {
                     }
                 }
                 ComponentKind::AsciiObject => {
-                    let entry = self.states.entry(comp.id.clone()).or_insert_with(|| {
+                    let entry = self.states.entry(cont.name.clone()).or_insert_with(|| {
                         ComponentAnimState::AsciiObject(AsciiObjectState {
                             clock: TimelineClock::new(
                                 2400,
@@ -230,64 +331,17 @@ impl ComponentAnimationStore {
                     }
                 }
                 ComponentKind::Greeting => {
-                    let marquee_speed = comp
+                    let marquee_speed = cont
                         .animation
                         .as_ref()
                         .map(|a| a.speed)
                         .unwrap_or(config.typography.marquee_speed)
                         .clamp(0.5, 60.0);
-                    let entry = self.states.entry(comp.id.clone()).or_insert_with(|| {
+                    let entry = self.states.entry(cont.name.clone()).or_insert_with(|| {
                         ComponentAnimState::Marquee(MarqueeState { offset_cols: 0.0 })
                     });
                     if let ComponentAnimState::Marquee(st) = entry {
                         st.offset_cols += dt_secs * marquee_speed;
-                    }
-                }
-                ComponentKind::Canvas => {
-                    let script_name = comp
-                        .content
-                        .script
-                        .as_deref()
-                        .or(comp.content.preset.as_deref())
-                        .or(anim_cfg.style.as_deref())
-                        .unwrap_or("effects.christmas_tree")
-                        .to_string();
-                    let fps = anim_cfg.fps.unwrap_or(config.general.animation_fps).clamp(1, 60);
-                    let density = anim_cfg.density.unwrap_or(0.65);
-                    let theme = Theme::from_config(&config.theme);
-                    let needs_recreate = match self.states.get(&comp.id) {
-                        Some(ComponentAnimState::LuaCanvas(st)) => st.script != script_name,
-                        _ => true,
-                    };
-                    if needs_recreate {
-                        let instance = LuaCanvasInstance::from_script_name(
-                            &script_name,
-                            w,
-                            h,
-                            fps,
-                            speed,
-                            density,
-                            theme,
-                        );
-                        self.states.insert(
-                            comp.id.clone(),
-                            ComponentAnimState::LuaCanvas(LuaCanvasState {
-                                instance,
-                                script: script_name,
-                                width: w,
-                                height: h,
-                            }),
-                        );
-                    } else if let Some(ComponentAnimState::LuaCanvas(st)) =
-                        self.states.get_mut(&comp.id)
-                    {
-                        st.instance.set_theme(theme);
-                        if st.width != w || st.height != h {
-                            st.instance.resize(w, h);
-                            st.width = w;
-                            st.height = h;
-                        }
-                        st.instance.update(dt_secs, speed);
                     }
                 }
                 _ => {}
@@ -338,15 +392,13 @@ pub fn component_particles_bg_config(
     bg
 }
 
-/// Renders into an isolated scratch `Buffer` sized to `target_rect`, then blits strictly
-/// within `target_rect` on `frame.buffer_mut()` so no component can ever draw outside its bounds.
-/// Transparent scratch cells (`symbol == " "` and `bg == Color::Reset`) preserve the underlying
-/// buffer content, and `bg == Color::Reset` on drawn glyphs preserves the underlying background color.
-pub fn render_clipped<F>(frame: &mut Frame, target_rect: Rect, draw_fn: F)
+/// Renders into an isolated local `Buffer` sized to `target_rect`, then blits strictly
+/// within `target_rect` on `dest` so no container can ever draw outside its bounds.
+pub fn blit_isolated_canvas<F>(dest: &mut Buffer, target_rect: Rect, draw_fn: F)
 where
     F: FnOnce(&mut Buffer, Rect),
 {
-    let clipped = target_rect.intersection(frame.area());
+    let clipped = target_rect.intersection(*dest.area());
     if clipped.width == 0 || clipped.height == 0 {
         return;
     }
@@ -354,7 +406,6 @@ where
     let mut scratch = Buffer::empty(local_area);
     draw_fn(&mut scratch, local_area);
 
-    let dest = frame.buffer_mut();
     for dy in 0..clipped.height {
         for dx in 0..clipped.width {
             let src_cell = &scratch[(dx, dy)];
@@ -374,33 +425,48 @@ where
     }
 }
 
-pub fn render_animated_component(
-    frame: &mut Frame,
-    area: Rect,
-    comp: &ComponentConfig,
+/// Compatibility helper rendering via `Frame::buffer_mut()` strictly within `target_rect`.
+pub fn render_clipped<F>(frame: &mut ratatui::Frame, target_rect: Rect, draw_fn: F)
+where
+    F: FnOnce(&mut Buffer, Rect),
+{
+    blit_isolated_canvas(frame.buffer_mut(), target_rect, draw_fn);
+}
+
+/// Renders animated/procedural/Lua container content into a strictly local `[0..local.width, 0..local.height)` canvas buffer.
+pub fn render_animated_to_canvas(
+    buf: &mut Buffer,
+    local: Rect,
+    cont: &ContainerConfig,
     store: &ComponentAnimationStore,
     config: &Config,
     theme: &Theme,
 ) {
-    if area.width == 0 || area.height == 0 {
+    if local.width == 0 || local.height == 0 {
         return;
     }
 
-    let anim_cfg = comp.animation.clone().unwrap_or_default();
-    let fg = comp
-        .visual
+    let anim_cfg = cont.animation.clone().unwrap_or_default();
+    let fg = cont
         .color
         .as_deref()
         .map(|c| parse_color(c, theme.primary))
         .unwrap_or(theme.primary);
-    let bg = comp
-        .visual
+    let bg = cont
         .background
         .as_deref()
         .map(|c| parse_color(c, Color::Reset))
         .unwrap_or(Color::Reset);
 
-    match comp.kind {
+    if cont.inline_lua.is_some() || cont.kind == ComponentKind::Canvas {
+        fill_bg(buf, local, bg);
+        if let Some(ComponentAnimState::LuaCanvas(st)) = store.get(&cont.name) {
+            st.instance.render(buf, local, theme);
+        }
+        return;
+    }
+
+    match cont.kind {
         ComponentKind::Spinner => {
             let custom_style = anim_cfg.style.as_deref();
             let glyph_owned: String;
@@ -408,7 +474,7 @@ pub fn render_animated_component(
                 ""
             } else if custom_style == Some("activity") {
                 let frames = ["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█", "▇", "▆", "▅", "▄"];
-                let idx = match store.get(&comp.id) {
+                let idx = match store.get(&cont.name) {
                     Some(ComponentAnimState::Spinner(st)) => st.frame_idx % frames.len(),
                     _ => 0,
                 };
@@ -416,13 +482,13 @@ pub fn render_animated_component(
                 &glyph_owned
             } else {
                 let frames = spinner_frames(custom_style);
-                let idx = match store.get(&comp.id) {
+                let idx = match store.get(&cont.name) {
                     Some(ComponentAnimState::Spinner(st)) => st.frame_idx % frames.len(),
                     _ => 0,
                 };
                 frames[idx]
             };
-            let label = comp.content.text.as_deref().unwrap_or("");
+            let label = cont.content.text.as_deref().unwrap_or("");
             let line = if glyph.is_empty() {
                 label.to_string()
             } else if label.is_empty() {
@@ -430,110 +496,100 @@ pub fn render_animated_component(
             } else {
                 format!("{glyph} {label}")
             };
-            let align = comp.visual.align;
-            let left_pad = u16::from(comp.visual.border.enabled && align == crate::config::Align::Left);
-            render_clipped(frame, area, |buf, local| {
-                fill_bg(buf, local, bg);
-                let line_w = unicode_width::UnicodeWidthStr::width(line.as_str()) as u16;
-                let x = match align {
-                    crate::config::Align::Center => local.width.saturating_sub(line_w) / 2,
-                    crate::config::Align::Right => local.width.saturating_sub(line_w),
-                    crate::config::Align::Left => left_pad.min(local.width),
-                };
-                buf.set_stringn(
-                    x,
-                    0,
-                    &line,
-                    local.width.saturating_sub(x) as usize,
-                    Style::default().fg(fg).bg(bg).add_modifier(Modifier::BOLD),
-                );
-            });
+            let align = cont.align;
+            let left_pad = u16::from(cont.border.enabled && align == crate::config::Align::Left);
+            fill_bg(buf, local, bg);
+            let line_w = unicode_width::UnicodeWidthStr::width(line.as_str()) as u16;
+            let x = match align {
+                crate::config::Align::Center => local.width.saturating_sub(line_w) / 2,
+                crate::config::Align::Right => local.width.saturating_sub(line_w),
+                crate::config::Align::Left => left_pad.min(local.width),
+            };
+            buf.set_stringn(
+                x,
+                0,
+                &line,
+                local.width.saturating_sub(x) as usize,
+                Style::default().fg(fg).bg(bg).add_modifier(Modifier::BOLD),
+            );
         }
         ComponentKind::Typewriter => {
-            let text = comp.content.text.as_deref().unwrap_or("EgoTop");
-            let (progress, elapsed_secs) = match store.get(&comp.id) {
+            let text = cont.content.text.as_deref().unwrap_or("EgoTop");
+            let (progress, elapsed_secs) = match store.get(&cont.name) {
                 Some(ComponentAnimState::Typewriter(st)) => (st.progress, st.elapsed_secs),
                 _ => (1.0, 0.0),
             };
-            render_clipped(frame, area, |buf, local| {
-                fill_bg(buf, local, bg);
-                let palette = [fg, theme.accent];
-                let params = TextRenderParams {
-                    text,
-                    effect: TextEffectKind::Typewriter,
-                    direction: TextDirection::Left,
-                    center_x: (local.width as f32) * 0.5,
-                    center_y: (local.height as f32) * 0.5,
-                    progress,
-                    elapsed_secs,
-                    speed: anim_cfg.speed.max(0.1),
-                    intensity: 1.0,
-                    opacity: 1.0,
-                    base_color: fg,
-                    palette: &palette,
-                    bg_fallback: bg,
-                    charset: "",
-                };
-                let cells = evaluate_text_cells(&params, local);
-                for cell in cells {
-                    if let Some(target) = buf.cell_mut((cell.x, cell.y)) {
-                        target.set_char(cell.ch);
-                        target.set_fg(cell.fg);
-                        target.set_bg(bg);
-                    }
+            fill_bg(buf, local, bg);
+            let palette = [fg, theme.accent];
+            let params = TextRenderParams {
+                text,
+                effect: TextEffectKind::Typewriter,
+                direction: TextDirection::Left,
+                center_x: (local.width as f32) * 0.5,
+                center_y: (local.height as f32) * 0.5,
+                progress,
+                elapsed_secs,
+                speed: anim_cfg.speed.max(0.1),
+                intensity: 1.0,
+                opacity: 1.0,
+                base_color: fg,
+                palette: &palette,
+                bg_fallback: bg,
+                charset: "",
+            };
+            let cells = evaluate_text_cells(&params, local);
+            for cell in cells {
+                if let Some(target) = buf.cell_mut((cell.x, cell.y)) {
+                    target.set_char(cell.ch);
+                    target.set_fg(cell.fg);
+                    target.set_bg(bg);
                 }
-            });
+            }
         }
         ComponentKind::Frames => {
             let fallback_frames = ["[●  ]", "[ ● ]", "[  ●]", "[ ● ]"];
-            let (raw_frame, _) = if comp.content.frames.is_empty() {
-                let idx = match store.get(&comp.id) {
+            let (raw_frame, _) = if cont.content.frames.is_empty() {
+                let idx = match store.get(&cont.name) {
                     Some(ComponentAnimState::Frames(st)) => st.frame_idx % fallback_frames.len(),
                     _ => 0,
                 };
                 (fallback_frames[idx], fallback_frames.len())
             } else {
-                let idx = match store.get(&comp.id) {
+                let idx = match store.get(&cont.name) {
                     Some(ComponentAnimState::Frames(st)) => {
-                        st.frame_idx % comp.content.frames.len()
+                        st.frame_idx % cont.content.frames.len()
                     }
                     _ => 0,
                 };
-                (comp.content.frames[idx].as_str(), comp.content.frames.len())
+                (cont.content.frames[idx].as_str(), cont.content.frames.len())
             };
-            render_clipped(frame, area, |buf, local| {
-                fill_bg(buf, local, bg);
-                for (row, line) in raw_frame.lines().take(local.height as usize).enumerate() {
-                    buf.set_stringn(
-                        0,
-                        row as u16,
-                        line,
-                        local.width as usize,
-                        Style::default().fg(fg).bg(bg),
-                    );
-                }
-            });
+            fill_bg(buf, local, bg);
+            for (row, line) in raw_frame.lines().take(local.height as usize).enumerate() {
+                buf.set_stringn(
+                    0,
+                    row as u16,
+                    line,
+                    local.width as usize,
+                    Style::default().fg(fg).bg(bg),
+                );
+            }
         }
         ComponentKind::Matrix => {
             let bg_cfg = component_matrix_bg_config(config, &anim_cfg);
-            render_clipped(frame, area, |buf, local| {
-                fill_bg(buf, local, bg);
-                if let Some(ComponentAnimState::Matrix(st)) = store.get(&comp.id) {
-                    st.effect.render(buf, local, &bg_cfg, theme);
-                }
-            });
+            fill_bg(buf, local, bg);
+            if let Some(ComponentAnimState::Matrix(st)) = store.get(&cont.name) {
+                st.effect.render(buf, local, &bg_cfg, theme);
+            }
         }
         ComponentKind::Particles => {
             let bg_cfg = component_particles_bg_config(config, &anim_cfg);
-            render_clipped(frame, area, |buf, local| {
-                fill_bg(buf, local, bg);
-                if let Some(ComponentAnimState::Particles(st)) = store.get(&comp.id) {
-                    st.effect.render(buf, local, &bg_cfg, theme);
-                }
-            });
+            fill_bg(buf, local, bg);
+            if let Some(ComponentAnimState::Particles(st)) = store.get(&cont.name) {
+                st.effect.render(buf, local, &bg_cfg, theme);
+            }
         }
         ComponentKind::AsciiObject => {
-            let phase = match store.get(&comp.id) {
+            let phase = match store.get(&cont.name) {
                 Some(ComponentAnimState::AsciiObject(st)) => st.phase,
                 _ => 0.0,
             };
@@ -543,38 +599,28 @@ pub fn render_animated_component(
                 Some("triangle") => (ShapePrimitive::Triangle, 3),
                 _ => (ShapePrimitive::Polygon, 6),
             };
-            render_clipped(frame, area, |buf, local| {
-                fill_bg(buf, local, bg);
-                let spec = ShapeSpec::from_primitive(primitive, sides, Vec::new());
-                let contour = spec.normalized_contour();
-                let params = ShapeDrawParams {
-                    center_x: (local.width as f32) * 0.5,
-                    center_y: (local.height as f32) * 0.5,
-                    half_w: (local.width as f32 * 0.35).max(1.0),
-                    half_h: (local.height as f32 * 0.35).max(1.0),
-                    rotation_deg: phase * 360.0,
-                    scale: 0.85 + 0.15 * (phase * std::f32::consts::TAU).sin(),
-                    stroke: true,
-                    fill: false,
-                    closed: spec.closed,
-                    stroke_color: fg,
-                    fill_color: fg,
-                    opacity: 1.0,
-                    renderer: GeometryRenderer::Braille,
-                    stroke_char: '✦',
-                    fill_char: '·',
-                    truecolor: true,
-                };
-                rasterize_contour(&contour, &params, local, buf);
-            });
-        }
-        ComponentKind::Canvas => {
-            render_clipped(frame, area, |buf, local| {
-                fill_bg(buf, local, bg);
-                if let Some(ComponentAnimState::LuaCanvas(st)) = store.get(&comp.id) {
-                    st.instance.render(buf, local, theme);
-                }
-            });
+            fill_bg(buf, local, bg);
+            let spec = ShapeSpec::from_primitive(primitive, sides, Vec::new());
+            let contour = spec.normalized_contour();
+            let params = ShapeDrawParams {
+                center_x: (local.width as f32) * 0.5,
+                center_y: (local.height as f32) * 0.5,
+                half_w: (local.width as f32 * 0.35).max(1.0),
+                half_h: (local.height as f32 * 0.35).max(1.0),
+                rotation_deg: phase * 360.0,
+                scale: 0.85 + 0.15 * (phase * std::f32::consts::TAU).sin(),
+                stroke: true,
+                fill: false,
+                closed: spec.closed,
+                stroke_color: fg,
+                fill_color: fg,
+                opacity: 1.0,
+                renderer: GeometryRenderer::Braille,
+                stroke_char: '✦',
+                fill_char: '·',
+                truecolor: true,
+            };
+            rasterize_contour(&contour, &params, local, buf);
         }
         _ => {}
     }

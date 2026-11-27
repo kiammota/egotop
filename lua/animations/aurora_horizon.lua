@@ -1,33 +1,28 @@
--- Aurora horizon sweep + greeting color shimmer (implemented in Lua).
+-- Aurora horizon sweep animation (isolated canvas API, adapts automatically on resize).
 local animation = {}
 
 function animation.setup(api)
-    local w = math.max(20, api.screen.width())
+    local duration = 1.4
     api.ui.reveal(0.0)
 
-    local banner = api.element({
-        id = "aurora_wave",
-        x = 0,
-        y = 1,
-        text = ("░▒▓█▓▒░"):rep(math.max(1, math.floor(w / 7))),
-        fg = "#39FF88",
-    })
-
-    api.tween({
-        from = 0.0,
-        to = 1.0,
-        duration_ms = 1400,
-        easing = "ease_out_cubic",
-        on_update = function(p)
-            banner:set_color(api.lerp_color("#39FF88", "#00D9FF", p), nil)
-            api.ui.reveal(p)
+    return {
+        name = "aurora_horizon",
+        description = "Aurora horizon color sweep across an isolated canvas",
+        fps = 30,
+        duration = duration,
+        render = function(canvas, ctx)
+            local p = math.min(1.0, ctx.t / duration)
+            ctx.reveal(p)
+            local w = canvas.width
+            if w <= 0 or canvas.height <= 0 then
+                return
+            end
+            local pattern = ("░▒▓█▓▒░"):rep(math.max(1, math.ceil(w / 7)))
+            local col = ctx.rgb_lerp("#39FF88", "#00D9FF", p)
+            local y = math.min(1, canvas.height - 1)
+            canvas:text(0, y, pattern:sub(1, w), col, nil, 1.0)
         end,
-        on_complete = function()
-            banner:destroy()
-            api.ui.reveal(1.0)
-            api.finish()
-        end,
-    })
+    }
 end
 
 return animation

@@ -3,11 +3,12 @@ use crate::config::{Align, BorderStyle, GraphStyle, StartupTrigger, ThemeConfig,
 use crate::lua::{LuaConfigBundle, LuaEffectSpec};
 use crate::ui::borders::parse_border_style;
 use crate::ui::container::{
-    ComponentCategory, ComponentConfig, ComponentKind, ContainerBorderConfig, ContainerConfig,
-    ContainerDirection, ContainerGradient, ContainerNode, ContainerSize, EffectPolicy,
-    GradientDirection,
+    ComponentAnimationConfig, ComponentCategory, ComponentKind, ContainerBorderConfig,
+    ContainerConfig, ContainerGradient, ContainerSize, EffectPolicy, GradientDirection,
+    InlineLuaScript, LayoutRegion,
 };
 use mlua::{Function, Lua, Table, Value};
+use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 
 pub fn register_egotop_api(lua: &Lua, state: Arc<Mutex<LuaConfigBundle>>) -> mlua::Result<()> {
@@ -80,22 +81,52 @@ pub fn register_egotop_api(lua: &Lua, state: Arc<Mutex<LuaConfigBundle>>) -> mlu
         )?;
     }
 
-    // egotop.layout({ id = "root", ... })
+    // egotop.layout({ padding = 1, gap = 1, containers = { ... } })
     {
         let st = Arc::clone(&state);
         egotop.set(
             "layout",
             lua.create_function(move |_, tbl: Table| {
-                let mut root = parse_container_table(&tbl);
-                root.id = tbl.get::<String>("id").unwrap_or_else(|_| "root".to_string());
+                if tbl.contains_key("children")? {
+                    return Err(mlua::Error::RuntimeError(
+                        "Recursive 'children' trees are removed; declare a flat 'containers' queue in egotop.layout({ containers = { ... } })"
+                            .to_string(),
+                    ));
+                }
+                let mut ui = crate::config::UiConfig {
+                    padding: tbl.get::<u16>("padding").unwrap_or(1),
+                    gap: tbl.get::<u16>("gap").unwrap_or(1),
+                    min_container_width: tbl.get::<u16>("min_container_width").unwrap_or(22),
+                    containers: Vec::new(),
+                };
+
+                let list_tbl = if let Ok(ctbl) = tbl.get::<Table>("containers") {
+                    ctbl
+                } else {
+                    tbl.clone()
+                };
+
+                let mut seen_names = HashSet::new();
+                for (idx, ctbl) in list_tbl.sequence_values::<Table>().enumerate() {
+                    let ctbl = ctbl?;
+                    let c = parse_container_table(&ctbl, idx)?;
+                    if !seen_names.insert(c.name.clone()) {
+                        return Err(mlua::Error::RuntimeError(format!(
+                            "Duplicate container name '{}' in egotop.layout",
+                            c.name
+                        )));
+                    }
+                    ui.containers.push(c);
+                }
+
                 let mut bundle = st.lock().unwrap();
-                bundle.config.ui.root = root;
+                bundle.config.ui = ui;
                 Ok(())
             })?,
         )?;
     }
 
-    // egotop.container_styles({ [id] = { background = ..., foreground = ..., ... } })
+    // egotop.container_styles({ [name] = { background = ..., foreground = ..., ... } })
     {
         let st = Arc::clone(&state);
         egotop.set(
@@ -103,32 +134,30 @@ pub fn register_egotop_api(lua: &Lua, state: Arc<Mutex<LuaConfigBundle>>) -> mlu
             lua.create_function(move |_, tbl: Table| {
                 let mut bundle = st.lock().unwrap();
                 for pair in tbl.pairs::<String, Table>().flatten() {
-                    let (id, stbl) = pair;
+                    let (name, stbl) = pair;
                     let cs = parse_container_style_table(&stbl);
-                    bundle.config.container_styles.insert(id, cs);
+                    bundle.config.container_styles.insert(name, cs);
                 }
                 Ok(())
             })?,
         )?;
     }
 
-    // egotop.math.* (trigonometry, clamp, lerp, hsv_to_rgb, rgb_scale, noise, hash)
+    // egotop.math.* (pure math & color utilities; no canvas registry or global UI state)
     if let Ok(math_tbl) = crate::lua::canvas::create_math_table(lua) {
         egotop.set("math", math_tbl)?;
     }
 
-    // Helper constructors: egotop.container(tbl) & egotop.component(tbl)
+    // egotop.container(tbl): validates flat container declaration (cannot nest containers)
     egotop.set(
         "container",
         lua.create_function(|_, tbl: Table| {
-            tbl.set("node", "container")?;
-            Ok(tbl)
-        })?,
-    )?;
-    egotop.set(
-        "component",
-        lua.create_function(|_, tbl: Table| {
-            tbl.set("node", "component")?;
+            if tbl.contains_key("children")? {
+                return Err(mlua::Error::RuntimeError(
+                    "A container cannot contain another container ('children' is forbidden)"
+                        .to_string(),
+                ));
+            }
             Ok(tbl)
         })?,
     )?;
@@ -458,18 +487,29 @@ fn parse_size(val: Value) -> ContainerSize {
         Value::Integer(n) => ContainerSize::Fixed(n.max(0) as u16),
         Value::Number(n) => ContainerSize::Fixed(n.max(0.0) as u16),
         Value::String(s) => {
-            let txt = s.to_str().map(|x| x.trim().to_ascii_lowercase()).unwrap_or_default();
-            if txt == "fill" {
+            let txt = s
+                .to_str()
+                .map(|x| x.trim().to_ascii_lowercase())
+                .unwrap_or_default();
+            if txt.is_empty() || txt == "auto" {
+                ContainerSize::Auto
+            } else if txt == "fill" {
                 ContainerSize::Fill(1)
-            } else if let Some(pct) = txt.strip_suffix('%').and_then(|n| n.trim().parse::<u16>().ok()) {
+            } else if let Some(inner) = txt.strip_prefix("fill(").and_then(|v| v.strip_suffix(')')) {
+                let w = inner.trim().parse::<u16>().unwrap_or(1).max(1);
+                ContainerSize::Fill(w)
+            } else if let Some(pct) = txt
+                .strip_suffix('%')
+                .and_then(|n| n.trim().parse::<u16>().ok())
+            {
                 ContainerSize::Percent(pct.min(100))
             } else if let Ok(px) = txt.parse::<u16>() {
                 ContainerSize::Fixed(px)
             } else {
-                ContainerSize::Fill(1)
+                ContainerSize::Auto
             }
         }
-        _ => ContainerSize::Fill(1),
+        _ => ContainerSize::Auto,
     }
 }
 
@@ -565,23 +605,33 @@ fn parse_container_style_table(tbl: &Table) -> crate::ui::container::ContainerSt
     style
 }
 
-fn parse_container_table(tbl: &Table) -> ContainerConfig {
-    let mut c = ContainerConfig::default();
-    if let Ok(id) = tbl.get::<String>("id") {
-        c.id = id;
+fn parse_container_table(tbl: &Table, index: usize) -> mlua::Result<ContainerConfig> {
+    if tbl.contains_key("children")? {
+        return Err(mlua::Error::RuntimeError(
+            "A container cannot contain another container ('children' is forbidden)".to_string(),
+        ));
     }
+
+    let mut c = ContainerConfig::default();
+    c.name = tbl
+        .get::<String>("name")
+        .or_else(|_| tbl.get::<String>("id"))
+        .unwrap_or_else(|_| format!("container_{}", index + 1));
+    c.description = tbl.get::<String>("description").unwrap_or_default();
+
     if let Some(v) = tbl.get::<Option<bool>>("visible").ok().flatten() {
         c.visible = v;
     }
-    if let Some(v) = tbl.get::<Option<bool>>("transparent").ok().flatten() {
-        c.transparent = v;
+    if let Ok(reg_str) = tbl.get::<String>("region")
+        && let Some(reg) = LayoutRegion::parse(&reg_str)
+    {
+        c.region = reg;
     }
-    if let Ok(d) = tbl.get::<String>("direction") {
-        c.direction = match d.trim().to_ascii_lowercase().as_str() {
-            "horizontal" | "row" => ContainerDirection::Horizontal,
-            _ => ContainerDirection::Vertical,
-        };
+    if let Ok(order) = tbl.get::<i32>("order") {
+        c.order = order;
     }
+    c.row = tbl.get::<Option<u16>>("row").unwrap_or(None);
+
     if let Ok(w) = tbl.get::<Value>("width")
         && !w.is_nil()
     {
@@ -597,9 +647,18 @@ fn parse_container_table(tbl: &Table) -> ContainerConfig {
     c.min_height = tbl.get::<Option<u16>>("min_height").unwrap_or(None);
     c.max_height = tbl.get::<Option<u16>>("max_height").unwrap_or(None);
     c.padding = tbl.get::<u16>("padding").unwrap_or(0);
-    c.gap = tbl.get::<u16>("gap").unwrap_or(0);
+
+    if let Some(v) = tbl.get::<Option<bool>>("transparent").ok().flatten() {
+        c.transparent = v;
+    }
+    if let Ok(a) = tbl.get::<String>("align") {
+        c.align = parse_align(&a);
+    }
     if let Ok(btbl) = tbl.get::<Table>("border") {
         c.border = parse_border_table(&btbl);
+    }
+    if let Ok(fg) = tbl.get::<String>("color") {
+        c.color = Some(fg);
     }
     if let Ok(bg) = tbl.get::<String>("background") {
         if bg.eq_ignore_ascii_case("transparent") {
@@ -617,107 +676,67 @@ fn parse_container_table(tbl: &Table) -> ContainerConfig {
     if let Ok(op) = tbl.get::<f32>("opacity") {
         c.opacity = Some(op.clamp(0.0, 1.0));
     }
-    if let Ok(children) = tbl.get::<Table>("children") {
-        for child_tbl in children.sequence_values::<Table>().flatten() {
-            c.children.push(parse_node_table(&child_tbl));
-        }
+    if let Ok(f) = tbl.get::<String>("font") {
+        c.font = Some(f);
     }
-    c
-}
+    if let Ok(gs) = tbl.get::<String>("graph_style") {
+        c.graph_style = Some(match gs.trim().to_ascii_lowercase().as_str() {
+            "bar" => GraphStyle::Bar,
+            _ => GraphStyle::Sparkline,
+        });
+    }
+    if let Ok(ef) = tbl.get::<String>("effects") {
+        c.effects = match ef.trim().to_ascii_lowercase().as_str() {
+            "allow" => EffectPolicy::Allow,
+            "isolated" => EffectPolicy::Isolated,
+            _ => EffectPolicy::Exclude,
+        };
+    }
 
-fn parse_node_table(tbl: &Table) -> ContainerNode {
-    let node_kind = tbl
-        .get::<String>("node")
-        .unwrap_or_default()
-        .to_ascii_lowercase();
-    let has_children = tbl.get::<Table>("children").is_ok();
-    let has_comp_kind = tbl.get::<String>("kind").is_ok();
-    if node_kind == "component" || (!has_children && has_comp_kind) {
-        ContainerNode::Component(parse_component_table(tbl))
-    } else {
-        ContainerNode::Container(parse_container_table(tbl))
-    }
-}
-
-fn parse_component_table(tbl: &Table) -> ComponentConfig {
-    let mut comp = ComponentConfig::default();
-    if let Ok(id) = tbl.get::<String>("id") {
-        comp.id = id;
-    }
-    if let Some(v) = tbl.get::<Option<bool>>("visible").ok().flatten() {
-        comp.visible = v;
-    }
     let has_explicit_cat = tbl.get::<String>("category").is_ok();
     if let Ok(cat) = tbl.get::<String>("category") {
-        comp.category = match cat.trim().to_ascii_lowercase().as_str() {
+        c.category = match cat.trim().to_ascii_lowercase().as_str() {
             "static" => ComponentCategory::Static,
             "animated" => ComponentCategory::Animated,
             _ => ComponentCategory::Dynamic,
         };
     }
-    if let Ok(kind_str) = tbl.get::<String>("kind") {
-        comp.kind = parse_component_kind(&kind_str);
+    if let Ok(kind_str) = tbl.get::<String>("kind").or_else(|_| tbl.get::<String>("type")) {
+        c.kind = parse_component_kind(&kind_str);
         if !has_explicit_cat {
-            comp.category = comp.kind.expected_category();
+            c.category = c.kind.expected_category();
         }
     }
-    if let Ok(w) = tbl.get::<Value>("width")
-        && !w.is_nil()
-    {
-        comp.width = parse_size(w);
-    }
-    if let Ok(h) = tbl.get::<Value>("height")
-        && !h.is_nil()
-    {
-        comp.height = parse_size(h);
-    }
-    comp.min_width = tbl.get::<Option<u16>>("min_width").unwrap_or(None);
-    comp.max_width = tbl.get::<Option<u16>>("max_width").unwrap_or(None);
-    comp.min_height = tbl.get::<Option<u16>>("min_height").unwrap_or(None);
-    comp.max_height = tbl.get::<Option<u16>>("max_height").unwrap_or(None);
 
-    if let Ok(a) = tbl.get::<String>("align") {
-        comp.visual.align = parse_align(&a);
-    }
-    comp.visual.padding = tbl.get::<u16>("padding").unwrap_or(0);
-    if let Ok(btbl) = tbl.get::<Table>("border") {
-        comp.visual.border = parse_border_table(&btbl);
-    }
-    if let Ok(bg) = tbl.get::<String>("background") {
-        comp.visual.background = Some(bg);
-    }
-    if let Ok(fg) = tbl.get::<String>("color") {
-        comp.visual.color = Some(fg);
-    }
-    if let Ok(f) = tbl.get::<String>("font") {
-        comp.visual.font = Some(f);
-    }
-    if let Ok(gs) = tbl.get::<String>("graph_style") {
-        comp.visual.graph_style = Some(match gs.trim().to_ascii_lowercase().as_str() {
-            "bar" => GraphStyle::Bar,
-            _ => GraphStyle::Sparkline,
-        });
-    }
     if let Ok(t) = tbl.get::<String>("title") {
-        comp.content.title = Some(t);
+        c.content.title = Some(t);
     }
     if let Ok(t) = tbl.get::<String>("text") {
-        comp.content.text = Some(t);
+        c.content.text = Some(t);
     }
     if let Ok(p) = tbl.get::<String>("preset") {
-        comp.content.preset = Some(p);
+        c.content.preset = Some(p);
     }
     if let Ok(s) = tbl.get::<String>("script") {
-        comp.content.script = Some(s);
+        c.content.script = Some(s);
+    }
+    if let Ok(m) = tbl.get::<String>("metric") {
+        c.content.metric = Some(m);
+    }
+    if let Ok(sc) = tbl.get::<String>("separator_char") {
+        c.content.separator_char = Some(sc);
+    }
+    if let Ok(frames) = tbl.get::<Table>("frames") {
+        c.content.frames = frames.sequence_values::<String>().flatten().collect();
     }
     if let Ok(fields) = tbl.get::<Table>("fields") {
         let vec: Vec<String> = fields.sequence_values::<String>().flatten().collect();
         if !vec.is_empty() {
-            comp.content.fields = Some(vec);
+            c.content.fields = Some(vec);
         }
     }
     if let Ok(atbl) = tbl.get::<Table>("animation") {
-        let mut anim = crate::ui::container::ComponentAnimationConfig::default();
+        let mut anim = ComponentAnimationConfig::default();
         if let Ok(fps) = atbl.get::<u32>("fps") {
             anim.fps = Some(fps);
         }
@@ -730,26 +749,47 @@ fn parse_component_table(tbl: &Table) -> ComponentConfig {
         if let Ok(den) = atbl.get::<f32>("density") {
             anim.density = Some(den);
         }
-        if let Ok(scr) = atbl.get::<Option<String>>("script")
-            && comp.content.script.is_none()
-        {
-            comp.content.script = scr;
+        if let Some(la) = atbl.get::<Option<bool>>("loop_anim").ok().flatten() {
+            anim.loop_anim = la;
         }
-        comp.animation = Some(anim);
+        if let Ok(scr) = atbl.get::<Option<String>>("script")
+            && c.content.script.is_none()
+        {
+            c.content.script = scr;
+        }
+        c.animation = Some(anim);
     }
-    if comp.kind == ComponentKind::Canvas && comp.content.script.is_none() {
+
+    // Inline isolated canvas callbacks: init / update / render (or on_render) / resize
+    let init_fn = tbl.get::<Function>("init").ok();
+    let update_fn = tbl.get::<Function>("update").ok();
+    let render_fn = tbl
+        .get::<Function>("render")
+        .or_else(|_| tbl.get::<Function>("on_render"))
+        .ok();
+    let resize_fn = tbl.get::<Function>("resize").ok();
+    if init_fn.is_some() || update_fn.is_some() || render_fn.is_some() || resize_fn.is_some() {
+        c.inline_lua = Some(InlineLuaScript {
+            init_chunk: init_fn.map(|f| f.dump(false)),
+            update_chunk: update_fn.map(|f| f.dump(false)),
+            render_chunk: render_fn.map(|f| f.dump(false)),
+            resize_chunk: resize_fn.map(|f| f.dump(false)),
+        });
+        c.kind = ComponentKind::Canvas;
+        c.category = ComponentCategory::Animated;
+    }
+
+    if c.kind == ComponentKind::Canvas && c.content.script.is_none() && c.inline_lua.is_none() {
         if let Ok(raw_kind) = tbl.get::<String>("kind")
             && raw_kind.trim().eq_ignore_ascii_case("christmas_tree")
         {
-            comp.content.script = Some("effects.christmas_tree".to_string());
-        } else if let Some(preset) = comp.content.preset.clone() {
-            comp.content.script = Some(preset);
+            c.content.script = Some("effects.christmas_tree".to_string());
+        } else if let Some(preset) = c.content.preset.clone() {
+            c.content.script = Some(preset);
         }
     }
-    // Note: `Function` unused warning safeguard if additional callbacks are passed
-    let _: Option<Function> = tbl.get::<Function>("on_render").ok();
-    let _: Option<EffectPolicy> = None;
-    comp
+
+    Ok(c)
 }
 
 fn parse_component_kind(raw: &str) -> ComponentKind {

@@ -1,36 +1,29 @@
-use crate::config::{BorderStyle, Config, ViewMode};
+use crate::config::{BorderStyle, Config, UiConfig, ViewMode};
 use crate::ui::container::{
-    ComponentConfig, ContainerBorderConfig, ContainerConfig, ContainerDirection,
-    ContainerGradient, ContainerNode, ContainerSize, ContainerStyle, EffectPolicy,
+    ContainerConfig, ContainerSize, ContainerStyle, EffectPolicy, LayoutRegion,
 };
 use ratatui::layout::Rect;
 use std::collections::BTreeMap;
 
 #[derive(Debug, Clone)]
 pub struct PlacedContainer {
-    pub id: String,
+    pub name: String,
+    pub description: String,
     pub outer_rect: Rect,
     pub inner_rect: Rect,
-    pub transparent: bool,
-    pub border: ContainerBorderConfig,
-    pub background: Option<String>,
-    pub gradient: Option<ContainerGradient>,
-    pub opacity: Option<f32>,
-}
-
-#[derive(Debug, Clone)]
-pub struct PlacedComponent {
-    pub id: String,
-    pub outer_rect: Rect,
-    pub inner_rect: Rect,
-    pub config: ComponentConfig,
+    pub config: ContainerConfig,
 }
 
 #[derive(Debug, Clone, Default)]
 pub struct ComputedLayout {
     pub area: Rect,
     pub containers: Vec<PlacedContainer>,
-    pub components: Vec<PlacedComponent>,
+}
+
+impl ComputedLayout {
+    pub fn find_container(&self, name: &str) -> Option<&PlacedContainer> {
+        self.containers.iter().find(|c| c.name == name)
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -47,29 +40,14 @@ impl ExclusionMask {
         layout: &ComputedLayout,
         styles: &BTreeMap<String, ContainerStyle>,
     ) -> Self {
-        let mut rects = Vec::with_capacity(layout.components.len() + layout.containers.len());
+        let mut rects = Vec::with_capacity(layout.containers.len());
         for c in &layout.containers {
-            if c.id == "root" || c.id == "minimal_root" {
-                continue;
-            }
             let policy = styles
-                .get(&c.id)
+                .get(&c.name)
                 .map(|s| s.effects)
-                .unwrap_or(EffectPolicy::Exclude);
-            let has_title = c.border.title.as_deref().is_some_and(|t| !t.is_empty());
-            if policy != EffectPolicy::Allow
-                && (c.border.enabled || has_title || !c.transparent || styles.contains_key(&c.id))
-            {
-                rects.push(c.outer_rect);
-            }
-        }
-        for comp in &layout.components {
-            let policy = styles
-                .get(&comp.id)
-                .map(|s| s.effects)
-                .unwrap_or(EffectPolicy::Exclude);
+                .unwrap_or(c.config.effects);
             if policy != EffectPolicy::Allow {
-                rects.push(comp.outer_rect);
+                rects.push(c.outer_rect);
             }
         }
         Self { rects }
@@ -82,343 +60,614 @@ impl ExclusionMask {
     }
 }
 
-impl ComputedLayout {
-    pub fn find_component(&self, id: &str) -> Option<&PlacedComponent> {
-        self.components.iter().find(|c| c.id == id)
-    }
-
-    pub fn find_container(&self, id: &str) -> Option<&PlacedContainer> {
-        self.containers.iter().find(|c| c.id == id)
-    }
-}
-
 pub fn compute_dashboard_layout(
     screen: Rect,
     cfg: &Config,
     view_mode: ViewMode,
 ) -> ComputedLayout {
     let no_borders = cfg.theme.border_type == BorderStyle::None;
-    match view_mode {
-        ViewMode::Dashboard => {
-            if no_borders {
-                let mut root = cfg.ui.root.clone();
-                disable_container_borders(&mut root);
-                compute_container_layout(screen, &root)
-            } else {
-                compute_container_layout(screen, &cfg.ui.root)
-            }
-        }
+    let mut ui = match view_mode {
+        ViewMode::Dashboard => cfg.ui.clone(),
         ViewMode::Compact => {
-            let mut root = cfg.ui.root.clone();
-            apply_compact_overrides(&mut root);
-            if no_borders {
-                disable_container_borders(&mut root);
+            let mut compact = cfg.ui.clone();
+            compact.padding = compact.padding.min(1);
+            compact.gap = 0;
+            for c in &mut compact.containers {
+                c.padding = 0;
             }
-            compute_container_layout(screen, &root)
+            compact
         }
         ViewMode::Minimal => {
-            let mut minimal_root = ContainerConfig {
-                id: "minimal_root".to_string(),
-                visible: true,
-                direction: ContainerDirection::Vertical,
-                width: ContainerSize::Percent(100),
-                height: ContainerSize::Percent(100),
-                padding: 1,
-                gap: 1,
-                ..ContainerConfig::default()
+            let mut minimal = UiConfig {
+                padding: cfg.ui.padding.min(1),
+                gap: cfg.ui.gap,
+                min_container_width: cfg.ui.min_container_width,
+                containers: Vec::new(),
             };
-            if let Some(greeting) = find_first_component_by_id(&cfg.ui.root, "greeting") {
-                minimal_root.children.push(ContainerNode::Component(greeting));
-            }
-            if let Some(spinner) = find_first_component_by_id(&cfg.ui.root, "status_spinner") {
-                minimal_root.children.push(ContainerNode::Component(spinner));
-            }
-            if no_borders {
-                disable_container_borders(&mut minimal_root);
-            }
-            compute_container_layout(screen, &minimal_root)
-        }
-    }
-}
-
-fn disable_container_borders(container: &mut ContainerConfig) {
-    container.border.enabled = false;
-    for child in &mut container.children {
-        match child {
-            ContainerNode::Container(c) => disable_container_borders(c),
-            ContainerNode::Component(comp) => {
-                comp.visual.border.enabled = false;
-            }
-        }
-    }
-}
-
-fn apply_compact_overrides(container: &mut ContainerConfig) {
-    container.padding = container.padding.min(1);
-    container.gap = 0;
-    for child in &mut container.children {
-        match child {
-            ContainerNode::Container(c) => apply_compact_overrides(c),
-            ContainerNode::Component(comp) => {
-                comp.visual.padding = 0;
-            }
-        }
-    }
-}
-
-fn find_first_component_by_id(container: &ContainerConfig, id: &str) -> Option<ComponentConfig> {
-    for child in &container.children {
-        match child {
-            ContainerNode::Component(c) if c.id == id && c.visible => return Some(c.clone()),
-            ContainerNode::Container(sub) if sub.visible => {
-                if let Some(found) = find_first_component_by_id(sub, id) {
-                    return Some(found);
+            for target_name in ["greeting", "status_spinner"] {
+                if let Some(c) = cfg
+                    .ui
+                    .containers
+                    .iter()
+                    .find(|c| c.name == target_name && c.visible)
+                {
+                    minimal.containers.push(c.clone());
                 }
             }
-            _ => {}
+            minimal
+        }
+    };
+
+    if no_borders {
+        for c in &mut ui.containers {
+            c.border.enabled = false;
         }
     }
-    None
+
+    compute_layout(screen, &ui)
 }
 
-/// Computes deterministic, non-overlapping `Rect` geometry for the entire container tree.
-pub fn compute_container_layout(viewport: Rect, root: &ContainerConfig) -> ComputedLayout {
+/// Computes deterministic, balanced, non-overlapping `Rect` geometry for a flat queue of
+/// independent containers across interface regions (`top`, `left`, `main`, `right`, `bottom`).
+pub fn compute_layout(viewport: Rect, ui: &UiConfig) -> ComputedLayout {
     let mut out = ComputedLayout {
         area: viewport,
         containers: Vec::new(),
-        components: Vec::new(),
     };
-
-    if !root.visible || viewport.width == 0 || viewport.height == 0 {
+    if viewport.width == 0 || viewport.height == 0 {
         return out;
     }
 
-    let root_w = resolve_axis_size(
-        root.width,
-        viewport.width,
-        root.min_width,
-        root.max_width,
+    let pad_x = ui.padding.min(viewport.width / 2);
+    let pad_y = ui.padding.min(viewport.height / 2);
+    let work = Rect::new(
+        viewport.x.saturating_add(pad_x),
+        viewport.y.saturating_add(pad_y),
+        viewport.width.saturating_sub(pad_x.saturating_mul(2)),
+        viewport.height.saturating_sub(pad_y.saturating_mul(2)),
     )
-    .min(viewport.width);
-    let root_h = resolve_axis_size(
-        root.height,
-        viewport.height,
-        root.min_height,
-        root.max_height,
-    )
-    .min(viewport.height);
+    .intersection(viewport);
 
-    let root_rect = Rect::new(viewport.x, viewport.y, root_w, root_h).intersection(viewport);
-    layout_container_node(root, root_rect, &mut out);
+    if work.width == 0 || work.height == 0 {
+        return out;
+    }
+
+    let mut ordered: Vec<(usize, &ContainerConfig)> = ui
+        .containers
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| c.visible)
+        .collect();
+    ordered.sort_by_key(|(idx, c)| (c.order, *idx));
+
+    if ordered.is_empty() {
+        return out;
+    }
+
+    let mut top_items = Vec::new();
+    let mut left_items = Vec::new();
+    let mut main_items = Vec::new();
+    let mut right_items = Vec::new();
+    let mut bottom_items = Vec::new();
+
+    for (_, c) in ordered {
+        match c.region {
+            LayoutRegion::Top => top_items.push(c),
+            LayoutRegion::Left => left_items.push(c),
+            LayoutRegion::Main => main_items.push(c),
+            LayoutRegion::Right => right_items.push(c),
+            LayoutRegion::Bottom => bottom_items.push(c),
+        }
+    }
+
+    let min_col_w = ui.min_container_width.max(6);
+    let top_rows = group_into_rows(&top_items, work.width, ui.gap, min_col_w);
+    let bottom_rows = group_into_rows(&bottom_items, work.width, ui.gap, min_col_w);
+    let has_middle = !left_items.is_empty() || !main_items.is_empty() || !right_items.is_empty();
+
+    // Allocate vertical bands: Top rows, optional Middle band, Bottom rows.
+    let mut band_specs: Vec<AxisSpec> = Vec::new();
+    for row in &top_rows {
+        band_specs.push(row_vertical_spec(row));
+    }
+    let middle_band_idx = if has_middle {
+        let idx = band_specs.len();
+        band_specs.push(AxisSpec {
+            size: ContainerSize::Fill(1),
+            min: None,
+            max: None,
+        });
+        Some(idx)
+    } else {
+        None
+    };
+    for row in &bottom_rows {
+        band_specs.push(row_vertical_spec(row));
+    }
+
+    let band_rects = allocate_vertical_bands(work, ui.gap, &band_specs);
+
+    let mut band_cursor = 0usize;
+    for row in &top_rows {
+        if let Some(&row_rect) = band_rects.get(band_cursor) {
+            place_row(row, row_rect, ui.gap, viewport, &mut out);
+        }
+        band_cursor += 1;
+    }
+
+    if let Some(mid_idx) = middle_band_idx {
+        if let Some(&mid_rect) = band_rects.get(mid_idx)
+            && mid_rect.width > 0
+            && mid_rect.height > 0
+        {
+            place_middle_band(
+                mid_rect,
+                &left_items,
+                &main_items,
+                &right_items,
+                ui.gap,
+                min_col_w,
+                viewport,
+                &mut out,
+            );
+        }
+        band_cursor += 1;
+    }
+
+    for row in &bottom_rows {
+        if let Some(&row_rect) = band_rects.get(band_cursor) {
+            place_row(row, row_rect, ui.gap, viewport, &mut out);
+        }
+        band_cursor += 1;
+    }
+
     out
 }
 
-fn layout_container_node(container: &ContainerConfig, outer_rect: Rect, out: &mut ComputedLayout) {
-    if !container.visible || outer_rect.width == 0 || outer_rect.height == 0 {
+#[allow(clippy::too_many_arguments)]
+fn place_middle_band(
+    mid_rect: Rect,
+    left_items: &[&ContainerConfig],
+    main_items: &[&ContainerConfig],
+    right_items: &[&ContainerConfig],
+    gap: u16,
+    min_col_w: u16,
+    viewport: Rect,
+    out: &mut ComputedLayout,
+) {
+    let mut regions: Vec<(u8, AxisSpec)> = Vec::new();
+    if !left_items.is_empty() {
+        regions.push((0, sidebar_width_spec(left_items)));
+    }
+    if !main_items.is_empty() {
+        regions.push((
+            1,
+            AxisSpec {
+                size: ContainerSize::Fill(1),
+                min: None,
+                max: None,
+            },
+        ));
+    }
+    if !right_items.is_empty() {
+        regions.push((2, sidebar_width_spec(right_items)));
+    }
+
+    if regions.is_empty() {
         return;
     }
 
-    let has_border = container.border.enabled && container.border.style != BorderStyle::None;
-    let has_title = container
+    let specs: Vec<AxisSpec> = regions.iter().map(|(_, s)| *s).collect();
+    let col_rects = allocate_horizontal_bands(mid_rect, gap, &specs);
+
+    for ((tag, _), rect) in regions.into_iter().zip(col_rects) {
+        if rect.width == 0 || rect.height == 0 {
+            continue;
+        }
+        match tag {
+            0 => place_vertical_column(left_items, rect, gap, viewport, out),
+            1 => {
+                let rows = group_into_rows(main_items, rect.width, gap, min_col_w);
+                let row_specs: Vec<AxisSpec> = rows.iter().map(|r| row_vertical_spec(r)).collect();
+                let row_rects = allocate_vertical_bands(rect, gap, &row_specs);
+                for (row, rrect) in rows.iter().zip(row_rects) {
+                    place_row(row, rrect, gap, viewport, out);
+                }
+            }
+            _ => place_vertical_column(right_items, rect, gap, viewport, out),
+        }
+    }
+}
+
+fn place_vertical_column(
+    items: &[&ContainerConfig],
+    area: Rect,
+    gap: u16,
+    viewport: Rect,
+    out: &mut ComputedLayout,
+) {
+    if items.is_empty() || area.width == 0 || area.height == 0 {
+        return;
+    }
+    let specs: Vec<AxisSpec> = items
+        .iter()
+        .map(|c| AxisSpec {
+            size: normalize_fill_or_auto(c.height),
+            min: c.min_height,
+            max: c.max_height,
+        })
+        .collect();
+    let rects = allocate_vertical_bands(area, gap, &specs);
+    for (c, rect) in items.iter().zip(rects) {
+        let width = resolve_cross_size(c.width, rect.width, c.min_width, c.max_width);
+        let outer = Rect::new(rect.x, rect.y, width, rect.height)
+            .intersection(area)
+            .intersection(viewport);
+        push_placed_container(c, outer, out);
+    }
+}
+
+fn sidebar_width_spec(items: &[&ContainerConfig]) -> AxisSpec {
+    for c in items {
+        if !matches!(c.width, ContainerSize::Auto | ContainerSize::Fill(_)) {
+            return AxisSpec {
+                size: c.width,
+                min: c.min_width,
+                max: c.max_width,
+            };
+        }
+    }
+    AxisSpec {
+        size: ContainerSize::Percent(24),
+        min: Some(16),
+        max: Some(40),
+    }
+}
+
+/// Groups a linear queue of containers into rows from left to right.
+/// Respects explicit `row` grouping, explicit percentage widths that fill 100%,
+/// and responsive width wrapping when `Auto` items would become narrower than `min_col_w`.
+fn group_into_rows<'a>(
+    items: &[&'a ContainerConfig],
+    avail_width: u16,
+    gap: u16,
+    min_col_w: u16,
+) -> Vec<Vec<&'a ContainerConfig>> {
+    if items.is_empty() {
+        return Vec::new();
+    }
+
+    // Step 1: Split into segments whenever `c.row` explicitly changes.
+    let mut segments: Vec<Vec<&'a ContainerConfig>> = Vec::new();
+    let mut cur_seg: Vec<&'a ContainerConfig> = Vec::new();
+    let mut prev_row: Option<u16> = items[0].row;
+
+    for &item in items {
+        if !cur_seg.is_empty() && (item.row.is_some() || prev_row.is_some()) && item.row != prev_row {
+            segments.push(std::mem::take(&mut cur_seg));
+        }
+        prev_row = item.row;
+        cur_seg.push(item);
+    }
+    if !cur_seg.is_empty() {
+        segments.push(cur_seg);
+    }
+
+    // Step 2: Wrap each segment cleanly left-to-right based on percentage saturation or min width.
+    let mut rows: Vec<Vec<&'a ContainerConfig>> = Vec::new();
+    for seg in segments {
+        let all_auto = seg
+            .iter()
+            .all(|c| matches!(c.width, ContainerSize::Auto));
+
+        if all_auto {
+            // Balanced wrapping for pure Auto queues: compute how many fit per row, then balance evenly.
+            let item_min = seg
+                .iter()
+                .map(|c| c.min_width.unwrap_or(min_col_w).max(4))
+                .max()
+                .unwrap_or(min_col_w);
+            let max_per_row = compute_max_items_per_row(avail_width, gap, item_min);
+            let total = seg.len();
+            if total <= max_per_row {
+                rows.push(seg);
+            } else {
+                let row_count = total.div_ceil(max_per_row);
+                let base = total / row_count;
+                let extra = total % row_count;
+                let mut offset = 0;
+                for r in 0..row_count {
+                    let take = base + usize::from(r < extra);
+                    rows.push(seg[offset..offset + take].to_vec());
+                    offset += take;
+                }
+            }
+            continue;
+        }
+
+        let mut cur_row: Vec<&'a ContainerConfig> = Vec::new();
+        let mut used_pct: u16 = 0;
+        let mut row_closed = false;
+
+        for item in seg {
+            let wants_full_row = matches!(item.width, ContainerSize::Percent(100));
+            let next_pct = match item.width {
+                ContainerSize::Percent(p) => Some(p.min(100)),
+                _ => None,
+            };
+
+            let would_overflow_pct = if let Some(p) = next_pct {
+                !cur_row.is_empty() && used_pct.saturating_add(p) > 100
+            } else {
+                false
+            };
+
+            let would_crowd_width = if !cur_row.is_empty() && item.row.is_none() {
+                let next_count = cur_row.len() + 1;
+                let total_gap = gap.saturating_mul((next_count - 1) as u16);
+                let needed_min: u16 = cur_row
+                    .iter()
+                    .chain(std::iter::once(&item))
+                    .map(|c| c.min_width.unwrap_or(min_col_w).max(4))
+                    .sum();
+                avail_width > 0 && needed_min.saturating_add(total_gap) > avail_width && next_pct.is_none()
+            } else {
+                false
+            };
+
+            if !cur_row.is_empty()
+                && (row_closed || wants_full_row || would_overflow_pct || would_crowd_width)
+            {
+                rows.push(std::mem::take(&mut cur_row));
+                used_pct = 0;
+                row_closed = false;
+            }
+
+            match item.width {
+                ContainerSize::Percent(p) => {
+                    used_pct = used_pct.saturating_add(p.min(100));
+                    if used_pct >= 100 {
+                        row_closed = true;
+                    }
+                }
+                ContainerSize::Fill(_) if used_pct > 0 => {
+                    // Fill following fixed/percent columns completes the row.
+                    row_closed = true;
+                }
+                _ => {}
+            }
+            cur_row.push(item);
+        }
+        if !cur_row.is_empty() {
+            rows.push(cur_row);
+        }
+    }
+
+    rows
+}
+
+fn compute_max_items_per_row(avail_width: u16, gap: u16, min_item_w: u16) -> usize {
+    if avail_width == 0 || min_item_w == 0 {
+        return 1;
+    }
+    let mut k = 1usize;
+    loop {
+        let next = k + 1;
+        let needed = (min_item_w as u32)
+            .saturating_mul(next as u32)
+            .saturating_add((gap as u32).saturating_mul((next - 1) as u32));
+        if needed > avail_width as u32 {
+            return k;
+        }
+        k = next;
+    }
+}
+
+fn row_vertical_spec(row: &[&ContainerConfig]) -> AxisSpec {
+    let mut fixed_max: Option<u16> = None;
+    let mut pct_max: Option<u16> = None;
+    let mut fill_weight: u16 = 0;
+    let mut min_h: Option<u16> = None;
+    let mut max_h: Option<u16> = None;
+
+    for c in row {
+        if let Some(mn) = c.min_height {
+            min_h = Some(min_h.map_or(mn, |cur| cur.max(mn)));
+        }
+        if let Some(mx) = c.max_height {
+            max_h = Some(max_h.map_or(mx, |cur| cur.min(mx)));
+        }
+        match c.height {
+            ContainerSize::Fixed(n) => {
+                fixed_max = Some(fixed_max.map_or(n, |cur| cur.max(n)));
+            }
+            ContainerSize::Percent(p) => {
+                pct_max = Some(pct_max.map_or(p, |cur| cur.max(p)));
+            }
+            ContainerSize::Fill(w) => {
+                fill_weight = fill_weight.max(w.max(1));
+            }
+            ContainerSize::Auto => {
+                fill_weight = fill_weight.max(1);
+            }
+        }
+    }
+
+    let size = if let Some(f) = fixed_max {
+        ContainerSize::Fixed(f)
+    } else if let Some(p) = pct_max {
+        ContainerSize::Percent(p)
+    } else {
+        ContainerSize::Fill(fill_weight.max(1))
+    };
+
+    AxisSpec {
+        size,
+        min: min_h,
+        max: max_h,
+    }
+}
+
+fn place_row(
+    row: &[&ContainerConfig],
+    row_rect: Rect,
+    gap: u16,
+    viewport: Rect,
+    out: &mut ComputedLayout,
+) {
+    if row.is_empty() || row_rect.width == 0 || row_rect.height == 0 {
+        return;
+    }
+    let specs: Vec<AxisSpec> = row
+        .iter()
+        .map(|c| AxisSpec {
+            size: normalize_fill_or_auto(c.width),
+            min: c.min_width,
+            max: c.max_width,
+        })
+        .collect();
+
+    let cell_rects = allocate_horizontal_bands(row_rect, gap, &specs);
+    for (c, cell_rect) in row.iter().zip(cell_rects) {
+        let h = resolve_cross_size(c.height, cell_rect.height, c.min_height, c.max_height);
+        let outer = Rect::new(cell_rect.x, cell_rect.y, cell_rect.width, h)
+            .intersection(row_rect)
+            .intersection(viewport);
+        push_placed_container(c, outer, out);
+    }
+}
+
+fn push_placed_container(c: &ContainerConfig, outer: Rect, out: &mut ComputedLayout) {
+    if outer.width == 0 || outer.height == 0 {
+        return;
+    }
+    let has_border = c.border.enabled && c.border.style != BorderStyle::None;
+    let has_title = c
         .border
         .title
         .as_deref()
+        .or(c.content.title.as_deref())
         .is_some_and(|t| !t.is_empty());
-    let inner_rect =
-        compute_inner_rect_with_title(outer_rect, has_border, has_title, container.padding);
-
+    let inner = compute_inner_rect_with_title(outer, has_border, has_title, c.padding);
     out.containers.push(PlacedContainer {
-        id: container.id.clone(),
-        outer_rect,
-        inner_rect,
-        transparent: container.transparent,
-        border: container.border.clone(),
-        background: container.background.clone(),
-        gradient: container.gradient.clone(),
-        opacity: container.opacity,
+        name: c.name.clone(),
+        description: c.description.clone(),
+        outer_rect: outer,
+        inner_rect: inner,
+        config: c.clone(),
     });
+}
 
-    if inner_rect.width == 0 || inner_rect.height == 0 {
-        return;
+#[derive(Debug, Clone, Copy)]
+struct AxisSpec {
+    size: ContainerSize,
+    min: Option<u16>,
+    max: Option<u16>,
+}
+
+fn normalize_fill_or_auto(s: ContainerSize) -> ContainerSize {
+    match s {
+        ContainerSize::Auto => ContainerSize::Fill(1),
+        other => other,
     }
+}
 
-    let visible_children: Vec<&ContainerNode> =
-        container.children.iter().filter(|n| n.visible()).collect();
-    if visible_children.is_empty() {
-        return;
+fn allocate_vertical_bands(area: Rect, gap: u16, specs: &[AxisSpec]) -> Vec<Rect> {
+    let (eff_gap, lengths) = allocate_axis(area.height, gap, specs);
+    let mut rects = Vec::with_capacity(lengths.len());
+    let mut cursor = area.y;
+    for (idx, len) in lengths.into_iter().enumerate() {
+        let rect = Rect::new(area.x, cursor, area.width, len).intersection(area);
+        rects.push(rect);
+        cursor = cursor.saturating_add(len);
+        if idx + 1 < specs.len() {
+            cursor = cursor.saturating_add(eff_gap);
+        }
     }
+    rects
+}
 
-    let main_avail = match container.direction {
-        ContainerDirection::Horizontal => inner_rect.width,
-        ContainerDirection::Vertical => inner_rect.height,
-    };
-    let cross_avail = match container.direction {
-        ContainerDirection::Horizontal => inner_rect.height,
-        ContainerDirection::Vertical => inner_rect.width,
-    };
+fn allocate_horizontal_bands(area: Rect, gap: u16, specs: &[AxisSpec]) -> Vec<Rect> {
+    let (eff_gap, lengths) = allocate_axis(area.width, gap, specs);
+    let mut rects = Vec::with_capacity(lengths.len());
+    let mut cursor = area.x;
+    for (idx, len) in lengths.into_iter().enumerate() {
+        let rect = Rect::new(cursor, area.y, len, area.height).intersection(area);
+        rects.push(rect);
+        cursor = cursor.saturating_add(len);
+        if idx + 1 < specs.len() {
+            cursor = cursor.saturating_add(eff_gap);
+        }
+    }
+    rects
+}
 
-    let child_specs: Vec<ChildAxisSpec> = visible_children
-        .iter()
-        .map(|node| extract_child_spec(node, container.direction))
-        .collect();
-
-    let gap_count = visible_children.len().saturating_sub(1) as u16;
-    let total_gap = container.gap.saturating_mul(gap_count).min(main_avail);
-    let effective_gap = if gap_count > 0 {
+fn allocate_axis(total_avail: u16, gap: u16, specs: &[AxisSpec]) -> (u16, Vec<u16>) {
+    if specs.is_empty() || total_avail == 0 {
+        return (0, vec![0; specs.len()]);
+    }
+    let gap_count = specs.len().saturating_sub(1) as u16;
+    let total_gap = gap.saturating_mul(gap_count).min(total_avail.saturating_sub(specs.len().min(total_avail as usize) as u16));
+    let eff_gap = if gap_count > 0 {
         total_gap / gap_count
     } else {
         0
     };
-    let usable_main = main_avail.saturating_sub(effective_gap.saturating_mul(gap_count));
+    let usable = total_avail.saturating_sub(eff_gap.saturating_mul(gap_count));
 
-    let main_sizes = allocate_main_axis(usable_main, &child_specs);
-
-    let mut cursor = match container.direction {
-        ContainerDirection::Horizontal => inner_rect.x,
-        ContainerDirection::Vertical => inner_rect.y,
-    };
-
-    for (idx, (node, main_len)) in visible_children.iter().zip(main_sizes).enumerate() {
-        let cross_len = resolve_axis_size(
-            child_specs[idx].cross_size,
-            cross_avail,
-            child_specs[idx].cross_min,
-            child_specs[idx].cross_max,
-        )
-        .min(cross_avail);
-
-        let raw_rect = match container.direction {
-            ContainerDirection::Horizontal => {
-                Rect::new(cursor, inner_rect.y, main_len, cross_len)
-            }
-            ContainerDirection::Vertical => {
-                Rect::new(inner_rect.x, cursor, cross_len, main_len)
-            }
-        };
-
-        let child_rect = raw_rect.intersection(inner_rect);
-        cursor = cursor
-            .saturating_add(main_len)
-            .saturating_add(if idx + 1 < visible_children.len() {
-                effective_gap
-            } else {
-                0
-            });
-
-        if child_rect.width == 0 || child_rect.height == 0 {
-            continue;
-        }
-
-        match node {
-            ContainerNode::Container(sub) => {
-                layout_container_node(sub, child_rect, out);
-            }
-            ContainerNode::Component(comp) => {
-                let has_border =
-                    comp.visual.border.enabled && comp.visual.border.style != BorderStyle::None;
-                let has_title = comp
-                    .visual
-                    .border
-                    .title
-                    .as_deref()
-                    .or(comp.content.title.as_deref())
-                    .is_some_and(|t| !t.is_empty());
-                let comp_inner = compute_inner_rect_with_title(
-                    child_rect,
-                    has_border,
-                    has_title,
-                    comp.visual.padding,
-                );
-                out.components.push(PlacedComponent {
-                    id: comp.id.clone(),
-                    outer_rect: child_rect,
-                    inner_rect: comp_inner,
-                    config: comp.clone(),
-                });
-            }
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-struct ChildAxisSpec {
-    main_size: ContainerSize,
-    main_min: Option<u16>,
-    main_max: Option<u16>,
-    cross_size: ContainerSize,
-    cross_min: Option<u16>,
-    cross_max: Option<u16>,
-}
-
-fn extract_child_spec(node: &ContainerNode, parent_dir: ContainerDirection) -> ChildAxisSpec {
-    let (w, h, min_w, max_w, min_h, max_h) = match node {
-        ContainerNode::Container(c) => (
-            c.width,
-            c.height,
-            c.min_width,
-            c.max_width,
-            c.min_height,
-            c.max_height,
-        ),
-        ContainerNode::Component(c) => (
-            c.width,
-            c.height,
-            c.min_width,
-            c.max_width,
-            c.min_height,
-            c.max_height,
-        ),
-    };
-
-    match parent_dir {
-        ContainerDirection::Horizontal => ChildAxisSpec {
-            main_size: w,
-            main_min: min_w,
-            main_max: max_w,
-            cross_size: h,
-            cross_min: min_h,
-            cross_max: max_h,
-        },
-        ContainerDirection::Vertical => ChildAxisSpec {
-            main_size: h,
-            main_min: min_h,
-            main_max: max_h,
-            cross_size: w,
-            cross_min: min_w,
-            cross_max: max_w,
-        },
-    }
-}
-
-fn allocate_main_axis(usable_main: u16, specs: &[ChildAxisSpec]) -> Vec<u16> {
     let mut sizes = vec![0u16; specs.len()];
-    let mut remaining = usable_main;
+    let mut remaining = usable;
     let mut fill_indices = Vec::new();
     let mut total_fill_weight: u32 = 0;
 
-    // Pass 1: Fixed and Percent children
+    // Pass 1: compute desired Fixed and Percent lengths
+    let mut desired_fixed_sum: u32 = 0;
+    let mut desired = vec![0u16; specs.len()];
     for (idx, spec) in specs.iter().enumerate() {
-        match spec.main_size {
+        match spec.size {
             ContainerSize::Fixed(n) => {
-                let clamped = clamp_bounds(n, spec.main_min, spec.main_max).min(remaining);
-                sizes[idx] = clamped;
-                remaining = remaining.saturating_sub(clamped);
+                let d = clamp_bounds(n, spec.min, spec.max);
+                desired[idx] = d;
+                desired_fixed_sum += d as u32;
             }
             ContainerSize::Percent(pct) => {
-                let raw = ((usable_main as u32 * pct.min(100) as u32) / 100) as u16;
-                let clamped = clamp_bounds(raw, spec.main_min, spec.main_max).min(remaining);
-                sizes[idx] = clamped;
-                remaining = remaining.saturating_sub(clamped);
+                let raw = ((usable as u32 * pct.min(100) as u32) / 100) as u16;
+                let d = clamp_bounds(raw, spec.min, spec.max);
+                desired[idx] = d;
+                desired_fixed_sum += d as u32;
             }
-            ContainerSize::Fill(weight) => {
-                let w = weight.max(1) as u32;
-                total_fill_weight = total_fill_weight.saturating_add(w);
-                fill_indices.push((idx, w));
+            ContainerSize::Fill(_) | ContainerSize::Auto => {
+                let weight = match spec.size {
+                    ContainerSize::Fill(v) => v.max(1) as u32,
+                    _ => 1,
+                };
+                total_fill_weight += weight;
+                fill_indices.push((idx, weight));
             }
         }
     }
 
-    // Pass 2: Distribute remaining space among Fill children
+    // If Fixed+Percent items exceed usable space, scale them proportionally so later bands aren't starved to 0.
+    if desired_fixed_sum > usable as u32 && desired_fixed_sum > 0 {
+        for (idx, spec) in specs.iter().enumerate() {
+            if matches!(spec.size, ContainerSize::Fixed(_) | ContainerSize::Percent(_)) {
+                let scaled = ((desired[idx] as u32 * usable as u32) / desired_fixed_sum) as u16;
+                let alloc = scaled.min(remaining);
+                sizes[idx] = alloc;
+                remaining = remaining.saturating_sub(alloc);
+            }
+        }
+    } else {
+        for (idx, spec) in specs.iter().enumerate() {
+            if matches!(spec.size, ContainerSize::Fixed(_) | ContainerSize::Percent(_)) {
+                let alloc = desired[idx].min(remaining);
+                sizes[idx] = alloc;
+                remaining = remaining.saturating_sub(alloc);
+            }
+        }
+    }
+
+    // Pass 2: distribute remaining space proportionally among Fill/Auto items
     if !fill_indices.is_empty() && remaining > 0 && total_fill_weight > 0 {
         let mut fill_remaining = remaining;
         for (pos, &(idx, weight)) in fill_indices.iter().enumerate() {
@@ -428,17 +677,16 @@ fn allocate_main_axis(usable_main: u16, specs: &[ChildAxisSpec]) -> Vec<u16> {
             } else {
                 ((remaining as u32 * weight) / total_fill_weight) as u16
             };
-            let clamped = clamp_bounds(raw, specs[idx].main_min, specs[idx].main_max)
-                .min(fill_remaining);
+            let clamped = clamp_bounds(raw, specs[idx].min, specs[idx].max).min(fill_remaining);
             sizes[idx] = clamped;
             fill_remaining = fill_remaining.saturating_sub(clamped);
         }
     }
 
-    sizes
+    (eff_gap, sizes)
 }
 
-fn resolve_axis_size(
+fn resolve_cross_size(
     size: ContainerSize,
     avail: u16,
     min_v: Option<u16>,
@@ -447,7 +695,7 @@ fn resolve_axis_size(
     let raw = match size {
         ContainerSize::Fixed(n) => n,
         ContainerSize::Percent(pct) => ((avail as u32 * pct.min(100) as u32) / 100) as u16,
-        ContainerSize::Fill(_) => avail,
+        ContainerSize::Fill(_) | ContainerSize::Auto => avail,
     };
     clamp_bounds(raw, min_v, max_v).min(avail)
 }
