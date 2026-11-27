@@ -1070,6 +1070,14 @@ fn popup_layout_prevents_overflow_handles_unicode_and_resizes_cleanly() {
             })
             .unwrap();
         let buf = terminal.backend().buffer();
+        let mut bottom_row = String::new();
+        for x in 0..term_w {
+            bottom_row.push_str(buf[(x, term_h - 1)].symbol());
+        }
+        assert!(
+            bottom_row.starts_with(':'),
+            "Vim-style command line must be anchored on the absolute bottom row at {term_w}x{term_h}, got: {bottom_row:?}"
+        );
         let mut dumped = String::new();
         for y in 0..term_h {
             for x in 0..term_w {
@@ -1078,10 +1086,89 @@ fn popup_layout_prevents_overflow_handles_unicode_and_resizes_cleanly() {
             dumped.push('\n');
         }
         assert!(
-            dumped.contains(theme.borders.vertical.as_str()),
-            "completion popup border missing at {term_w}x{term_h}:\n{dumped}"
+            !dumped.contains(theme.borders.vertical.as_str())
+                && !dumped.contains(theme.borders.horizontal.as_str()),
+            "Vim-style command line & wildmenu must not render a bordered box at {term_w}x{term_h}:\n{dumped}"
         );
     }
+}
+
+#[test]
+fn global_border_style_applies_to_all_containers_and_none_removes_all() {
+    use egotop::system::SystemCollector;
+    use egotop::ui::borders::BorderChars;
+    use egotop::ui::layout::compute_dashboard_layout;
+    use egotop::ui::widgets::render_containers;
+
+    let mut cfg = Config::default();
+    let area = Rect::new(0, 0, 100, 34);
+    let snap = SystemCollector::new().collect(100, 34);
+    let reveal = RevealState::complete();
+    let anim_store = egotop::ui::components::ComponentAnimationStore::new();
+
+    for style in [
+        BorderStyle::Rounded,
+        BorderStyle::Plain,
+        BorderStyle::Double,
+        BorderStyle::Thick,
+        BorderStyle::Ascii,
+    ] {
+        cfg.theme.border_type = style;
+        let mut theme = Theme::from_config(&cfg.theme);
+        theme.set_border_style(style);
+        let layout = compute_dashboard_layout(area, &cfg, ViewMode::Dashboard);
+        assert!(
+            layout.containers.iter().all(|c| c.outer_rect.bottom() <= area.bottom() - 1),
+            "dashboard layout must leave bottom row free for Vim command line"
+        );
+
+        let ctx = RenderContext {
+            config: &cfg,
+            theme: &theme,
+            snapshot: &snap,
+            reveal: &reveal,
+            view_mode: ViewMode::Dashboard,
+            paused: false,
+            show_help: false,
+            fps: 30.0,
+            status_toast: None,
+            transparent_bg: false,
+            config_error_count: 0,
+        };
+
+        let mut terminal = Terminal::new(TestBackend::new(area.width, area.height)).unwrap();
+        terminal
+            .draw(|frame| {
+                render_containers(frame, &layout, &anim_store, &ctx);
+            })
+            .unwrap();
+
+        let buf = terminal.backend().buffer();
+        let expected_chars = BorderChars::from_style(style);
+        let first_bordered = layout
+            .containers
+            .iter()
+            .find(|c| c.config.border.enabled && c.outer_rect.width >= 4 && c.outer_rect.height >= 4)
+            .expect("expected at least one bordered container");
+        let tl = buf[(first_bordered.outer_rect.x, first_bordered.outer_rect.y)].symbol();
+        assert_eq!(
+            tl,
+            expected_chars.top_left.as_str(),
+            "container '{}' should render {:?} top-left border",
+            first_bordered.name,
+            style
+        );
+    }
+
+    // BorderStyle::None removes borders globally across all containers
+    cfg.theme.border_type = BorderStyle::None;
+    let mut theme_none = Theme::from_config(&cfg.theme);
+    theme_none.set_border_style(BorderStyle::None);
+    let layout_none = compute_dashboard_layout(area, &cfg, ViewMode::Dashboard);
+    assert!(
+        layout_none.containers.iter().all(|c| !c.config.border.enabled),
+        "all containers must disable borders when global border_type is None"
+    );
 }
 
 #[test]

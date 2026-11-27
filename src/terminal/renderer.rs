@@ -8,7 +8,7 @@ use crate::ui::customizer::{CustomizerState, render_customizer, render_help_over
 use crate::ui::layout::{ExclusionMask, compute_dashboard_layout};
 use crate::ui::theme::parse_color;
 use crate::ui::widgets::{
-    RenderContext, apply_color_opacity, render_command_line_with_footer, render_containers,
+    RenderContext, apply_color_opacity, render_command_line, render_containers,
     render_gradient_bg_with_opacity,
 };
 use ratatui::Frame;
@@ -117,11 +117,7 @@ pub fn draw_frame(
         render_help_overlay(frame, area, ctx.theme);
     }
 
-    let footer_rect = layout
-        .find_container("status_spinner")
-        .filter(|c| c.outer_rect.height >= 3)
-        .map(|c| c.outer_rect);
-    render_command_line_with_footer(frame, area, footer_rect, command_line, ctx);
+    render_command_line(frame, area, command_line, ctx);
 }
 
 pub fn render_lua_animation_overlay(

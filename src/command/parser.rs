@@ -1,5 +1,5 @@
 use crate::config::schema::is_valid_color_spec;
-use crate::config::{BorderStyle, EffectKind, ViewMode};
+use crate::config::{BorderStyle, ViewMode};
 use crate::ui::borders::parse_border_style;
 use crate::ui::container::{
     BackgroundFill, ComponentKind, EffectPolicy, GradientDirection,

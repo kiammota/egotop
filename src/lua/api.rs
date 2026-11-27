@@ -560,12 +560,11 @@ fn parse_border_table(tbl: &Table) -> ContainerBorderConfig {
     let style = tbl
         .get::<String>("style")
         .ok()
-        .and_then(|s| parse_border_style(&s).ok())
-        .unwrap_or(BorderStyle::Rounded);
+        .and_then(|s| parse_border_style(&s).ok());
     let color = tbl.get::<Option<String>>("color").unwrap_or(None);
     let title = tbl.get::<Option<String>>("title").unwrap_or(None);
     ContainerBorderConfig {
-        enabled: enabled && style != BorderStyle::None,
+        enabled: enabled && style != Some(BorderStyle::None),
         style,
         color,
         title,

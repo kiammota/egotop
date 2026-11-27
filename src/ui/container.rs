@@ -169,7 +169,7 @@ impl<'de> Deserialize<'de> for ContainerSize {
 #[serde(default)]
 pub struct ContainerBorderConfig {
     pub enabled: bool,
-    pub style: BorderStyle,
+    pub style: Option<BorderStyle>,
     pub color: Option<String>,
     pub title: Option<String>,
 }
@@ -178,7 +178,7 @@ impl Default for ContainerBorderConfig {
     fn default() -> Self {
         Self {
             enabled: false,
-            style: BorderStyle::Rounded,
+            style: None,
             color: None,
             title: None,
         }
@@ -189,7 +189,7 @@ impl ContainerBorderConfig {
     pub fn titled(title: impl Into<String>) -> Self {
         Self {
             enabled: true,
-            style: BorderStyle::Rounded,
+            style: None,
             color: None,
             title: Some(title.into()),
         }
@@ -620,7 +620,7 @@ pub fn default_containers() -> Vec<ContainerConfig> {
             height: ContainerSize::Fixed(3),
             border: ContainerBorderConfig {
                 enabled: true,
-                style: BorderStyle::Rounded,
+                style: None,
                 color: None,
                 title: None,
             },

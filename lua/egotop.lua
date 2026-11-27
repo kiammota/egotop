@@ -93,7 +93,7 @@ egotop.layout({
             min_height = 6,
             align = "center",
             font = "ANSI Shadow",
-            border = { enabled = true, style = "rounded", title = "Welcome" },
+            border = { enabled = true, title = "Welcome" },
         }),
         egotop.container({
             name = "system",
@@ -106,7 +106,7 @@ egotop.layout({
             height = "fill",
             min_height = 6,
             padding = 1,
-            border = { enabled = true, style = "rounded", title = "System" },
+            border = { enabled = true, title = "System" },
         }),
         egotop.container({
             name = "hardware",
@@ -120,7 +120,7 @@ egotop.layout({
             min_height = 6,
             padding = 1,
             graph_style = "bar",
-            border = { enabled = true, style = "rounded", title = "Hardware" },
+            border = { enabled = true, title = "Hardware" },
         }),
         egotop.container({
             name = "environment",
@@ -133,7 +133,7 @@ egotop.layout({
             height = "fill",
             min_height = 5,
             padding = 1,
-            border = { enabled = true, style = "rounded", title = "Environment" },
+            border = { enabled = true, title = "Environment" },
         }),
         egotop.container({
             name = "terminal",
@@ -146,7 +146,7 @@ egotop.layout({
             height = "fill",
             min_height = 5,
             padding = 1,
-            border = { enabled = true, style = "rounded", title = "Terminal" },
+            border = { enabled = true, title = "Terminal" },
         }),
         egotop.container({
             name = "storage",
@@ -159,7 +159,7 @@ egotop.layout({
             height = "fill",
             min_height = 5,
             padding = 1,
-            border = { enabled = true, style = "rounded", title = "Storage" },
+            border = { enabled = true, title = "Storage" },
         }),
         egotop.container({
             name = "activity",
@@ -173,7 +173,7 @@ egotop.layout({
             min_height = 6,
             padding = 1,
             graph_style = "sparkline",
-            border = { enabled = true, style = "rounded", title = "Activity" },
+            border = { enabled = true, title = "Activity" },
         }),
         egotop.container({
             name = "network",
@@ -186,7 +186,7 @@ egotop.layout({
             height = "fill",
             min_height = 6,
             padding = 1,
-            border = { enabled = true, style = "rounded", title = "Network" },
+            border = { enabled = true, title = "Network" },
         }),
         egotop.container({
             name = "session",
@@ -199,7 +199,7 @@ egotop.layout({
             height = "fill",
             min_height = 6,
             padding = 1,
-            border = { enabled = true, style = "rounded", title = "Session & Uptime" },
+            border = { enabled = true, title = "Session & Uptime" },
         }),
         egotop.container({
             name = "status_spinner",
@@ -210,7 +210,7 @@ egotop.layout({
             category = "animated",
             width = "100%",
             height = 3,
-            border = { enabled = true, style = "rounded" },
+            border = { enabled = true },
             text = "Monitoring system telemetry",
             animation = { fps = 12, speed = 1.0, style = "braille" },
         }),

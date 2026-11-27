@@ -65,7 +65,6 @@ pub fn compute_dashboard_layout(
     cfg: &Config,
     view_mode: ViewMode,
 ) -> ComputedLayout {
-    let no_borders = cfg.theme.border_type == BorderStyle::None;
     let mut ui = match view_mode {
         ViewMode::Dashboard => cfg.ui.clone(),
         ViewMode::Compact => {
@@ -98,13 +97,28 @@ pub fn compute_dashboard_layout(
         }
     };
 
-    if no_borders {
-        for c in &mut ui.containers {
+    for c in &mut ui.containers {
+        let ov_style = cfg
+            .container_styles
+            .get(&c.name)
+            .and_then(|s| s.border_style);
+        let eff_style = ov_style.or(c.border.style).unwrap_or(cfg.theme.border_type);
+        if eff_style == BorderStyle::None {
             c.border.enabled = false;
+        } else if let Some(st) = ov_style {
+            c.border.style = Some(st);
         }
     }
 
-    compute_layout(screen, &ui)
+    // Reserve the absolute bottom row permanently for the Vim-style command line
+    // so opening, typing, or closing `:` never shifts or resizes dashboard containers.
+    let dashboard_area = if screen.height >= 2 {
+        Rect::new(screen.x, screen.y, screen.width, screen.height - 1)
+    } else {
+        screen
+    };
+
+    compute_layout(dashboard_area, &ui)
 }
 
 /// Computes deterministic, balanced, non-overlapping `Rect` geometry for a flat queue of
@@ -541,7 +555,7 @@ fn push_placed_container(c: &ContainerConfig, outer: Rect, out: &mut ComputedLay
     if outer.width == 0 || outer.height == 0 {
         return;
     }
-    let has_border = c.border.enabled && c.border.style != BorderStyle::None;
+    let has_border = c.border.enabled && c.border.style != Some(BorderStyle::None);
     let has_title = c
         .border
         .title

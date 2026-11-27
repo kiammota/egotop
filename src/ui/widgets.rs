@@ -110,7 +110,7 @@ fn render_placed_container(
             cont.border.color = Some(c.clone());
         }
         if let Some(st) = ov.border_style {
-            cont.border.style = st;
+            cont.border.style = Some(st);
             cont.border.enabled = st != BorderStyle::None;
         }
     }
@@ -148,10 +148,8 @@ fn render_placed_container(
     if border.title.is_none() {
         border.title = cont.content.title.clone();
     }
-    let show_border = border.enabled
-        && border.style != BorderStyle::None
-        && (ctx.config.theme.border_type != BorderStyle::None
-            || style_override.and_then(|s| s.border_style).is_some());
+    let resolved_style = border.style.unwrap_or(ctx.config.theme.border_type);
+    let show_border = border.enabled && resolved_style != BorderStyle::None;
 
     // Paint the container's outer surface (background, gradient, border/title) inside an isolated buffer.
     let local_outer = Rect::new(0, 0, outer.width, outer.height);
@@ -303,9 +301,10 @@ fn render_border_block_to_buf(
         .as_deref()
         .map(|c| parse_color(c, ctx.theme.border))
         .unwrap_or(ctx.theme.border);
-    let custom_chars = BorderChars::from_style(border.style);
-    let border_set = if border.style != BorderStyle::None {
-        custom_chars.as_ratatui_set()
+    let border_chars_owned;
+    let border_set = if let Some(explicit_style) = border.style {
+        border_chars_owned = BorderChars::from_style(explicit_style);
+        border_chars_owned.as_ratatui_set()
     } else {
         ctx.theme.borders.as_ratatui_set()
     };
@@ -1631,71 +1630,33 @@ pub fn render_command_line(
     cmd_state: &CommandLineState,
     ctx: &RenderContext,
 ) {
-    render_command_line_with_footer(frame, screen, None, cmd_state, ctx);
-}
-
-pub fn render_command_line_with_footer(
-    frame: &mut Frame,
-    screen: Rect,
-    footer_rect: Option<Rect>,
-    cmd_state: &CommandLineState,
-    ctx: &RenderContext,
-) {
     if screen.height == 0 || screen.width == 0 {
         return;
     }
 
-    if !cmd_state.active && ctx.status_toast.is_none() {
-        return;
-    }
-
-    let box_rect = footer_rect.map(|r| r.intersection(screen)).unwrap_or_else(|| {
-        if screen.height >= 4 && screen.width >= 8 {
-            Rect::new(
-                screen.x.saturating_add(1),
-                screen.bottom().saturating_sub(3),
-                screen.width.saturating_sub(2),
-                3,
-            )
-        } else {
-            Rect::new(screen.x, screen.bottom() - 1, screen.width, 1)
-        }
-    });
-
-    if cmd_state.active && cmd_state.popup_open && !cmd_state.suggestions.is_empty() && screen.height >= 5 {
-        render_completion_popup(frame, screen, box_rect.y, cmd_state, ctx);
-    }
-
-    let use_box = box_rect.height >= 3 && box_rect.width >= 6;
-    let inner = if use_box {
-        if !ctx.transparent_bg {
-            frame.render_widget(Clear, box_rect);
-        }
-        let border_fg = if cmd_state.active {
-            ctx.theme.primary
-        } else {
-            ctx.theme.accent
-        };
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_set(ctx.theme.borders.as_ratatui_set())
-            .border_style(Style::default().fg(border_fg).bg(ctx.panel_bg()))
-            .style(ctx.panel_style());
-        let in_r = block.inner(box_rect);
-        frame.render_widget(block, box_rect);
-        in_r
+    let cmd_rect = Rect::new(screen.x, screen.bottom().saturating_sub(1), screen.width, 1);
+    let base_bg = if ctx.transparent_bg {
+        Color::Reset
     } else {
-        if !ctx.transparent_bg {
-            frame.render_widget(Clear, box_rect);
-        }
-        box_rect
+        ctx.theme.background
     };
+    let bar_style = Style::default().fg(ctx.theme.text).bg(base_bg);
 
-    if inner.width == 0 || inner.height == 0 {
-        return;
+    // Integrate the command line directly on the absolute bottom row of the terminal
+    // with no container, window, borders, title, or panel background.
+    let buf = frame.buffer_mut();
+    for x in cmd_rect.x..cmd_rect.right() {
+        if let Some(cell) = buf.cell_mut((x, cmd_rect.y)) {
+            cell.set_symbol(" ");
+            cell.set_style(bar_style);
+        }
     }
 
     if cmd_state.active {
+        if cmd_state.popup_open && !cmd_state.suggestions.is_empty() && screen.height >= 2 {
+            render_vim_wildmenu(frame, screen, cmd_rect.y, cmd_state, ctx, base_bg);
+        }
+
         let cursor = cmd_state.cursor.min(cmd_state.buffer.len());
         let before = &cmd_state.buffer[..cursor];
         let (cursor_ch, after) = if cursor < cmd_state.buffer.len() {
@@ -1706,185 +1667,162 @@ pub fn render_command_line_with_footer(
             (" ".to_string(), "")
         };
 
+        let cursor_fg = if base_bg == Color::Reset {
+            Color::Black
+        } else {
+            base_bg
+        };
+
         let line = Line::from(vec![
             Span::styled(
-                if use_box { " :" } else { ":" },
+                ":",
                 Style::default()
                     .fg(ctx.theme.primary)
+                    .bg(base_bg)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::styled(before.to_string(), Style::default().fg(ctx.theme.text)),
+            Span::styled(before.to_string(), bar_style),
             Span::styled(
                 cursor_ch,
                 Style::default()
-                    .fg(ctx.theme.background)
+                    .fg(cursor_fg)
                     .bg(ctx.theme.primary)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::styled(after.to_string(), Style::default().fg(ctx.theme.text)),
+            Span::styled(after.to_string(), bar_style),
         ]);
-        frame.render_widget(Paragraph::new(line).style(ctx.panel_style()), inner);
+        frame.render_widget(Paragraph::new(line).style(bar_style), cmd_rect);
     } else if let Some(msg) = ctx.status_toast {
+        let msg_text = truncate_display_width(msg, cmd_rect.width as usize);
         let line = Line::from(Span::styled(
-            format!(" ✦ {msg}"),
-            Style::default()
-                .fg(ctx.theme.accent)
-                .add_modifier(Modifier::BOLD),
+            msg_text,
+            Style::default().fg(ctx.theme.accent).bg(base_bg),
         ));
-        frame.render_widget(Paragraph::new(line).style(ctx.panel_style()), inner);
+        frame.render_widget(Paragraph::new(line).style(bar_style), cmd_rect);
     }
 }
 
-fn render_completion_popup(
+pub fn render_command_line_with_footer(
     frame: &mut Frame,
     screen: Rect,
-    anchor_y: u16,
+    _footer_rect: Option<Rect>,
     cmd_state: &CommandLineState,
     ctx: &RenderContext,
 ) {
-    let total = cmd_state.suggestions.len();
-    let max_visible = 7usize.min(anchor_y.saturating_sub(screen.y + 2) as usize).max(1);
-    let shown_count = total.min(max_visible);
-    let popup_h = (shown_count as u16) + 2;
+    render_command_line(frame, screen, cmd_state, ctx);
+}
 
-    let popup_w = 72u16
-        .min(screen.width.saturating_sub(2))
-        .max(20.min(screen.width));
-    if popup_w < 12 || popup_h < 3 || anchor_y <= screen.y + 1 {
+fn render_vim_wildmenu(
+    frame: &mut Frame,
+    screen: Rect,
+    cmd_y: u16,
+    cmd_state: &CommandLineState,
+    ctx: &RenderContext,
+    base_bg: Color,
+) {
+    if cmd_y <= screen.y || screen.width < 4 {
         return;
     }
 
-    let popup_x = screen.x + 1.min(screen.width.saturating_sub(popup_w));
-    let popup_y = anchor_y.saturating_sub(popup_h);
-    let popup = Rect::new(popup_x, popup_y, popup_w, popup_h);
+    let wild_y = cmd_y - 1;
+    let wild_rect = Rect::new(screen.x, wild_y, screen.width, 1);
+    let strip_style = Style::default().fg(ctx.theme.text).bg(base_bg);
 
-    if !ctx.transparent_bg {
-        frame.render_widget(Clear, popup);
+    let buf = frame.buffer_mut();
+    for x in wild_rect.x..wild_rect.right() {
+        if let Some(cell) = buf.cell_mut((x, wild_rect.y)) {
+            cell.set_symbol(" ");
+            cell.set_style(strip_style);
+        }
     }
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_set(ctx.theme.borders.as_ratatui_set())
-        .border_style(ctx.border_style(None))
-        .style(ctx.panel_style());
-    let inner_raw = block.inner(popup);
-    frame.render_widget(block, popup);
-
-    let inner = if inner_raw.width >= 4 {
-        Rect::new(
-            inner_raw.x + 1,
-            inner_raw.y,
-            inner_raw.width - 2,
-            inner_raw.height,
-        )
-    } else {
-        inner_raw
-    };
 
     let sel = cmd_state.selected_suggestion;
-    let scroll_start = match sel {
-        Some(idx) if idx >= shown_count => idx + 1 - shown_count,
-        _ => 0,
-    };
+    let total = cmd_state.suggestions.len();
+    let max_w = wild_rect.width as usize;
 
-    let avail_width = inner.width as usize;
-    if avail_width <= 2 {
-        return;
+    // Determine starting index so the selected suggestion stays visible in the horizontal wildmenu.
+    let mut start_idx = 0usize;
+    if let Some(sel_idx) = sel {
+        let mut width_from_start = 0usize;
+        for i in 0..=sel_idx.min(total.saturating_sub(1)) {
+            width_from_start += cmd_state.suggestions[i].label.width() + 2;
+        }
+        while width_from_start > max_w.saturating_sub(4) && start_idx < sel_idx {
+            width_from_start =
+                width_from_start.saturating_sub(cmd_state.suggestions[start_idx].label.width() + 2);
+            start_idx += 1;
+        }
     }
 
-    let visible: Vec<_> = cmd_state
-        .suggestions
-        .iter()
-        .skip(scroll_start)
-        .take(shown_count)
-        .collect();
-    let max_label_w = visible
-        .iter()
-        .map(|i| i.label.width())
-        .max()
-        .unwrap_or(8);
-    let pref_name_w = (max_label_w + 1).clamp(10, 18);
-    let max_arg_w = visible
-        .iter()
-        .filter_map(|i| i.expected_arg.as_deref())
-        .map(UnicodeWidthStr::width)
-        .max()
-        .unwrap_or(0);
-    let pref_arg_w = if max_arg_w > 0 {
-        (max_arg_w + 1).clamp(6, 14)
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    let mut used_w = 0usize;
+    if start_idx > 0 {
+        spans.push(Span::styled(
+            "< ",
+            Style::default().fg(ctx.theme.muted).bg(base_bg),
+        ));
+        used_w += 2;
+    }
+
+    let hi_fg = if base_bg == Color::Reset {
+        Color::Black
     } else {
-        0
+        base_bg
     };
 
-    let prefix_w = 2usize;
-    let content_avail = avail_width.saturating_sub(prefix_w);
-    let (name_w, arg_w, desc_w) =
-        allocate_three_column_widths(content_avail, pref_name_w, 8, pref_arg_w);
-
-    let panel_bg = ctx.panel_bg();
-    let mut lines = Vec::with_capacity(shown_count);
-    for (rel_idx, item) in visible.into_iter().enumerate() {
-        let abs_idx = scroll_start + rel_idx;
-        let is_selected = sel == Some(abs_idx);
-
-        let name_col = if arg_w > 0 || desc_w > 0 {
-            format!("{} ", pad_display_width(&item.label, name_w.saturating_sub(1)))
-        } else {
-            pad_display_width(&item.label, name_w)
-        };
-        let arg_col = if arg_w > 0 {
-            let arg_text = item.expected_arg.as_deref().unwrap_or("");
-            if desc_w > 0 {
-                format!("{} ", pad_display_width(arg_text, arg_w.saturating_sub(1)))
-            } else {
-                pad_display_width(arg_text, arg_w)
-            }
-        } else {
-            String::new()
-        };
-
-        let row_bg = if is_selected {
-            ctx.theme.secondary
-        } else {
-            panel_bg
-        };
-        let fg_hi = ctx.theme.background;
-        let prefix_fg = if is_selected { fg_hi } else { ctx.theme.primary };
-        let name_fg = if is_selected { fg_hi } else { ctx.theme.primary };
-        let arg_fg = if is_selected { fg_hi } else { ctx.theme.accent };
-        let desc_fg = if is_selected { fg_hi } else { ctx.theme.muted };
-
-        let desc = if desc_w > 0 {
-            if is_selected {
-                pad_display_width(&item.description, desc_w)
-            } else {
-                truncate_display_width(&item.description, desc_w)
-            }
-        } else {
-            String::new()
-        };
-
-        let mut spans = vec![
-            Span::styled(
-                if is_selected { "▶ " } else { "  " },
-                Style::default().fg(prefix_fg).bg(row_bg),
-            ),
-            Span::styled(
-                name_col,
-                Style::default()
-                    .fg(name_fg)
-                    .bg(row_bg)
-                    .add_modifier(Modifier::BOLD),
-            ),
-        ];
-        if arg_w > 0 {
-            spans.push(Span::styled(arg_col, Style::default().fg(arg_fg).bg(row_bg)));
+    let mut clipped_right = false;
+    for (idx, item) in cmd_state.suggestions.iter().enumerate().skip(start_idx) {
+        let token = format!(" {} ", item.label);
+        let tw = token.width();
+        if used_w + tw + 2 > max_w && !spans.is_empty() {
+            clipped_right = idx < total;
+            break;
         }
-        if desc_w > 0 {
-            spans.push(Span::styled(desc, Style::default().fg(desc_fg).bg(row_bg)));
-        }
-
-        lines.push(Line::from(spans));
+        let is_selected = sel == Some(idx);
+        let style = if is_selected {
+            Style::default()
+                .fg(hi_fg)
+                .bg(ctx.theme.primary)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(ctx.theme.primary).bg(base_bg)
+        };
+        spans.push(Span::styled(token, style));
+        used_w += tw;
     }
 
-    frame.render_widget(Paragraph::new(lines), inner);
+    if clipped_right && used_w + 2 <= max_w {
+        spans.push(Span::styled(
+            " >",
+            Style::default().fg(ctx.theme.muted).bg(base_bg),
+        ));
+    }
+
+    frame.render_widget(Paragraph::new(Line::from(spans)).style(strip_style), wild_rect);
+
+    // Optional borderless single-line description/arg hint directly above wildmenu for the selected item.
+    if let Some(sel_idx) = sel
+        && let Some(item) = cmd_state.suggestions.get(sel_idx)
+        && wild_y > screen.y
+    {
+        let hint_y = wild_y - 1;
+        let hint_rect = Rect::new(screen.x, hint_y, screen.width, 1);
+        let buf = frame.buffer_mut();
+        for x in hint_rect.x..hint_rect.right() {
+            if let Some(cell) = buf.cell_mut((x, hint_rect.y)) {
+                cell.set_symbol(" ");
+                cell.set_style(strip_style);
+            }
+        }
+        let hint_text = match item.expected_arg.as_deref() {
+            Some(arg) if !arg.is_empty() => format!(" {} {} - {}", item.label, arg, item.description),
+            _ => format!(" {} - {}", item.label, item.description),
+        };
+        let truncated = truncate_display_width(&hint_text, hint_rect.width as usize);
+        let hint_line = Line::from(Span::styled(
+            truncated,
+            Style::default().fg(ctx.theme.muted).bg(base_bg),
+        ));
+        frame.render_widget(Paragraph::new(hint_line).style(strip_style), hint_rect);
+    }
 }

@@ -130,17 +130,22 @@ fn write_container(out: &mut String, c: &ContainerConfig, indent: usize) {
     if let Some(op) = c.opacity {
         let _ = writeln!(out, "{ip}opacity = {op:.2},");
     }
-    if c.border.enabled || c.border.title.is_some() {
+    if c.border.enabled || c.border.title.is_some() || c.border.style.is_some() {
+        let style_part = c
+            .border
+            .style
+            .map(|st| format!(", style = \"{}\"", st.label()))
+            .unwrap_or_default();
+        let title_part = c
+            .border
+            .title
+            .as_deref()
+            .map(|t| format!(", title = {}", lua_str(t)))
+            .unwrap_or_default();
         let _ = writeln!(
             out,
-            "{ip}border = {{ enabled = {}, style = \"{}\"{} }},",
+            "{ip}border = {{ enabled = {}{style_part}{title_part} }},",
             c.border.enabled,
-            c.border.style.label(),
-            c.border
-                .title
-                .as_deref()
-                .map(|t| format!(", title = {}", lua_str(t)))
-                .unwrap_or_default()
         );
     }
     let _ = writeln!(out, "{pad}}}),");
