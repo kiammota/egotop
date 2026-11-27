@@ -1,13 +1,17 @@
 use crate::command::CommandLineState;
 use crate::config::{Align, BorderStyle, Config, GraphStyle, ViewMode};
 use crate::system::{SystemSnapshot, format_bytes, uptime::format_uptime};
-use crate::ui::components::{ComponentAnimationStore, render_animated_component, render_clipped};
+use crate::ui::components::{
+    ComponentAnimState, ComponentAnimationStore, render_animated_component, render_clipped,
+};
 use crate::ui::container::{
     ComponentCategory, ComponentConfig, ComponentKind, ContainerBorderConfig,
 };
 use crate::ui::layout::{ComputedLayout, PlacedComponent, PlacedContainer};
 use crate::ui::theme::{Theme, parse_color};
-use crate::ui::typography::{IconSet, RevealState, render_ascii_heading, resolve_logo_lines};
+use crate::ui::typography::{
+    IconSet, RevealState, render_figlet_lines, resolve_logo_lines, slice_marquee_lines,
+};
 use chrono::Local;
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
@@ -129,7 +133,7 @@ fn render_placed_component(
     }
 
     match comp.category {
-        ComponentCategory::Static => render_static_component(frame, inner, comp, ctx),
+        ComponentCategory::Static => render_static_component(frame, inner, comp, anim_store, ctx),
         ComponentCategory::Dynamic => render_dynamic_component(frame, inner, comp, ctx),
         ComponentCategory::Animated => {
             render_animated_component(frame, inner, comp, anim_store, ctx.config, ctx.theme);
@@ -176,10 +180,11 @@ fn render_static_component(
     frame: &mut Frame,
     area: Rect,
     comp: &ComponentConfig,
+    anim_store: &ComponentAnimationStore,
     ctx: &RenderContext,
 ) {
     match comp.kind {
-        ComponentKind::Greeting => render_greeting_component(frame, area, comp, ctx),
+        ComponentKind::Greeting => render_greeting_component(frame, area, comp, anim_store, ctx),
         ComponentKind::AsciiLogo => render_logo_component(frame, area, comp, ctx),
         ComponentKind::Separator => render_separator_component(frame, area, comp, ctx),
         _ => render_text_component(frame, area, comp, ctx),
@@ -327,6 +332,7 @@ fn render_greeting_component(
     frame: &mut Frame,
     area: Rect,
     comp: &ComponentConfig,
+    anim_store: &ComponentAnimationStore,
     ctx: &RenderContext,
 ) {
     if area.width == 0 || area.height == 0 {
@@ -400,22 +406,26 @@ fn render_greeting_component(
         .as_deref()
         .unwrap_or(&ctx.config.typography.font);
 
-    let figlet_lines = if text_area.height >= 6 {
-        render_ascii_heading(
+    let raw_figlet = if text_area.height >= 5 {
+        render_figlet_lines(
             &greeting_text,
             font_name,
             ctx.config.typography.ascii_fallback,
-            text_area.width.saturating_sub(2),
-        )
-    } else if text_area.height >= 4 {
-        render_ascii_heading(
-            &greeting_text,
-            "Small",
-            ctx.config.typography.ascii_fallback,
-            text_area.width.saturating_sub(2),
         )
     } else {
         vec![greeting_text.clone()]
+    };
+
+    let widest = raw_figlet.iter().map(|l| l.width()).max().unwrap_or(0);
+    let is_marquee = widest > text_area.width as usize && text_area.width > 0;
+    let figlet_lines = if is_marquee {
+        let offset = match anim_store.get(&comp.id) {
+            Some(ComponentAnimState::Marquee(st)) => st.offset_cols.floor() as usize,
+            _ => 0,
+        };
+        slice_marquee_lines(&raw_figlet, text_area.width as usize, offset, 6)
+    } else {
+        raw_figlet
     };
 
     let accent_color = comp
@@ -429,7 +439,7 @@ fn render_greeting_component(
         .into_iter()
         .enumerate()
         .map(|(i, l)| {
-            let shown = ctx.reveal.mask_line(&l, i);
+            let shown = if is_marquee { l } else { ctx.reveal.mask_line(&l, i) };
             Line::from(Span::styled(
                 shown,
                 Style::default()
@@ -450,8 +460,12 @@ fn render_greeting_component(
         )));
     }
 
-    let para = Paragraph::new(center_vertically(lines, text_area.height))
-        .alignment(to_alignment(comp.visual.align));
+    let align = if is_marquee {
+        Alignment::Left
+    } else {
+        to_alignment(comp.visual.align)
+    };
+    let para = Paragraph::new(center_vertically(lines, text_area.height)).alignment(align);
     frame.render_widget(para, text_area);
 }
 

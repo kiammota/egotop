@@ -368,11 +368,11 @@ pub fn default_ui_tree() -> ContainerConfig {
                 category: ComponentCategory::Static,
                 kind: ComponentKind::Greeting,
                 width: ContainerSize::Fill(1),
-                height: ContainerSize::Fixed(7),
-                min_height: Some(5),
+                height: ContainerSize::Fixed(10),
+                min_height: Some(6),
                 visual: ComponentVisual {
                     align: Align::Center,
-                    padding: 1,
+                    padding: 0,
                     border: ContainerBorderConfig::titled("Welcome"),
                     font: Some("ANSI Shadow".to_string()),
                     ..ComponentVisual::default()

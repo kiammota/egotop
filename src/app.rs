@@ -87,7 +87,8 @@ impl App {
         let layout_names: Vec<String> = layouts_map.keys().cloned().collect();
 
         let is_cursor_startup = config.startup.mode == StartupMode::Cursor;
-        let transition = if is_cursor_startup {
+        let wait_init = is_cursor_startup || config.init.wait_for_input;
+        let transition = if wait_init {
             TransitionPlayer::new("none", &animations, 0)
         } else {
             TransitionPlayer::new(
@@ -113,7 +114,7 @@ impl App {
             layout_names,
             layouts_map,
             transition,
-            startup_cursor: CursorStartupState::new(is_cursor_startup),
+            startup_cursor: CursorStartupState::new(wait_init),
             registry: CommandRegistry::new(),
             collector,
             snapshot,
@@ -319,7 +320,9 @@ impl App {
                         self.should_quit = true;
                         return Ok(());
                     }
-                    if matches!(key.code, KeyCode::Enter | KeyCode::Char(' ')) {
+                    if self.config.init.wait_for_input
+                        || matches!(key.code, KeyCode::Enter | KeyCode::Char(' '))
+                    {
                         let origin = self.startup_cursor.resolved_pos(viewport);
                         self.trigger_cursor_startup(origin, viewport);
                     }

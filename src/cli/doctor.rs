@@ -1,6 +1,5 @@
 use crate::animation::AnimationCatalog;
 use crate::cli::config::{resolve_config_path, validate_config_file};
-use crate::cli::fonts::scan_custom_fonts;
 use crate::config::{load_all_themes, load_from_path, load_layout_names, paths};
 use crate::runtime::DiagnosticSeverity;
 use crate::system::SystemCollector;
@@ -77,22 +76,7 @@ pub fn handle(config_override: Option<&Path>) -> Result<i32> {
     let catalog = AnimationCatalog::load();
     println!("[OK]   Animations available: {}", catalog.entries.len());
 
-    let custom_fonts = scan_custom_fonts();
-    let invalid_fonts = custom_fonts.iter().filter(|f| !f.valid).count();
-    if invalid_fonts > 0 {
-        warnings += 1;
-        println!(
-            "[WARN] Fonts: {} built-in, {} custom ({invalid_fonts} invalid .flf)",
-            available_fonts().len(),
-            custom_fonts.len()
-        );
-    } else {
-        println!(
-            "[OK]   Fonts available: {} built-in, {} custom",
-            available_fonts().len(),
-            custom_fonts.len()
-        );
-    }
+    println!("[OK]   Embedded fonts available: {}", available_fonts().len());
 
     let layouts = load_layout_names();
     println!("[OK]   Layout presets discovered: {}", layouts.len());

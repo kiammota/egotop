@@ -19,10 +19,6 @@ pub fn animations_path() -> PathBuf {
     root_path().join("animations")
 }
 
-pub fn fonts_path() -> PathBuf {
-    root_path().join("fonts")
-}
-
 pub fn layouts_path() -> PathBuf {
     root_path().join("layouts")
 }

@@ -32,10 +32,29 @@ impl Default for UiConfig {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct InitConfig {
+    pub wait_for_input: bool,
+    pub cursor: bool,
+    pub message: String,
+}
+
+impl Default for InitConfig {
+    fn default() -> Self {
+        Self {
+            wait_for_input: false,
+            cursor: true,
+            message: "Press any key to start".to_string(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct Config {
     pub general: GeneralConfig,
+    pub init: InitConfig,
     pub startup: StartupConfig,
     pub theme: ThemeConfig,
     pub typography: TypographyConfig,
@@ -48,6 +67,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             general: GeneralConfig::default(),
+            init: InitConfig::default(),
             startup: StartupConfig::default(),
             theme: ThemeConfig::default(),
             typography: TypographyConfig::default(),
@@ -264,6 +284,7 @@ pub struct TypographyConfig {
     pub logo_preset: String,
     pub custom_logo: Option<String>,
     pub custom_logo_file: Option<String>,
+    pub marquee_speed: f32,
 }
 
 impl Default for TypographyConfig {
@@ -276,6 +297,7 @@ impl Default for TypographyConfig {
             logo_preset: "auto".to_string(),
             custom_logo: None,
             custom_logo_file: None,
+            marquee_speed: 12.0,
         }
     }
 }

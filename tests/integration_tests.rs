@@ -31,7 +31,7 @@ use egotop::ui::customizer::{
 };
 use egotop::ui::fonts::{FigletFont, available_fonts, load_font, normalize_ascii_text};
 use egotop::ui::theme::{Theme, adapt_color, parse_color, rgb_to_ansi256};
-use egotop::ui::typography::render_ascii_heading;
+use egotop::ui::typography::{render_ascii_heading, render_figlet_lines, slice_marquee_lines};
 use egotop::ui::widgets::{
     RenderContext, allocate_three_column_widths, pad_display_width, render_command_line,
     truncate_display_width,
@@ -1424,7 +1424,6 @@ fn live_configuration_runtime_validation_diagnostics_and_last_known_good() {
     std::fs::create_dir_all(&paths.themes_dir).unwrap();
     std::fs::create_dir_all(&paths.animations_dir).unwrap();
     std::fs::create_dir_all(&paths.layouts_dir).unwrap();
-    std::fs::create_dir_all(&paths.fonts_dir).unwrap();
 
     // 1. Valid initial files + custom theme
     let valid_theme = r##"
@@ -2044,4 +2043,89 @@ text = "Hello EgoTop"
         (50..=64).contains(&egotop_col),
         "EGOTOP should be horizontally centered around col 57 (got {egotop_col}):\n{row}"
     );
+}
+
+#[test]
+fn init_wait_for_input_and_embedded_figlet_marquee() {
+    // 1. [init] wait_for_input renders centered message + blinking cursor
+    let toml_init = r#"
+[init]
+wait_for_input = true
+cursor = true
+message = "Press any key to start"
+"#;
+    let cfg: Config = toml::from_str(toml_init).unwrap();
+    assert!(cfg.init.wait_for_input);
+    assert!(cfg.init.cursor);
+    assert_eq!(cfg.init.message, "Press any key to start");
+
+    let theme = Theme::from_config(&cfg.theme);
+    let mut collector = SystemCollector::new();
+    let snap = collector.collect(80, 24);
+    let reveal = RevealState::complete();
+    let effect = create_effect(EffectKind::None, 80, 24, &cfg.background);
+    let catalog = AnimationCatalog::load();
+    let transition = TransitionPlayer::new("none", &catalog, 0);
+    let mut anim_store = ComponentAnimationStore::new();
+    let mut customizer = CustomizerState::default();
+    let cmd_line = CommandLineState::default();
+    let startup = CursorStartupState::new(true);
+    let themes = vec![];
+    let rctx = RenderContext {
+        config: &cfg,
+        theme: &theme,
+        snapshot: &snap,
+        reveal: &reveal,
+        view_mode: ViewMode::Dashboard,
+        paused: false,
+        show_help: false,
+        fps: 30.0,
+        status_toast: None,
+        transparent_bg: false,
+        config_error_count: 0,
+    };
+    let mut term = Terminal::new(TestBackend::new(80, 24)).unwrap();
+    term.draw(|frame| {
+        draw_frame(
+            frame,
+            &cfg,
+            effect.as_ref(),
+            &transition,
+            &anim_store,
+            &mut customizer,
+            &cmd_line,
+            &startup,
+            &themes,
+            &catalog,
+            &rctx,
+        );
+    })
+    .unwrap();
+    let buf = term.backend().buffer();
+    let mut found_init = false;
+    for y in 0..24 {
+        let row: String = (0..80).map(|x| buf[(x, y)].symbol()).collect();
+        if row.contains("Press any key to start") && row.contains("▌") {
+            found_init = true;
+            break;
+        }
+    }
+    assert!(found_init, "init screen must display message and blinking cursor");
+
+    // 2. Embedded FIGlet rendering + right-to-left continuous marquee slicing
+    let figlet = render_figlet_lines("I'm Kimas.", "ANSI Shadow", false);
+    assert!(figlet.len() >= 5, "embedded ANSI Shadow should produce multi-line ASCII art");
+    let frame0 = slice_marquee_lines(&figlet, 20, 0, 6);
+    let frame4 = slice_marquee_lines(&figlet, 20, 4, 6);
+    assert_eq!(frame0.len(), figlet.len());
+    assert_ne!(frame0, frame4, "marquee offset must shift visible window");
+
+    // 3. Greeting marquee state advances in ComponentAnimationStore
+    let layout = compute_dashboard_layout(Rect::new(0, 0, 80, 24), &cfg, ViewMode::Dashboard);
+    anim_store.update_all(0.5, &layout, &cfg, &catalog);
+    let offset1 = match anim_store.get("greeting") {
+        Some(egotop::ui::components::ComponentAnimState::Marquee(m)) => m.offset_cols,
+        _ => panic!("expected greeting marquee state"),
+    };
+    assert!(offset1 > 0.0);
 }

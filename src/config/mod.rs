@@ -17,7 +17,7 @@ pub use loader::{
 };
 pub use schema::{
     Align, BackgroundConfig, BorderStyle, Config, ConfigError, EffectKind, GeneralConfig,
-    GraphStyle, HeaderConfig, MatrixCharset, MatrixConfig, ParticlesConfig, RegionConfig,
+    GraphStyle, HeaderConfig, InitConfig, MatrixCharset, MatrixConfig, ParticlesConfig, RegionConfig,
     RegionUnit, ScanlinesConfig, StartupConfig, StartupCursorConfig, StartupMode, StartupTrigger,
     ThemeConfig, TypographyConfig, UiConfig, ViewMode, WaterConfig,
 };

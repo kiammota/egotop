@@ -125,10 +125,6 @@ fn render_cursor_startup(
     if area.width == 0 || area.height == 0 {
         return;
     }
-    if !startup.blink_on {
-        return;
-    }
-    let (cx, cy) = startup.resolved_pos(area);
     let cursor_color = parse_color(&config.startup.cursor.color, ctx.theme.primary);
     let glyph = config
         .startup
@@ -139,6 +135,39 @@ fn render_cursor_startup(
         .unwrap_or('▌')
         .to_string();
 
+    if config.init.wait_for_input {
+        let cy = area.y + area.height / 2;
+        let msg = config.init.message.trim();
+        let cursor_str = if config.init.cursor && startup.blink_on {
+            glyph
+        } else {
+            " ".to_string()
+        };
+        let line = ratatui::text::Line::from(vec![
+            ratatui::text::Span::styled(
+                format!("{msg} "),
+                Style::default().fg(ctx.theme.text).bg(ctx.theme.background),
+            ),
+            ratatui::text::Span::styled(
+                cursor_str,
+                Style::default()
+                    .fg(cursor_color)
+                    .bg(ctx.theme.background)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]);
+        let row_rect = Rect::new(area.x, cy, area.width, 1);
+        frame.render_widget(
+            Paragraph::new(line).alignment(ratatui::layout::Alignment::Center),
+            row_rect,
+        );
+        return;
+    }
+
+    if !startup.blink_on {
+        return;
+    }
+    let (cx, cy) = startup.resolved_pos(area);
     let cell_rect = Rect::new(cx, cy, 1, 1);
     frame.render_widget(
         Paragraph::new(glyph).style(

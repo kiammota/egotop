@@ -772,6 +772,7 @@ fn check_unknown_fields(
                 root,
                 &[
                     "general",
+                    "init",
                     "startup",
                     "theme",
                     "typography",
@@ -847,7 +848,16 @@ fn check_unknown_fields(
                     "logo_preset",
                     "custom_logo",
                     "custom_logo_file",
+                    "marquee_speed",
                 ],
+                path,
+                raw,
+                diags,
+            );
+            check_subtable(
+                root,
+                "init",
+                &["wait_for_input", "cursor", "message"],
                 path,
                 raw,
                 diags,

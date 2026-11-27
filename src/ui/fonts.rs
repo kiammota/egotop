@@ -1,6 +1,4 @@
 use std::collections::HashMap;
-use std::fs;
-use std::path::Path;
 use unicode_width::UnicodeWidthStr;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -460,28 +458,6 @@ impl BuiltinFont {
 }
 
 pub fn load_font(name: &str, ascii_fallback: bool) -> FigletFont {
-    if let Some(cfg_dir) = dirs::config_dir() {
-        let slug = name.trim().to_ascii_lowercase().replace(' ', "_");
-        for candidate in [
-            cfg_dir.join("egotop/fonts").join(format!("{name}.flf")),
-            cfg_dir.join("egotop/fonts").join(format!("{slug}.flf")),
-        ] {
-            if let Ok(raw) = fs::read_to_string(&candidate)
-                && let Some(font) = FigletFont::from_flf_str(name, &raw)
-            {
-                return font;
-            }
-        }
-    }
-
-    let path = Path::new(name);
-    if path.is_file()
-        && let Ok(raw) = fs::read_to_string(path)
-        && let Some(font) = FigletFont::from_flf_str(name, &raw)
-    {
-        return font;
-    }
-
     let kind = BuiltinFont::from_name(name).unwrap_or(BuiltinFont::Standard);
     build_builtin_font(kind, ascii_fallback)
 }

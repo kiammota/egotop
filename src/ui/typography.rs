@@ -119,6 +119,57 @@ pub fn render_ascii_heading(
     vec![text.to_string()]
 }
 
+/// Renders text using the exact selected embedded FIGlet font without shrinking or falling back.
+pub fn render_figlet_lines(text: &str, font_name: &str, ascii_fallback: bool) -> Vec<String> {
+    if text.trim().is_empty() {
+        return Vec::new();
+    }
+    let font = load_font(font_name, ascii_fallback);
+    let rendered = font.render_lines(text);
+    if rendered.is_empty() {
+        vec![text.to_string()]
+    } else {
+        rendered
+    }
+}
+
+/// Slices a continuous right-to-left marquee window of `view_width` display columns
+/// across all rows of a multi-line ASCII art block.
+pub fn slice_marquee_lines(
+    lines: &[String],
+    view_width: usize,
+    offset_cols: usize,
+    gap_cols: usize,
+) -> Vec<String> {
+    if view_width == 0 || lines.is_empty() {
+        return Vec::new();
+    }
+    let content_w = lines
+        .iter()
+        .map(|l| l.chars().count())
+        .max()
+        .unwrap_or(0);
+    if content_w == 0 {
+        return Vec::new();
+    }
+    let cycle_w = content_w + gap_cols.max(2);
+    let start = offset_cols % cycle_w;
+
+    lines
+        .iter()
+        .map(|line| {
+            let mut padded: Vec<char> = line.chars().collect();
+            padded.resize(cycle_w, ' ');
+            let mut out = String::with_capacity(view_width);
+            for col in 0..view_width {
+                let idx = (start + col) % cycle_w;
+                out.push(padded[idx]);
+            }
+            out
+        })
+        .collect()
+}
+
 pub fn resolve_logo_lines(cfg: &TypographyConfig, snapshot: &SystemSnapshot) -> Vec<String> {
     if let Some(custom) = &cfg.custom_logo {
         let lines: Vec<String> = custom.lines().map(ToString::to_string).collect();

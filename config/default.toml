@@ -55,6 +55,11 @@ border_type = "rounded"
 # bottom_separator = "┴"
 # intersection = "┼"
 
+[init]
+wait_for_input = false
+cursor = true
+message = "Press any key to start"
+
 [startup]
 # Startup mode: "normal" | "cursor"
 mode = "normal"
@@ -158,12 +163,12 @@ id = "greeting"
 category = "static"
 type = "greeting"
 width = "fill"
-height = 7
-min_height = 5
+height = 10
+min_height = 6
 
 [ui.root.children.visual]
 align = "center"
-padding = 1
+padding = 0
 font = "ANSI Shadow"
 
 [ui.root.children.visual.border]

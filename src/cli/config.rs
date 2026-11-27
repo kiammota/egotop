@@ -1,5 +1,4 @@
 use crate::animation::AnimationCatalog;
-use crate::cli::fonts::discover_custom_font_names;
 use crate::config::{
     Config, default_config_path, load_all_themes, load_from_path, paths,
 };
@@ -168,7 +167,7 @@ pub fn validate_config_file(path: &Path) -> Result<Vec<Diagnostic>> {
         themes.extend(load_all_themes());
     }
     let animations = AnimationCatalog::load();
-    let custom_fonts = discover_custom_font_names();
+    let custom_fonts = std::collections::BTreeSet::new();
     let registry = ResourceRegistry::new();
     let vctx = ValidationContext {
         themes: &themes,

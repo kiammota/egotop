@@ -21,7 +21,6 @@ pub struct RuntimePaths {
     pub themes_dir: PathBuf,
     pub animations_dir: PathBuf,
     pub layouts_dir: PathBuf,
-    pub fonts_dir: PathBuf,
 }
 
 impl RuntimePaths {
@@ -32,7 +31,6 @@ impl RuntimePaths {
             themes_dir: paths::themes_path(),
             animations_dir: paths::animations_path(),
             layouts_dir: paths::layouts_path(),
-            fonts_dir: paths::fonts_path(),
         }
     }
 
@@ -42,7 +40,6 @@ impl RuntimePaths {
             themes_dir: root.join("themes"),
             animations_dir: root.join("animations"),
             layouts_dir: root.join("layouts"),
-            fonts_dir: root.join("fonts"),
             root_dir: root,
         }
     }
@@ -59,7 +56,6 @@ impl RuntimePaths {
             &self.themes_dir,
             &self.animations_dir,
             &self.layouts_dir,
-            &self.fonts_dir,
         ] {
             if !roots.iter().any(|r| dir.starts_with(r)) {
                 roots.push(dir.clone());
@@ -200,7 +196,6 @@ impl ConfigurationRuntime {
         collect_toml_entries(&self.paths.themes_dir, &mut batch);
         collect_animation_entries(&self.paths.animations_dir, &mut batch);
         collect_toml_entries(&self.paths.layouts_dir, &mut batch);
-        collect_font_entries(&self.paths.fonts_dir, &mut batch);
         if self.paths.config_path.is_file() {
             batch.push(PendingChange {
                 path: self.paths.config_path.clone(),
@@ -691,15 +686,6 @@ impl ConfigurationRuntime {
             return Some((ResourceKind::Layout, key, raw_path.to_path_buf()));
         }
 
-        let fonts_norm =
-            fs::canonicalize(&self.paths.fonts_dir).unwrap_or_else(|_| self.paths.fonts_dir.clone());
-        if (p.starts_with(&fonts_norm) || raw_path.starts_with(&self.paths.fonts_dir))
-            && p.extension().and_then(|e| e.to_str()) == Some("flf")
-        {
-            let key = p.file_stem().and_then(|s| s.to_str()).unwrap_or("custom").to_string();
-            return Some((ResourceKind::Font, key, raw_path.to_path_buf()));
-        }
-
         None
     }
 }
@@ -805,23 +791,6 @@ fn collect_animation_entries(dir: &Path, out: &mut Vec<PendingChange>) {
                 });
             }
         } else if path.extension().and_then(|e| e.to_str()) == Some("toml") {
-            out.push(PendingChange {
-                path,
-                kind: WatchEventKind::Modified,
-                last_event_at: Instant::now(),
-                event_count: 1,
-            });
-        }
-    }
-}
-
-fn collect_font_entries(dir: &Path, out: &mut Vec<PendingChange>) {
-    let Ok(entries) = fs::read_dir(dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) == Some("flf") {
             out.push(PendingChange {
                 path,
                 kind: WatchEventKind::Modified,

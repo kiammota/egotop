@@ -54,6 +54,11 @@ pub struct AsciiObjectState {
     pub phase: f32,
 }
 
+#[derive(Debug, Clone)]
+pub struct MarqueeState {
+    pub offset_cols: f32,
+}
+
 pub enum ComponentAnimState {
     Spinner(SpinnerState),
     Typewriter(TypewriterState),
@@ -61,6 +66,7 @@ pub enum ComponentAnimState {
     Matrix(MatrixComponentState),
     Particles(ParticlesComponentState),
     AsciiObject(AsciiObjectState),
+    Marquee(MarqueeState),
 }
 
 #[derive(Default)]
@@ -212,6 +218,20 @@ impl ComponentAnimationStore {
                         st.clock.advance(dt_secs);
                         st.phase = (st.clock.cycle_elapsed_secs / st.clock.duration_secs.max(0.01))
                             .clamp(0.0, 1.0);
+                    }
+                }
+                ComponentKind::Greeting => {
+                    let marquee_speed = comp
+                        .animation
+                        .as_ref()
+                        .map(|a| a.speed)
+                        .unwrap_or(config.typography.marquee_speed)
+                        .clamp(0.5, 60.0);
+                    let entry = self.states.entry(comp.id.clone()).or_insert_with(|| {
+                        ComponentAnimState::Marquee(MarqueeState { offset_cols: 0.0 })
+                    });
+                    if let ComponentAnimState::Marquee(st) = entry {
+                        st.offset_cols += dt_secs * marquee_speed;
                     }
                 }
                 _ => {}

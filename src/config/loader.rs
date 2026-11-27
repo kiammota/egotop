@@ -22,7 +22,6 @@ pub fn ensure_config_dirs() {
         paths::root_path(),
         paths::themes_path(),
         paths::animations_path(),
-        paths::fonts_path(),
         paths::layouts_path(),
     ] {
         let _ = fs::create_dir_all(dir);
