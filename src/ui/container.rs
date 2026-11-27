@@ -297,6 +297,7 @@ pub enum ComponentKind {
     Particles,
     Frames,
     AsciiObject,
+    Canvas,
 }
 
 impl Default for ComponentKind {
@@ -331,7 +332,8 @@ impl ComponentKind {
             | Self::Matrix
             | Self::Particles
             | Self::Frames
-            | Self::AsciiObject => ComponentCategory::Animated,
+            | Self::AsciiObject
+            | Self::Canvas => ComponentCategory::Animated,
         }
     }
 }
@@ -342,6 +344,7 @@ pub struct ComponentContent {
     pub text: Option<String>,
     pub title: Option<String>,
     pub preset: Option<String>,
+    pub script: Option<String>,
     pub frames: Vec<String>,
     pub fields: Option<Vec<String>>,
     pub metric: Option<String>,
@@ -481,7 +484,7 @@ pub fn default_ui_tree() -> ContainerConfig {
                 category: ComponentCategory::Static,
                 kind: ComponentKind::Greeting,
                 width: ContainerSize::Fill(1),
-                height: ContainerSize::Fixed(10),
+                height: ContainerSize::Fixed(9),
                 min_height: Some(6),
                 visual: ComponentVisual {
                     align: Align::Center,
@@ -656,10 +659,19 @@ pub fn default_ui_tree() -> ContainerConfig {
                 category: ComponentCategory::Animated,
                 kind: ComponentKind::Spinner,
                 width: ContainerSize::Fill(1),
-                height: ContainerSize::Fixed(1),
+                height: ContainerSize::Fixed(3),
                 content: ComponentContent {
                     text: Some("Monitoring system telemetry".to_string()),
                     ..ComponentContent::default()
+                },
+                visual: ComponentVisual {
+                    border: ContainerBorderConfig {
+                        enabled: true,
+                        style: BorderStyle::Rounded,
+                        color: None,
+                        title: None,
+                    },
+                    ..ComponentVisual::default()
                 },
                 animation: Some(ComponentAnimationConfig {
                     fps: Some(12),

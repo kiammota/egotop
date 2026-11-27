@@ -4,6 +4,7 @@ use crate::animation::{
     TimelineClock, evaluate_text_cells, rasterize_contour,
 };
 use crate::config::{BackgroundConfig, Config};
+use crate::lua::LuaCanvasInstance;
 use crate::ui::container::{ComponentAnimationConfig, ComponentConfig, ComponentKind};
 use crate::ui::layout::ComputedLayout;
 use crate::ui::theme::{Theme, parse_color};
@@ -59,6 +60,13 @@ pub struct MarqueeState {
     pub offset_cols: f32,
 }
 
+pub struct LuaCanvasState {
+    pub instance: LuaCanvasInstance,
+    pub script: String,
+    pub width: u16,
+    pub height: u16,
+}
+
 pub enum ComponentAnimState {
     Spinner(SpinnerState),
     Typewriter(TypewriterState),
@@ -67,6 +75,7 @@ pub enum ComponentAnimState {
     Particles(ParticlesComponentState),
     AsciiObject(AsciiObjectState),
     Marquee(MarqueeState),
+    LuaCanvas(LuaCanvasState),
 }
 
 #[derive(Default)]
@@ -234,6 +243,53 @@ impl ComponentAnimationStore {
                         st.offset_cols += dt_secs * marquee_speed;
                     }
                 }
+                ComponentKind::Canvas => {
+                    let script_name = comp
+                        .content
+                        .script
+                        .as_deref()
+                        .or(comp.content.preset.as_deref())
+                        .or(anim_cfg.style.as_deref())
+                        .unwrap_or("effects.christmas_tree")
+                        .to_string();
+                    let fps = anim_cfg.fps.unwrap_or(config.general.animation_fps).clamp(1, 60);
+                    let density = anim_cfg.density.unwrap_or(0.65);
+                    let theme = Theme::from_config(&config.theme);
+                    let needs_recreate = match self.states.get(&comp.id) {
+                        Some(ComponentAnimState::LuaCanvas(st)) => st.script != script_name,
+                        _ => true,
+                    };
+                    if needs_recreate {
+                        let instance = LuaCanvasInstance::from_script_name(
+                            &script_name,
+                            w,
+                            h,
+                            fps,
+                            speed,
+                            density,
+                            theme,
+                        );
+                        self.states.insert(
+                            comp.id.clone(),
+                            ComponentAnimState::LuaCanvas(LuaCanvasState {
+                                instance,
+                                script: script_name,
+                                width: w,
+                                height: h,
+                            }),
+                        );
+                    } else if let Some(ComponentAnimState::LuaCanvas(st)) =
+                        self.states.get_mut(&comp.id)
+                    {
+                        st.instance.set_theme(theme);
+                        if st.width != w || st.height != h {
+                            st.instance.resize(w, h);
+                            st.width = w;
+                            st.height = h;
+                        }
+                        st.instance.update(dt_secs, speed);
+                    }
+                }
                 _ => {}
             }
         }
@@ -375,13 +431,14 @@ pub fn render_animated_component(
                 format!("{glyph} {label}")
             };
             let align = comp.visual.align;
+            let left_pad = u16::from(comp.visual.border.enabled && align == crate::config::Align::Left);
             render_clipped(frame, area, |buf, local| {
                 fill_bg(buf, local, bg);
                 let line_w = unicode_width::UnicodeWidthStr::width(line.as_str()) as u16;
                 let x = match align {
                     crate::config::Align::Center => local.width.saturating_sub(line_w) / 2,
                     crate::config::Align::Right => local.width.saturating_sub(line_w),
-                    crate::config::Align::Left => 0,
+                    crate::config::Align::Left => left_pad.min(local.width),
                 };
                 buf.set_stringn(
                     x,
@@ -509,6 +566,14 @@ pub fn render_animated_component(
                     truecolor: true,
                 };
                 rasterize_contour(&contour, &params, local, buf);
+            });
+        }
+        ComponentKind::Canvas => {
+            render_clipped(frame, area, |buf, local| {
+                fill_bg(buf, local, bg);
+                if let Some(ComponentAnimState::LuaCanvas(st)) = store.get(&comp.id) {
+                    st.instance.render(buf, local, theme);
+                }
             });
         }
         _ => {}

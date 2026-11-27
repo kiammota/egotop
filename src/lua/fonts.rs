@@ -48,6 +48,22 @@ pub fn font_from_lua_table(fallback_name: &str, tbl: &Table) -> Option<FigletFon
         .unwrap_or_else(|_| fallback_name.to_string());
     let chars_tbl = tbl.get::<Table>("characters").ok()?;
     let spacing = tbl.get::<usize>("spacing").unwrap_or(1);
+    let layout = match tbl
+        .get::<String>("layout")
+        .ok()
+        .map(|s| s.trim().to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("kerning") | Some("fitting") => HorizontalLayout::Kerning,
+        Some("full") | Some("fullwidth") => HorizontalLayout::FullWidth,
+        _ => {
+            if spacing > 0 {
+                HorizontalLayout::FullWidth
+            } else {
+                HorizontalLayout::Kerning
+            }
+        }
+    };
 
     let mut glyphs = HashMap::new();
     let mut height = tbl.get::<usize>("height").unwrap_or(0);
@@ -64,14 +80,23 @@ pub fn font_from_lua_table(fallback_name: &str, tbl: &Table) -> Option<FigletFon
         };
         let mut lines = Vec::new();
         for line_val in lines_tbl.sequence_values::<String>().flatten() {
-            let expanded = if spacing > 0 {
-                format!("{line_val}{}", " ".repeat(spacing.saturating_sub(1)))
+            let expanded = if ch == ' ' {
+                line_val
+            } else if spacing > 0 {
+                format!("{line_val}{}", " ".repeat(spacing))
             } else {
                 line_val
             };
             lines.push(expanded);
         }
         if !lines.is_empty() {
+            let max_chars = lines.iter().map(|l| l.chars().count()).max().unwrap_or(0);
+            for row in &mut lines {
+                let len = row.chars().count();
+                if len < max_chars {
+                    row.push_str(&" ".repeat(max_chars - len));
+                }
+            }
             height = height.max(lines.len());
             glyphs.insert(ch, lines);
         }
@@ -90,7 +115,7 @@ pub fn font_from_lua_table(fallback_name: &str, tbl: &Table) -> Option<FigletFon
         name,
         height,
         hardblank: '$',
-        layout: HorizontalLayout::Kerning,
+        layout,
         glyphs,
     })
 }

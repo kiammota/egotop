@@ -847,10 +847,10 @@ fn render_system_component(
     let candidates = [
         ("distro", format!("{} OS", icons.os()), os_arch),
         ("host_model", format!("{} Host", icons.host()), os.host_model.clone()),
-        ("hostname", "   Hostname".to_string(), os.hostname.clone()),
+        ("hostname", "  Hostname".to_string(), os.hostname.clone()),
         ("kernel", format!("{} Kernel", icons.kernel()), os.kernel.clone()),
-        ("packages", "   Packages".to_string(), pkgs_str),
-        ("locale", "   Locale".to_string(), os.locale.clone()),
+        ("packages", "  Packages".to_string(), pkgs_str),
+        ("locale", "  Locale".to_string(), os.locale.clone()),
         ("shell", format!("{} Shell", icons.shell()), os.shell.clone()),
         ("terminal", format!("{} Terminal", icons.terminal()), os.terminal.clone()),
         (
@@ -916,31 +916,31 @@ fn render_hardware_component(frame: &mut Frame, area: Rect, ctx: &RenderContext)
 
     let cpu_usage_row = match (hw.cpu.usage_percent, hw.cpu.temp_celsius, hw.cpu.freq_ghz) {
         (Some(pct), Some(temp), Some(ghz)) => Some(HardwareRow::Bar(
-            "   CPU Usage".to_string(),
+            "  CPU Usage".to_string(),
             pct,
             format!("{pct:.1}% ({}c @ {ghz:.2}GHz, {temp:.0}°C)", hw.cpu.cores),
         )),
         (Some(pct), Some(temp), None) => Some(HardwareRow::Bar(
-            "   CPU Usage".to_string(),
+            "  CPU Usage".to_string(),
             pct,
             format!("{pct:.1}% ({temp:.0}°C)"),
         )),
         (Some(pct), None, Some(ghz)) => Some(HardwareRow::Bar(
-            "   CPU Usage".to_string(),
+            "  CPU Usage".to_string(),
             pct,
             format!("{pct:.1}% ({}c @ {ghz:.2}GHz)", hw.cpu.cores),
         )),
         (Some(pct), None, None) => Some(HardwareRow::Bar(
-            "   CPU Usage".to_string(),
+            "  CPU Usage".to_string(),
             pct,
             format!("{pct:.1}% ({} cores)", hw.cpu.cores),
         )),
         (None, Some(temp), _) => Some(HardwareRow::Kv(
-            "   CPU Temp".to_string(),
+            "  CPU Temp".to_string(),
             format!("{temp:.1}°C"),
         )),
         (None, None, _) if !hide => {
-            Some(HardwareRow::Kv("   CPU Usage".to_string(), "N/A".to_string()))
+            Some(HardwareRow::Kv("  CPU Usage".to_string(), "N/A".to_string()))
         }
         (None, None, _) => None,
     };
@@ -969,7 +969,7 @@ fn render_hardware_component(frame: &mut Frame, area: Rect, ctx: &RenderContext)
     if let (Some(s_used), Some(s_total)) = (hw.memory.swap_used_bytes, hw.memory.swap_total_bytes) {
         let pct = ((s_used as f64 / s_total.max(1) as f64) * 100.0) as f32;
         rows.push(HardwareRow::Kv(
-            "   Swap".to_string(),
+            "  Swap".to_string(),
             format!(
                 "{} / {} ({pct:.0}%)",
                 format_bytes(s_used),
@@ -1023,10 +1023,7 @@ fn render_hardware_component(frame: &mut Frame, area: Rect, ctx: &RenderContext)
     let label_w = compute_label_width(rows.iter().map(|r| match r {
         HardwareRow::Kv(l, _) | HardwareRow::Bar(l, _, _) => l.as_str(),
     }));
-    let bar_width = area
-        .width
-        .saturating_sub(label_w as u16 + 32)
-        .clamp(6, 16) as usize;
+    let bar_width = compute_bar_width(area.width, label_w);
 
     let lines: Vec<Line<'static>> = rows
         .into_iter()
@@ -1064,15 +1061,16 @@ fn render_activity_component(
         _ => "N/A".to_string(),
     };
 
-    let info_lines = vec![
-        kv_line(
-            &format!("{} Load (1/5/15)", icons.activity()),
-            &load_str,
-            ctx.theme,
-        ),
-        kv_line("   Processes", &procs_str, ctx.theme),
-        kv_line("   Threads", &threads_str, ctx.theme),
+    let info_rows = vec![
+        (format!("{} Load (1/5/15)", icons.activity()), load_str),
+        ("  Processes".to_string(), procs_str),
+        ("  Threads".to_string(), threads_str),
     ];
+    let label_w = compute_label_width(info_rows.iter().map(|(l, _)| l.as_str()));
+    let info_lines: Vec<Line<'static>> = info_rows
+        .into_iter()
+        .map(|(l, v)| kv_line_aligned(&l, &v, label_w, area.width, ctx.theme))
+        .collect();
 
     let graph_style = comp.visual.graph_style.unwrap_or(GraphStyle::Sparkline);
     if area.height >= 7 && graph_style == GraphStyle::Sparkline {
@@ -1117,7 +1115,7 @@ fn render_activity_component(
             graph_cols[1],
         );
     } else {
-        frame.render_widget(Paragraph::new(info_lines).wrap(Wrap { trim: true }), area);
+        frame.render_widget(Paragraph::new(info_lines), area);
     }
 }
 
@@ -1147,7 +1145,7 @@ fn render_session_component(frame: &mut Frame, area: Rect, ctx: &RenderContext) 
     }
 
     rows.push((
-        "   Time".to_string(),
+        "  Time".to_string(),
         now.format(&ctx.config.general.time_format).to_string(),
     ));
 
@@ -1157,7 +1155,7 @@ fn render_session_component(frame: &mut Frame, area: Rect, ctx: &RenderContext) 
     }
 
     if sess.is_hyprland {
-        rows.push(("   Compositor".to_string(), "Hyprland active".to_string()));
+        rows.push(("  Compositor".to_string(), "Hyprland active".to_string()));
     }
 
     let label_w = compute_label_width(rows.iter().map(|(l, _)| l.as_str()));
@@ -1171,212 +1169,233 @@ fn render_session_component(frame: &mut Frame, area: Rect, ctx: &RenderContext) 
 
 fn render_cpu_component(frame: &mut Frame, area: Rect, ctx: &RenderContext) {
     let cpu = &ctx.snapshot.hardware.cpu;
-    let bar_width = area.width.saturating_sub(28).clamp(6, 20) as usize;
-    let mut lines = Vec::new();
+    let mut rows: Vec<HardwareRow> = Vec::new();
     if let Some(model) = &cpu.model {
-        lines.push(kv_line(
-            "CPU",
-            &truncate_display_width(model, area.width.saturating_sub(16) as usize),
-            ctx.theme,
-        ));
+        rows.push(HardwareRow::Kv("CPU".to_string(), model.clone()));
     }
     if let Some(pct) = cpu.usage_percent {
-        lines.push(bar_line(
-            "Total",
+        rows.push(HardwareRow::Bar(
+            "Total".to_string(),
             pct,
-            &format!("{pct:.1}% ({} cores)", cpu.cores),
-            bar_width,
-            ctx.theme,
+            format!("{pct:.1}% ({} cores)", cpu.cores),
         ));
     }
-    for (idx, pct) in cpu.per_core_percent.iter().enumerate() {
-        if lines.len() >= area.height as usize {
-            break;
-        }
-        lines.push(bar_line(
-            &format!("Core {idx}"),
+    let max_cores = (area.height as usize).saturating_sub(rows.len());
+    for (idx, pct) in cpu.per_core_percent.iter().take(max_cores).enumerate() {
+        rows.push(HardwareRow::Bar(
+            format!("Core {idx}"),
             *pct,
-            &format!("{pct:.0}%"),
-            bar_width,
-            ctx.theme,
+            format!("{pct:.0}%"),
         ));
     }
-    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), area);
+    let label_w = compute_label_width(rows.iter().map(|r| match r {
+        HardwareRow::Kv(l, _) | HardwareRow::Bar(l, _, _) => l.as_str(),
+    }));
+    let bar_width = compute_bar_width(area.width, label_w);
+    let lines: Vec<Line<'static>> = rows
+        .into_iter()
+        .map(|r| match r {
+            HardwareRow::Kv(l, v) => kv_line_aligned(&l, &v, label_w, area.width, ctx.theme),
+            HardwareRow::Bar(l, pct, suf) => {
+                bar_line_aligned(&l, pct, &suf, label_w, bar_width, area.width, ctx.theme)
+            }
+        })
+        .collect();
+    frame.render_widget(Paragraph::new(lines), area);
 }
 
 fn render_memory_component(frame: &mut Frame, area: Rect, ctx: &RenderContext) {
     let mem = &ctx.snapshot.hardware.memory;
-    let bar_width = area.width.saturating_sub(32).clamp(6, 20) as usize;
-    let mut lines = Vec::new();
+    let mut rows: Vec<HardwareRow> = Vec::new();
     if let (Some(used), Some(total), Some(pct)) =
         (mem.used_bytes, mem.total_bytes, mem.usage_percent())
     {
-        lines.push(bar_line(
-            "RAM",
+        rows.push(HardwareRow::Bar(
+            "RAM".to_string(),
             pct,
-            &format!("{} / {} ({pct:.0}%)", format_bytes(used), format_bytes(total)),
-            bar_width,
-            ctx.theme,
+            format!("{} / {} ({pct:.0}%)", format_bytes(used), format_bytes(total)),
         ));
     }
     if let Some(avail) = mem.available_bytes {
-        lines.push(kv_line("Available", &format_bytes(avail), ctx.theme));
+        rows.push(HardwareRow::Kv(
+            "Available".to_string(),
+            format_bytes(avail),
+        ));
     }
     if let (Some(su), Some(st)) = (mem.swap_used_bytes, mem.swap_total_bytes) {
         let pct = (su as f64 / st.max(1) as f64 * 100.0) as f32;
-        lines.push(bar_line(
-            "Swap",
+        rows.push(HardwareRow::Bar(
+            "Swap".to_string(),
             pct,
-            &format!("{} / {}", format_bytes(su), format_bytes(st)),
-            bar_width,
-            ctx.theme,
+            format!("{} / {}", format_bytes(su), format_bytes(st)),
         ));
     }
-    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), area);
+    let label_w = compute_label_width(rows.iter().map(|r| match r {
+        HardwareRow::Kv(l, _) | HardwareRow::Bar(l, _, _) => l.as_str(),
+    }));
+    let bar_width = compute_bar_width(area.width, label_w);
+    let lines: Vec<Line<'static>> = rows
+        .into_iter()
+        .map(|r| match r {
+            HardwareRow::Kv(l, v) => kv_line_aligned(&l, &v, label_w, area.width, ctx.theme),
+            HardwareRow::Bar(l, pct, suf) => {
+                bar_line_aligned(&l, pct, &suf, label_w, bar_width, area.width, ctx.theme)
+            }
+        })
+        .collect();
+    frame.render_widget(Paragraph::new(lines), area);
 }
 
 fn render_temperature_component(frame: &mut Frame, area: Rect, ctx: &RenderContext) {
     let temp = ctx.snapshot.hardware.cpu.temp_celsius;
-    let line = match temp {
-        Some(t) => kv_line("CPU Temp", &format!("{t:.1} °C"), ctx.theme),
-        None => kv_line("CPU Temp", "Unavailable", ctx.theme),
+    let val = match temp {
+        Some(t) => format!("{t:.1} °C"),
+        None => "Unavailable".to_string(),
     };
-    frame.render_widget(Paragraph::new(vec![line]).wrap(Wrap { trim: true }), area);
+    let line = kv_line_aligned("CPU Temp", &val, 8, area.width, ctx.theme);
+    frame.render_widget(Paragraph::new(vec![line]), area);
 }
 
 fn render_processes_component(frame: &mut Frame, area: Rect, ctx: &RenderContext) {
     let act = &ctx.snapshot.activity;
-    let lines = vec![
-        kv_line(
+    let rows = vec![
+        (
             "Processes",
-            &act.process_count
+            act.process_count
                 .map(|p| p.to_string())
                 .unwrap_or_else(|| "N/A".to_string()),
-            ctx.theme,
         ),
-        kv_line(
+        (
             "Threads",
-            &act.thread_count
+            act.thread_count
                 .map(|t| t.to_string())
                 .unwrap_or_else(|| "N/A".to_string()),
-            ctx.theme,
         ),
-        kv_line(
+        (
             "Runnable",
-            &act.runnable_threads
+            act.runnable_threads
                 .map(|r| r.to_string())
                 .unwrap_or_else(|| "N/A".to_string()),
-            ctx.theme,
         ),
     ];
-    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), area);
+    let label_w = compute_label_width(rows.iter().map(|(l, _)| *l));
+    let lines: Vec<Line<'static>> = rows
+        .into_iter()
+        .map(|(l, v)| kv_line_aligned(l, &v, label_w, area.width, ctx.theme))
+        .collect();
+    frame.render_widget(Paragraph::new(lines), area);
 }
 
 fn render_network_component(frame: &mut Frame, area: Rect, ctx: &RenderContext) {
     let net = &ctx.snapshot.network;
-    let mut lines = vec![
-        kv_line(
-            "RX Rate",
-            &format!("{}/s", format_bytes(net.total_rx_bps)),
-            ctx.theme,
+    let mut rows = vec![
+        (
+            "RX Rate".to_string(),
+            format!("{}/s", format_bytes(net.total_rx_bps)),
         ),
-        kv_line(
-            "TX Rate",
-            &format!("{}/s", format_bytes(net.total_tx_bps)),
-            ctx.theme,
+        (
+            "TX Rate".to_string(),
+            format!("{}/s", format_bytes(net.total_tx_bps)),
         ),
     ];
     for iface in net.interfaces.iter().take(3) {
         let ip = iface.ipv4.as_deref().unwrap_or("no-ip");
-        lines.push(kv_line(
-            &iface.name,
-            &format!(
+        rows.push((
+            iface.name.clone(),
+            format!(
                 "{ip} (↓{} ↑{})",
                 format_bytes(iface.rx_bytes),
                 format_bytes(iface.tx_bytes)
             ),
-            ctx.theme,
         ));
     }
-    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), area);
+    let label_w = compute_label_width(rows.iter().map(|(l, _)| l.as_str()));
+    let lines: Vec<Line<'static>> = rows
+        .into_iter()
+        .map(|(l, v)| kv_line_aligned(&l, &v, label_w, area.width, ctx.theme))
+        .collect();
+    frame.render_widget(Paragraph::new(lines), area);
 }
 
 fn render_environment_component(frame: &mut Frame, area: Rect, ctx: &RenderContext) {
     let os = &ctx.snapshot.os;
     let sess = &ctx.snapshot.session;
     let icons = IconSet::from_config(&ctx.config.typography);
-    let mut lines = Vec::new();
-    lines.push(kv_line(
-        &format!("{} WM/DE", icons.wm()),
+    let mut rows: Vec<(String, String)> = Vec::new();
+    rows.push((
+        format!("{} WM/DE", icons.wm()),
         sess.window_manager
             .as_deref()
             .or(sess.desktop_env.as_deref())
-            .unwrap_or("N/A"),
-        ctx.theme,
+            .unwrap_or("N/A")
+            .to_string(),
     ));
-    lines.push(kv_line(
-        "   Protocol",
-        sess.session_type.as_deref().unwrap_or("N/A"),
-        ctx.theme,
+    rows.push((
+        "  Protocol".to_string(),
+        sess.session_type.as_deref().unwrap_or("N/A").to_string(),
     ));
     if let Some(disp) = os.displays.first() {
         let kind = if disp.is_internal { "Internal" } else { "External" };
         let res = disp.resolution.as_deref().unwrap_or("?");
-        lines.push(kv_line(
-            "   Display",
-            &format!("{} {res} ({kind})", disp.name),
-            ctx.theme,
+        rows.push((
+            "  Display".to_string(),
+            format!("{} {res} ({kind})", disp.name),
         ));
     }
     if let Some(theme) = &os.gtk_theme {
-        lines.push(kv_line("   GTK Theme", theme, ctx.theme));
+        rows.push(("  GTK Theme".to_string(), theme.clone()));
     }
     if let Some(ic) = &os.icons {
-        lines.push(kv_line("   Icons", ic, ctx.theme));
+        rows.push(("  Icons".to_string(), ic.clone()));
     }
     if let Some(font) = &os.ui_font {
-        lines.push(kv_line("   UI Font", font, ctx.theme));
+        rows.push(("  UI Font".to_string(), font.clone()));
     }
     if let Some(cursor) = &os.cursor_theme {
-        lines.push(kv_line("   Cursor", cursor, ctx.theme));
+        rows.push(("  Cursor".to_string(), cursor.clone()));
     }
-    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), area);
+    let label_w = compute_label_width(rows.iter().map(|(l, _)| l.as_str()));
+    let lines: Vec<Line<'static>> = rows
+        .into_iter()
+        .map(|(l, v)| kv_line_aligned(&l, &v, label_w, area.width, ctx.theme))
+        .collect();
+    frame.render_widget(Paragraph::new(lines), area);
 }
 
 fn render_terminal_component(frame: &mut Frame, area: Rect, ctx: &RenderContext) {
     let os = &ctx.snapshot.os;
     let sess = &ctx.snapshot.session;
     let icons = IconSet::from_config(&ctx.config.typography);
-    let lines = vec![
-        kv_line(
-            &format!("{} Terminal", icons.terminal()),
-            os.terminal.as_deref().unwrap_or("N/A"),
-            ctx.theme,
+    let rows = vec![
+        (
+            format!("{} Terminal", icons.terminal()),
+            os.terminal.as_deref().unwrap_or("N/A").to_string(),
         ),
-        kv_line(
-            &format!("{} Shell", icons.shell()),
-            os.shell.as_deref().unwrap_or("N/A"),
-            ctx.theme,
+        (
+            format!("{} Shell", icons.shell()),
+            os.shell.as_deref().unwrap_or("N/A").to_string(),
         ),
-        kv_line(
-            "   Font",
-            os.terminal_font.as_deref().unwrap_or("N/A"),
-            ctx.theme,
+        (
+            "  Font".to_string(),
+            os.terminal_font.as_deref().unwrap_or("N/A").to_string(),
         ),
-        kv_line(
-            "   Size",
-            &format!("{}x{}", sess.terminal_cols, sess.terminal_rows),
-            ctx.theme,
+        (
+            "  Size".to_string(),
+            format!("{}x{}", sess.terminal_cols, sess.terminal_rows),
         ),
     ];
-    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), area);
+    let label_w = compute_label_width(rows.iter().map(|(l, _)| l.as_str()));
+    let lines: Vec<Line<'static>> = rows
+        .into_iter()
+        .map(|(l, v)| kv_line_aligned(&l, &v, label_w, area.width, ctx.theme))
+        .collect();
+    frame.render_widget(Paragraph::new(lines), area);
 }
 
 fn render_storage_component(frame: &mut Frame, area: Rect, ctx: &RenderContext) {
     let icons = IconSet::from_config(&ctx.config.typography);
     let disks = &ctx.snapshot.hardware.disks;
-    let bar_width = area.width.saturating_sub(36).clamp(6, 16) as usize;
-    let mut lines = Vec::new();
+    let mut rows: Vec<HardwareRow> = Vec::new();
     for disk in disks {
         let pct = disk.usage_percent();
         let info = format!(
@@ -1385,18 +1404,32 @@ fn render_storage_component(frame: &mut Frame, area: Rect, ctx: &RenderContext) 
             format_bytes(disk.total_bytes),
             disk.fs_type
         );
-        lines.push(bar_line(
-            &format!("{} {}", icons.disk(), disk.mount_point),
+        rows.push(HardwareRow::Bar(
+            format!("{} {}", icons.disk(), disk.mount_point),
             pct,
-            &info,
-            bar_width,
-            ctx.theme,
+            info,
         ));
     }
-    if lines.is_empty() {
-        lines.push(kv_line(&format!("{} Disk", icons.disk()), "N/A", ctx.theme));
+    if rows.is_empty() {
+        rows.push(HardwareRow::Kv(
+            format!("{} Disk", icons.disk()),
+            "N/A".to_string(),
+        ));
     }
-    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), area);
+    let label_w = compute_label_width(rows.iter().map(|r| match r {
+        HardwareRow::Kv(l, _) | HardwareRow::Bar(l, _, _) => l.as_str(),
+    }));
+    let bar_width = compute_bar_width(area.width, label_w);
+    let lines: Vec<Line<'static>> = rows
+        .into_iter()
+        .map(|row| match row {
+            HardwareRow::Kv(l, v) => kv_line_aligned(&l, &v, label_w, area.width, ctx.theme),
+            HardwareRow::Bar(l, pct, suf) => {
+                bar_line_aligned(&l, pct, &suf, label_w, bar_width, area.width, ctx.theme)
+            }
+        })
+        .collect();
+    frame.render_widget(Paragraph::new(lines), area);
 }
 
 fn render_uptime_component(frame: &mut Frame, area: Rect, ctx: &RenderContext) {
@@ -1470,8 +1503,14 @@ fn compute_label_width<'a>(labels: impl Iterator<Item = &'a str>) -> usize {
     labels
         .map(|l| l.width())
         .max()
-        .unwrap_or(12)
-        .clamp(10, 18)
+        .unwrap_or(10)
+        .clamp(7, 18)
+}
+
+fn compute_bar_width(area_width: u16, label_w: usize) -> usize {
+    area_width
+        .saturating_sub(label_w as u16 + 32)
+        .clamp(6, 16) as usize
 }
 
 fn pad_label(label: &str, target_width: usize) -> String {
@@ -1481,10 +1520,6 @@ fn pad_label(label: &str, target_width: usize) -> String {
     } else {
         format!("{label}{}", " ".repeat(target_width - w))
     }
-}
-
-fn kv_line<'a>(label: &str, value: &str, theme: &Theme) -> Line<'a> {
-    kv_line_aligned(label, value, 14, u16::MAX, theme)
 }
 
 fn kv_line_aligned<'a>(
@@ -1514,10 +1549,6 @@ fn kv_line_aligned<'a>(
         ),
         Span::styled(val_str, Style::default().fg(theme.text)),
     ])
-}
-
-fn bar_line<'a>(label: &str, pct: f32, suffix: &str, bar_width: usize, theme: &Theme) -> Line<'a> {
-    bar_line_aligned(label, pct, suffix, 14, bar_width, u16::MAX, theme)
 }
 
 fn bar_line_aligned<'a>(
@@ -1665,19 +1696,71 @@ pub fn render_command_line(
     cmd_state: &CommandLineState,
     ctx: &RenderContext,
 ) {
+    render_command_line_with_footer(frame, screen, None, cmd_state, ctx);
+}
+
+pub fn render_command_line_with_footer(
+    frame: &mut Frame,
+    screen: Rect,
+    footer_rect: Option<Rect>,
+    cmd_state: &CommandLineState,
+    ctx: &RenderContext,
+) {
     if screen.height == 0 || screen.width == 0 {
         return;
     }
-    let bar = Rect::new(screen.x, screen.bottom() - 1, screen.width, 1);
+
+    if !cmd_state.active && ctx.status_toast.is_none() {
+        return;
+    }
+
+    let box_rect = footer_rect.map(|r| r.intersection(screen)).unwrap_or_else(|| {
+        if screen.height >= 4 && screen.width >= 8 {
+            Rect::new(
+                screen.x.saturating_add(1),
+                screen.bottom().saturating_sub(3),
+                screen.width.saturating_sub(2),
+                3,
+            )
+        } else {
+            Rect::new(screen.x, screen.bottom() - 1, screen.width, 1)
+        }
+    });
+
+    if cmd_state.active && cmd_state.popup_open && !cmd_state.suggestions.is_empty() && screen.height >= 5 {
+        render_completion_popup(frame, screen, box_rect.y, cmd_state, ctx);
+    }
+
+    let use_box = box_rect.height >= 3 && box_rect.width >= 6;
+    let inner = if use_box {
+        if !ctx.transparent_bg {
+            frame.render_widget(Clear, box_rect);
+        }
+        let border_fg = if cmd_state.active {
+            ctx.theme.primary
+        } else {
+            ctx.theme.accent
+        };
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_set(ctx.theme.borders.as_ratatui_set())
+            .border_style(Style::default().fg(border_fg).bg(ctx.panel_bg()))
+            .style(ctx.panel_style());
+        let in_r = block.inner(box_rect);
+        frame.render_widget(block, box_rect);
+        in_r
+    } else {
+        if !ctx.transparent_bg {
+            frame.render_widget(Clear, box_rect);
+        }
+        box_rect
+    };
+
+    if inner.width == 0 || inner.height == 0 {
+        return;
+    }
 
     if cmd_state.active {
-        if cmd_state.popup_open && !cmd_state.suggestions.is_empty() && screen.height >= 5 {
-            render_completion_popup(frame, screen, cmd_state, ctx);
-        }
-
-        if !ctx.transparent_bg {
-            frame.render_widget(Clear, bar);
-        }
         let cursor = cmd_state.cursor.min(cmd_state.buffer.len());
         let before = &cmd_state.buffer[..cursor];
         let (cursor_ch, after) = if cursor < cmd_state.buffer.len() {
@@ -1690,7 +1773,7 @@ pub fn render_command_line(
 
         let line = Line::from(vec![
             Span::styled(
-                ":",
+                if use_box { " :" } else { ":" },
                 Style::default()
                     .fg(ctx.theme.primary)
                     .add_modifier(Modifier::BOLD),
@@ -1705,41 +1788,39 @@ pub fn render_command_line(
             ),
             Span::styled(after.to_string(), Style::default().fg(ctx.theme.text)),
         ]);
-        frame.render_widget(Paragraph::new(line).style(ctx.panel_style()), bar);
+        frame.render_widget(Paragraph::new(line).style(ctx.panel_style()), inner);
     } else if let Some(msg) = ctx.status_toast {
-        if !ctx.transparent_bg {
-            frame.render_widget(Clear, bar);
-        }
         let line = Line::from(Span::styled(
             format!(" ✦ {msg}"),
             Style::default()
                 .fg(ctx.theme.accent)
                 .add_modifier(Modifier::BOLD),
         ));
-        frame.render_widget(Paragraph::new(line).style(ctx.panel_style()), bar);
+        frame.render_widget(Paragraph::new(line).style(ctx.panel_style()), inner);
     }
 }
 
 fn render_completion_popup(
     frame: &mut Frame,
     screen: Rect,
+    anchor_y: u16,
     cmd_state: &CommandLineState,
     ctx: &RenderContext,
 ) {
     let total = cmd_state.suggestions.len();
-    let max_visible = 7usize.min(screen.height.saturating_sub(4) as usize).max(1);
+    let max_visible = 7usize.min(anchor_y.saturating_sub(screen.y + 2) as usize).max(1);
     let shown_count = total.min(max_visible);
     let popup_h = (shown_count as u16) + 2;
 
     let popup_w = 72u16
         .min(screen.width.saturating_sub(2))
         .max(20.min(screen.width));
-    if popup_w < 12 || popup_h < 3 || screen.height <= popup_h {
+    if popup_w < 12 || popup_h < 3 || anchor_y <= screen.y + 1 {
         return;
     }
 
     let popup_x = screen.x + 1.min(screen.width.saturating_sub(popup_w));
-    let popup_y = screen.bottom().saturating_sub(1 + popup_h);
+    let popup_y = anchor_y.saturating_sub(popup_h);
     let popup = Rect::new(popup_x, popup_y, popup_w, popup_h);
 
     if !ctx.transparent_bg {
