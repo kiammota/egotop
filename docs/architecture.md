@@ -6,6 +6,7 @@ Egotop separates configuration, system collection, window management, rendering,
 
 | Module | Path | Responsibility |
 |---|---|---|
+| **CLI Engine** | [`src/cli/`](../src/cli/mod.rs) | Modular `clap` administrative subcommands (`config`, `fonts`, `context`, `doctor`), global options, and TUI startup dispatch without duplicating config/validation logic. |
 | **Application Coordinator** | [`src/app.rs`](../src/app.rs) | Holds runtime `App` state, decouples animation tick rate (`animation_fps`) from system refresh rate (`refresh_rate_ms`), routes events, and runs commands without performing disk reads per frame. |
 | **Window Engine** | [`src/window/mod.rs`](../src/window/mod.rs) | `WindowManager` and `WindowState` handle independent window positioning (`Relative`/`Absolute`), anchors, clamping on terminal resize, z-index ordering, mouse drag/resize hit-testing, borders, padding, and solid vs. terminal-cell transparent backgrounds. |
 | **Configuration Runtime** | [`src/runtime/`](../src/runtime/mod.rs) | Centralized live-reload architecture (`ConfigurationRuntime`, `notify`-backed `FileWatcher`, `ChangeDebouncer`, `ResourceRegistry`, 3-stage `pipeline`, `DiagnosticEngine`, `LastKnownGoodState`, and `RuntimeResourceManager`). |

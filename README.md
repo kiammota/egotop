@@ -72,11 +72,19 @@ Launch in interactive cursor startup mode (blinking cursor until click, `Enter`,
 egotop --startup cursor
 ```
 
-Validate your configuration file without opening the TUI:
+Validate configuration, inspect fonts, or check installation health from the CLI without opening the TUI:
 
 ```bash
-egotop --check-config
+egotop config            # Show configuration summary
+egotop config show       # Print loaded TOML configuration
+egotop config path       # Print resolved configuration path
+egotop config validate   # Validate syntax, schema, and semantics (exit code 0/1)
+egotop fonts list        # List built-in and custom .flf fonts
+egotop context list      # Check declared contexts (reports when unavailable)
+egotop doctor            # Run installation and environment diagnostics
 ```
+
+Legacy/shortcut flags remain supported (`egotop --check-config`, `egotop --print-default-config`, `egotop --effect`, `egotop --page`, `egotop --config <PATH>`). See [`docs/cli.md`](docs/cli.md) for details.
 
 Try commands inside Egotop by pressing `:`:
 
@@ -111,6 +119,7 @@ All configuration files are stored under `~/.config/egotop/`:
 
 Full technical documentation is available in [`docs/`](docs/):
 
+- [CLI Reference](docs/cli.md) — Administrative CLI (`config`, `fonts list`, `context list`, `doctor`) and startup flags
 - [Configuration](docs/configuration.md) — All TOML sections, keys, types, defaults, and persistence model
 - [Themes](docs/themes.md) — Built-in themes, custom theme TOML schema, validation, and troubleshooting
 - [Borders](docs/borders.md) — Centralized border character customization in TOML and runtime
