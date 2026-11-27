@@ -1,6 +1,6 @@
 use crate::animation::{AnimationCatalog, BackgroundEffect, TransitionPlayer};
 use crate::command::CommandLineState;
-use crate::config::{Config, StepTarget, ThemeEntry};
+use crate::config::{Config, ThemeEntry};
 use crate::ui::components::ComponentAnimationStore;
 use crate::ui::customizer::{CustomizerState, render_customizer, render_help_overlay};
 use crate::ui::layout::{ExclusionMask, compute_dashboard_layout};
@@ -91,11 +91,7 @@ pub fn draw_frame(
         effect.render(buf, a, &config.background, ctx.theme);
     });
 
-    let scene_target = transition.package.definition.target;
-    if !transition.finished
-        && transition.has_scene_tracks()
-        && scene_target == StepTarget::Background
-    {
+    if !transition.finished && transition.has_scene_tracks() {
         render_global_with_mask(frame, area, &mask, |buf, a| {
             transition.render_scene(buf, a, ctx.theme);
         });
@@ -105,9 +101,6 @@ pub fn draw_frame(
 
     if !transition.finished {
         transition.apply_to_buffer(frame.buffer_mut(), area, ctx.theme);
-        if transition.has_scene_tracks() && !matches!(scene_target, StepTarget::Background) {
-            transition.render_scene(frame.buffer_mut(), area, ctx.theme);
-        }
     }
 
     if customizer.open {

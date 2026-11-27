@@ -2876,3 +2876,102 @@ fn container_titles_render_without_borders_and_avoid_content_overlap() {
     );
     assert!(!sys_row.contains('╭') && !sys_row.contains('─'));
 }
+
+#[test]
+fn animations_respect_container_bounds_exclusion_mask_and_resize() {
+    use egotop::ui::container::ComponentVisual;
+    let mut cfg = Config::default();
+    cfg.theme.background_transparent = true;
+    // Add an animated Matrix component inside a titled, bordered container
+    cfg.ui.root.children.push(ContainerNode::Component(ComponentConfig {
+        id: "anim_box".to_string(),
+        visible: true,
+        category: ComponentCategory::Animated,
+        kind: ComponentKind::Matrix,
+        width: ContainerSize::Fill(1),
+        height: ContainerSize::Fixed(5),
+        visual: ComponentVisual {
+            border: ContainerBorderConfig::titled("AnimBox"),
+            ..ComponentVisual::default()
+        },
+        ..ComponentConfig::default()
+    }));
+
+    let theme = Theme::from_config(&cfg.theme);
+    let catalog = AnimationCatalog::load();
+    let mut collector = SystemCollector::new();
+    let effect = create_effect(EffectKind::Matrix, 100, 36, &cfg.background);
+    let mut anim_store = ComponentAnimationStore::new();
+    // Active scene animation targeting Window (non-Background) must still respect container mask
+    let mut transition = TransitionPlayer::new("shape-morph", &catalog, 0);
+    transition.update(0.25);
+
+    let mut customizer = CustomizerState::default();
+    let cmd_line = CommandLineState::default();
+    let startup = CursorStartupState::new(false);
+    let reveal = RevealState::complete();
+    let themes = vec![ThemeEntry {
+        name: "matrix".to_string(),
+        theme: theme.clone(),
+        source_path: None,
+    }];
+
+    for &(w, h) in &[(100u16, 36u16), (80u16, 28u16)] {
+        let area = Rect::new(0, 0, w, h);
+        let layout = compute_dashboard_layout(area, &cfg, ViewMode::Dashboard);
+        anim_store.update_all(0.1, &layout, &cfg, &catalog);
+        let snapshot = collector.collect(w, h);
+        let ctx = RenderContext {
+            config: &cfg,
+            theme: &theme,
+            snapshot: &snapshot,
+            reveal: &reveal,
+            view_mode: ViewMode::Dashboard,
+            paused: false,
+            show_help: false,
+            fps: 30.0,
+            status_toast: None,
+            transparent_bg: true,
+            config_error_count: 0,
+        };
+
+        let backend = TestBackend::new(w, h);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                draw_frame(
+                    frame,
+                    &cfg,
+                    effect.as_ref(),
+                    &transition,
+                    &anim_store,
+                    &mut customizer,
+                    &cmd_line,
+                    &startup,
+                    &themes,
+                    &catalog,
+                    &ctx,
+                );
+            })
+            .unwrap();
+
+        let buf = terminal.backend().buffer();
+        let anim_box = layout.find_component("anim_box").unwrap();
+        let top_row: String = (anim_box.outer_rect.x..anim_box.outer_rect.right())
+            .map(|x| buf.cell((x, anim_box.outer_rect.y)).unwrap().symbol())
+            .collect();
+        assert!(
+            top_row.contains(" AnimBox "),
+            "Scene/background animation overwrote AnimBox title at {w}x{h}: {top_row:?}"
+        );
+
+        let sys = layout.find_component("system").unwrap();
+        let sys_top: String = (sys.outer_rect.x..sys.outer_rect.right())
+            .map(|x| buf.cell((x, sys.outer_rect.y)).unwrap().symbol())
+            .collect();
+        assert!(
+            sys_top.contains(" System "),
+            "Scene/background animation overwrote System title at {w}x{h}: {sys_top:?}"
+        );
+    }
+}

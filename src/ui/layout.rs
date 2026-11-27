@@ -54,7 +54,10 @@ impl ExclusionMask {
                 .get(&c.id)
                 .map(|s| s.effects)
                 .unwrap_or(EffectPolicy::Exclude);
-            if policy != EffectPolicy::Allow && (c.border.enabled || !c.transparent || styles.contains_key(&c.id)) {
+            let has_title = c.border.title.as_deref().is_some_and(|t| !t.is_empty());
+            if policy != EffectPolicy::Allow
+                && (c.border.enabled || has_title || !c.transparent || styles.contains_key(&c.id))
+            {
                 rects.push(c.outer_rect);
             }
         }

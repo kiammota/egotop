@@ -361,6 +361,13 @@ impl App {
             InputEvent::Resize(w, h) => {
                 self.effect.resize(w, h, &self.config.background);
                 self.snapshot = self.collector.collect(w, h);
+                let layout = compute_dashboard_layout(
+                    Rect::new(0, 0, w, h),
+                    &self.config,
+                    self.view_mode,
+                );
+                self.anim_store
+                    .update_all(0.0, &layout, &self.config, &self.animations);
             }
             InputEvent::Mouse(mouse) => {
                 self.handle_mouse(mouse, viewport, guard)?;
