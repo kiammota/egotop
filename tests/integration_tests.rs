@@ -510,10 +510,10 @@ fn full_dashboard_and_cursor_startup_render_via_test_backend() {
         }
         dumped.push('\n');
     }
-    assert!(dumped.contains("System"));
-    assert!(dumped.contains("Hardware"));
-    assert!(dumped.contains("Activity"));
-    assert!(dumped.contains("Session & Uptime"));
+    assert!(dumped.contains("system"));
+    assert!(dumped.contains("hardware"));
+    assert!(dumped.contains("activity"));
+    assert!(dumped.contains("session & uptime"));
     assert!(dumped.contains(":colorscheme"));
     assert!(dumped.contains("━"));
 
@@ -2052,16 +2052,16 @@ text = "Hello EgoTop"
         for x in 0..120 {
             row.push_str(buf[(x, y)].symbol());
         }
-        if row.contains("EgoTop") && row.contains("[Fx:") {
+        if row.contains("egotop") && row.contains("[fx:") {
             header_row = Some(row);
             break;
         }
     }
-    let row = header_row.expect("global header row with EgoTop and [Fx: ...] must render");
-    let egotop_col = row.find("EgoTop").unwrap();
+    let row = header_row.expect("global header row with egotop and [fx: ...] must render");
+    let egotop_col = row.find("egotop").unwrap();
     assert!(
         (50..=64).contains(&egotop_col),
-        "EgoTop should be horizontally centered around col 57 (got {egotop_col}):\n{row}"
+        "egotop should be horizontally centered around col 57 (got {egotop_col}):\n{row}"
     );
 }
 
@@ -2863,8 +2863,8 @@ fn container_titles_render_without_borders_and_avoid_content_overlap() {
         greeting.outer_rect.right(),
     );
     assert!(
-        welcome_row.contains(" Welcome "),
-        "Expected ' Welcome ' in borderless greeting top row, got: {welcome_row:?}"
+        welcome_row.contains(" welcome "),
+        "Expected ' welcome ' in borderless greeting top row, got: {welcome_row:?}"
     );
     assert!(!welcome_row.contains('╭') && !welcome_row.contains('─'));
     let welcome_cell = buf
@@ -2879,8 +2879,8 @@ fn container_titles_render_without_borders_and_avoid_content_overlap() {
         system.outer_rect.right(),
     );
     assert!(
-        sys_row.contains(" System "),
-        "Expected ' System ' in borderless system top row, got: {sys_row:?}"
+        sys_row.contains(" system "),
+        "Expected ' system ' in borderless system top row, got: {sys_row:?}"
     );
     assert!(!sys_row.contains('╭') && !sys_row.contains('─'));
 }
@@ -2969,7 +2969,7 @@ fn animations_respect_container_bounds_exclusion_mask_and_resize() {
             .map(|x| buf.cell((x, anim_box.outer_rect.y)).unwrap().symbol())
             .collect();
         assert!(
-            top_row.contains(" AnimBox "),
+            top_row.contains(" animbox "),
             "Scene/background animation overwrote AnimBox title at {w}x{h}: {top_row:?}"
         );
 
@@ -2978,7 +2978,7 @@ fn animations_respect_container_bounds_exclusion_mask_and_resize() {
             .map(|x| buf.cell((x, sys.outer_rect.y)).unwrap().symbol())
             .collect();
         assert!(
-            sys_top.contains(" System "),
+            sys_top.contains(" system "),
             "Scene/background animation overwrote System title at {w}x{h}: {sys_top:?}"
         );
     }
@@ -3046,9 +3046,10 @@ fn column_alignment_and_normal_casing_across_sections() {
     let header_line: String = (header_rect.x..header_rect.right())
         .map(|x| buf.cell((x, header_rect.y)).unwrap().symbol())
         .collect();
-    assert!(header_line.contains("EgoTop"), "Expected Title Case 'EgoTop' in header: {header_line:?}");
-    assert!(header_line.contains("[Fx: Particles]"), "Expected '[Fx: Particles]' in header: {header_line:?}");
-    assert!(!header_line.contains("EGOTOP") && !header_line.contains("[FX:"));
+    assert!(header_line.contains("egotop"), "Expected lowercase 'egotop' in header: {header_line:?}");
+    assert!(header_line.contains("[fx: particles]"), "Expected '[fx: particles]' in header: {header_line:?}");
+    assert!(header_line.contains("[dashboard]"), "Expected '[dashboard]' in header: {header_line:?}");
+    assert!(!header_line.contains("EGOTOP") && !header_line.contains("[FX:") && !header_line.contains("EgoTop"));
 
     // Hardware progress bars must all align to the exact same start column
     let hw = layout.find_component("hardware").unwrap();

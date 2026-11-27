@@ -276,8 +276,9 @@ fn render_border_block(
     if let Some(title) = &border.title
         && !title.is_empty()
     {
+        let title_lower = title.to_lowercase();
         block = block.title(Span::styled(
-            format!(" {title} "),
+            format!(" {title_lower} "),
             Style::default()
                 .fg(ctx.theme.primary)
                 .add_modifier(Modifier::BOLD),
@@ -309,9 +310,10 @@ fn render_borderless_title(
     } else {
         (area.x, area.width)
     };
+    let title_lower = title.to_lowercase();
     let title_area = Rect::new(title_x, area.y, max_w, 1);
     let span = Span::styled(
-        format!(" {title} "),
+        format!(" {title_lower} "),
         Style::default()
             .fg(ctx.theme.primary)
             .add_modifier(Modifier::BOLD),
@@ -619,33 +621,6 @@ fn render_greeting_component(
     frame.render_widget(para, text_area);
 }
 
-fn format_brand_name(raw: &str) -> String {
-    let trimmed = raw.trim();
-    if trimmed.eq_ignore_ascii_case("egotop") {
-        return "EgoTop".to_string();
-    }
-    let has_upper = trimmed.chars().any(|c| c.is_uppercase());
-    let has_lower = trimmed.chars().any(|c| c.is_lowercase());
-    if has_upper && has_lower {
-        return trimmed.to_string();
-    }
-    trimmed
-        .split_whitespace()
-        .map(|word| {
-            let mut chars = word.chars();
-            match chars.next() {
-                Some(first) => format!(
-                    "{}{}",
-                    first.to_uppercase(),
-                    chars.as_str().to_lowercase()
-                ),
-                None => String::new(),
-            }
-        })
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
 fn render_header_component(frame: &mut Frame, area: Rect, ctx: &RenderContext) {
     if area.width == 0 || area.height == 0 {
         return;
@@ -653,7 +628,7 @@ fn render_header_component(frame: &mut Frame, area: Rect, ctx: &RenderContext) {
     let now = Local::now();
     let icons = IconSet::from_config(&ctx.config.typography);
 
-    let brand_label = format!(" {} ", format_brand_name(&ctx.config.general.name));
+    let brand_label = format!(" {} ", ctx.config.general.name.to_lowercase());
     let brand_w = brand_label.width() as u16;
     let brand_span = Span::styled(
         brand_label,
@@ -666,9 +641,9 @@ fn render_header_component(frame: &mut Frame, area: Rect, ctx: &RenderContext) {
     let mut left_spans = Vec::new();
     if ctx.config.header.show_indicators {
         let anim_label = if ctx.paused {
-            "Paused".to_string()
+            "paused".to_string()
         } else {
-            ctx.config.background.effect.label().to_string()
+            ctx.config.background.effect.label().to_lowercase()
         };
         let anim_color = if ctx.paused {
             ctx.theme.accent
@@ -676,11 +651,11 @@ fn render_header_component(frame: &mut Frame, area: Rect, ctx: &RenderContext) {
             ctx.theme.secondary
         };
         left_spans.push(Span::styled(
-            format!("[Fx: {anim_label}] "),
+            format!("[fx: {anim_label}] "),
             Style::default().fg(anim_color),
         ));
         left_spans.push(Span::styled(
-            format!("[{}]", ctx.view_mode.label()),
+            format!("[{}]", ctx.view_mode.label().to_lowercase()),
             Style::default().fg(ctx.theme.muted),
         ));
         if ctx.config.header.show_fps {
@@ -1025,7 +1000,7 @@ fn render_activity_component(
         frame.render_widget(Paragraph::new(info_lines), chunks[0]);
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(
-                "CPU % / RAM % History:",
+                "cpu % / ram % history:",
                 Style::default().fg(ctx.theme.muted),
             ))),
             chunks[1],
@@ -1431,7 +1406,8 @@ fn kv_line_aligned<'a>(
     area_width: u16,
     theme: &Theme,
 ) -> Line<'a> {
-    let padded = pad_label(label, label_width);
+    let lower_label = label.to_lowercase();
+    let padded = pad_label(&lower_label, label_width);
     let prefix_w = padded.width() + 2;
     let max_val_w = (area_width as usize).saturating_sub(prefix_w);
     let val_str = if area_width == u16::MAX {
@@ -1465,7 +1441,8 @@ fn bar_line_aligned<'a>(
     area_width: u16,
     theme: &Theme,
 ) -> Line<'a> {
-    let padded = pad_label(label, label_width);
+    let lower_label = label.to_lowercase();
+    let padded = pad_label(&lower_label, label_width);
     let clamped = pct.clamp(0.0, 100.0);
     let filled = ((clamped / 100.0) * bar_width as f32).round() as usize;
     let empty = bar_width.saturating_sub(filled);
