@@ -384,10 +384,16 @@ fn sidebar_width_spec(items: &[&ContainerConfig]) -> AxisSpec {
             };
         }
     }
+    let min = items
+        .iter()
+        .filter_map(|item| item.min_width)
+        .max()
+        .or(Some(16));
+    let max = items.iter().find_map(|item| item.max_width).or(Some(40));
     AxisSpec {
         size: ContainerSize::Percent(24),
-        min: Some(16),
-        max: Some(40),
+        min,
+        max,
     }
 }
 

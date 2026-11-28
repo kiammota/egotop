@@ -70,7 +70,7 @@ fn config_creates_default_and_loads_valid_lua_in_english() {
     assert!(first.created_default);
     assert!(path.exists());
     assert_eq!(first.config.general.name, "egotop");
-    assert_eq!(first.config.general.greeting, "HELLO, {user}!");
+    assert_eq!(first.config.general.greeting, "Welcome to egotop");
     assert_eq!(first.config.startup.mode, StartupMode::Normal);
     assert_eq!(first.config.footer.text, "Monitoring system telemetry");
 
@@ -505,10 +505,9 @@ fn full_dashboard_and_cursor_startup_render_via_test_backend() {
         dumped.push('\n');
     }
     assert!(dumped.contains("system"));
-    assert!(dumped.contains("hardware"));
-    assert!(dumped.contains("activity"));
-    assert!(dumped.contains("session & uptime"));
-    assert!(dumped.contains(":colorscheme"));
+    assert!(dumped.contains("delorean dmc-12"));
+    assert!(dumped.contains(":canvas"));
+    assert!(dumped.contains(":background"));
     assert!(dumped.contains("━"));
 
     // Scenarios 10, 11, 12: Runtime theme change + border char change + terminal resize with popup open
@@ -591,46 +590,31 @@ ID=arch
 }
 
 #[test]
-fn default_split_header_and_grid_edges_hold_for_builtin_themes() {
+fn default_three_panel_layout_uses_all_regions_and_renders_for_builtin_themes() {
     let cfg = Config::default();
     assert_eq!(cfg.ui.padding, 0);
-    assert_eq!(cfg.general.greeting, "HELLO, {user}!");
     let themes = egotop::lua::load_all_lua_themes();
     for theme_name in ["matrix", "bamboo"] {
-        assert!(themes.contains_key(theme_name));
         let layout = compute_dashboard_layout(Rect::new(0, 0, 120, 40), &cfg, ViewMode::Dashboard);
         let header = layout.find_container("header").unwrap();
-        let logo = layout.find_container("logo").unwrap();
-        let greeting = layout.find_container("greeting").unwrap();
-        let activity = layout.find_container("activity").unwrap();
-        assert_eq!(header.outer_rect.x, 0);
+        let distro = layout.find_container("distro").unwrap();
+        let system = layout.find_container("system").unwrap();
+        let car = layout.find_container("delorian.gif").unwrap();
         assert_eq!(header.outer_rect.right(), 120);
-        assert_eq!(logo.outer_rect.y, greeting.outer_rect.y);
-        assert_eq!(logo.outer_rect.right() + cfg.ui.gap, greeting.outer_rect.x);
-        assert_eq!(greeting.outer_rect.right(), 120);
-        assert!(activity.inner_rect.height >= 6, "activity content must fit under {theme_name} theme");
-        for row in [0, 1, 2] {
-            let members: Vec<_> = layout.containers.iter().filter(|p| p.config.region == LayoutRegion::Main && p.config.row == Some(row)).collect();
-            assert!(members.last().is_some_and(|p| p.outer_rect.right() == 120));
-        }
-
-        // Exercise the actual dashboard renderer with each requested theme.
+        assert_eq!(distro.config.region, LayoutRegion::Left);
+        assert_eq!(system.config.region, LayoutRegion::Left);
+        assert_eq!(car.config.region, LayoutRegion::Main);
+        assert_eq!(car.outer_rect.right(), 120);
+        assert_eq!(layout.containers.iter().filter(|p| matches!(p.config.region, LayoutRegion::Left | LayoutRegion::Main | LayoutRegion::Right)).count(), 3);
+        assert!(system.inner_rect.height >= 10);
+        assert!(car.inner_rect.width > 0 && car.inner_rect.height > 0);
+        assert!(layout.find_container("greeting").is_none());
         let theme = &themes[theme_name].theme;
         let snapshot = SystemCollector::new().collect(120, 40);
         let reveal = RevealState::complete();
-        let render_ctx = RenderContext {
-            config: &cfg,
-            theme,
-            snapshot: &snapshot,
-            reveal: &reveal,
-            view_mode: ViewMode::Dashboard,
-            paused: false,
-            show_help: false,
-            fps: 30.0,
-            status_toast: None,
-            transparent_bg: theme.background == Color::Reset,
-            config_error_count: 0,
-        };
+        let render_ctx = RenderContext { config: &cfg, theme, snapshot: &snapshot, reveal: &reveal,
+            view_mode: ViewMode::Dashboard, paused: false, show_help: false, fps: 30.0,
+            status_toast: None, transparent_bg: theme.background == Color::Reset, config_error_count: 0 };
         let pipeline = BackgroundPipeline::from_config_and_lua(&cfg.background, &[], 120, 40, Some(theme));
         let catalog = AnimationCatalog::load();
         let transition = TransitionPlayer::new("none", &catalog, 0);
@@ -643,21 +627,20 @@ fn default_split_header_and_grid_edges_hold_for_builtin_themes() {
         terminal.draw(|frame| draw_frame(frame, &cfg, &pipeline, &transition, &store, &mut customizer, &command_line, &startup, &entries, &catalog, &render_ctx)).unwrap();
         let rendered = terminal.backend().buffer();
         assert_eq!(rendered[(header.outer_rect.right() - 1, header.outer_rect.y)].bg, theme.background);
-        assert_eq!(rendered[(greeting.outer_rect.right() - 1, greeting.outer_rect.y)].bg, theme.panel_background);
+        assert_eq!(rendered[(distro.outer_rect.x, distro.outer_rect.y)].symbol(), "╭");
     }
-
-    let short = compute_dashboard_layout(Rect::new(0, 0, 80, 24), &Config::default(), ViewMode::Dashboard);
-    assert_eq!(short.find_container("greeting").unwrap().outer_rect.height, 5);
+    let short = compute_dashboard_layout(Rect::new(0, 0, 80, 24), &cfg, ViewMode::Dashboard);
+    assert!(short.find_container("system").unwrap().inner_rect.height >= 10);
+    assert!(short.find_container("delorian.gif").unwrap().inner_rect.width > 0);
     assert_eq!(short.find_container("status_spinner").unwrap().outer_rect.height, 1);
-    assert!(short.find_container("activity").unwrap().inner_rect.height >= 6);
-
     let mut canvas_cfg = cfg;
-    let logo = canvas_cfg.ui.containers.iter_mut().find(|c| c.name == "logo").unwrap();
-    logo.kind = ComponentKind::Canvas;
-    logo.padding = 5;
+    let distro = canvas_cfg.ui.containers.iter_mut().find(|c| c.name == "distro").unwrap();
+    distro.kind = ComponentKind::Canvas;
+    distro.padding = 5;
+    distro.border.enabled = false;
+    distro.border.title = None;
     let canvas_layout = compute_dashboard_layout(Rect::new(0, 0, 120, 40), &canvas_cfg, ViewMode::Dashboard);
-    let canvas = canvas_layout.find_container("logo").unwrap();
-    assert_eq!(canvas.inner_rect, canvas.outer_rect);
+    assert_eq!(canvas_layout.find_container("distro").unwrap().inner_rect, canvas_layout.find_container("distro").unwrap().outer_rect);
 }
 
 #[test]
@@ -2348,7 +2331,7 @@ wait_for_input = true
 cursor = true
 message = "Press any key to start"
 "#;
-    let cfg: Config = toml::from_str(toml_init).unwrap();
+    let mut cfg: Config = toml::from_str(toml_init).unwrap();
     assert!(cfg.init.wait_for_input);
     assert!(cfg.init.cursor);
     assert_eq!(cfg.init.message, "Press any key to start");
@@ -2415,6 +2398,7 @@ message = "Press any key to start"
     assert_ne!(frame0, frame4, "marquee offset must shift visible window");
 
     // 3. Greeting marquee state advances in ComponentAnimationStore
+    cfg.ui.containers.push(ContainerConfig { name: "greeting".into(), kind: ComponentKind::Greeting, category: ComponentCategory::Static, width: ContainerSize::Fill(1), height: ContainerSize::Fixed(6), ..ContainerConfig::default() });
     let layout = compute_dashboard_layout(Rect::new(0, 0, 80, 24), &cfg, ViewMode::Dashboard);
     anim_store.update_all(0.5, &layout, &cfg, &catalog);
     let offset1 = match anim_store.get("greeting") {
@@ -2484,7 +2468,7 @@ fn transparency_preserves_background_animation_and_colors() {
     // and that panel interiors remain solid while excluding global matrix glyphs.
     let full_buf = full_term.backend().buffer();
     let layout = compute_dashboard_layout(Rect::new(0, 0, 80, 24), &cfg, ViewMode::Dashboard);
-    let greeting_inner = layout.find_container("greeting").unwrap().inner_rect;
+    let greeting_inner = layout.find_container("distro").unwrap().inner_rect;
     for x in greeting_inner.x..greeting_inner.right() {
         // Bottom row of greeting_inner (empty area if no subtitle at bottom) must not have Matrix glyphs
         let cell = &full_buf[(x, greeting_inner.bottom().saturating_sub(1))];
@@ -2781,7 +2765,7 @@ fn container_styling_system_commands_gradient_effects_and_toml() {
     assert!(has_container(&cfg.ui.containers, "system"));
 
     cfg.container_styles.insert(
-        "greeting".to_string(),
+        "distro".to_string(),
         ContainerStyle {
             background: BackgroundFill::Inherit,
             foreground: Some("#FFFFFF".to_string()),
@@ -2807,7 +2791,7 @@ fn container_styling_system_commands_gradient_effects_and_toml() {
     // ExclusionMask respects EffectPolicy::Allow (not excluded) vs Exclude (excluded)
     let layout = compute_dashboard_layout(Rect::new(0, 0, 100, 36), &cfg, ViewMode::Dashboard);
     let mask = ExclusionMask::from_layout_with_styles(&layout, &cfg.container_styles);
-    let greet_rect = layout.find_container("greeting").unwrap().outer_rect;
+    let greet_rect = layout.find_container("distro").unwrap().outer_rect;
     let sys_rect = layout.find_container("system").unwrap().outer_rect;
     assert!(!mask.contains(greet_rect.x + 1, greet_rect.y + 1));
     assert!(mask.contains(sys_rect.x + 1, sys_rect.y + 1));
@@ -2915,10 +2899,9 @@ fn fastfetch_collector_container_add_remove_persistence_and_restore() {
     egotop::config::save_config_to_path(&path, &restored).unwrap();
     let after_restore = load_from_path(&path).unwrap();
     assert_eq!(after_restore, Config::default());
-    assert!(has_container(&after_restore.ui.containers, "environment"));
-    assert!(has_container(&after_restore.ui.containers, "terminal"));
-    assert!(has_container(&after_restore.ui.containers, "storage"));
-    assert!(has_container(&after_restore.ui.containers, "network"));
+    assert!(has_container(&after_restore.ui.containers, "distro"));
+    assert!(has_container(&after_restore.ui.containers, "system"));
+    assert!(has_container(&after_restore.ui.containers, "delorian.gif"));
     let _ = std::fs::remove_file(&path);
 }
 
@@ -3054,7 +3037,7 @@ fn container_titles_render_without_borders_and_avoid_content_overlap() {
     let layout = compute_dashboard_layout(area, &cfg, ViewMode::Dashboard);
 
     // Greeting has padding = 0 and title = "Welcome": inner_rect must reserve 1 top row for title
-    let greeting = layout.find_container("greeting").unwrap();
+    let greeting = layout.find_container("distro").unwrap();
     assert_eq!(greeting.inner_rect.y, greeting.outer_rect.y + 1);
     assert_eq!(greeting.inner_rect.height, greeting.outer_rect.height - 1);
 
@@ -3128,8 +3111,8 @@ fn container_titles_render_without_borders_and_avoid_content_overlap() {
         greeting.outer_rect.right(),
     );
     assert!(
-        welcome_row.contains(" welcome "),
-        "Expected ' welcome ' in borderless greeting top row, got: {welcome_row:?}"
+        welcome_row.contains(" arch linux "),
+        "Expected ' arch linux ' in borderless distro top row, got: {welcome_row:?}"
     );
     assert!(!welcome_row.contains('╭') && !welcome_row.contains('─'));
     let welcome_cell = buf
@@ -3316,7 +3299,7 @@ fn column_alignment_and_normal_casing_across_sections() {
     assert!(!header_line.contains("EGOTOP") && !header_line.contains("[FX:") && !header_line.contains("EgoTop"));
 
     // Hardware progress bars must all align to the exact same start column
-    let hw = layout.find_container("hardware").unwrap();
+    let hw = layout.find_container("system").unwrap();
     let mut bar_cols = Vec::new();
     for y in hw.inner_rect.y..hw.inner_rect.bottom() {
         let row: String = (hw.inner_rect.x..hw.inner_rect.right())
@@ -3819,7 +3802,7 @@ fn unified_background_canvas_layers_borders_and_per_container_canvas_isolation()
         },
     );
     cfg.container_styles.insert(
-        "greeting".to_string(),
+        "distro".to_string(),
         ContainerStyle {
             border_style: Some(BorderStyle::None),
             ..ContainerStyle::default()
@@ -3832,7 +3815,7 @@ fn unified_background_canvas_layers_borders_and_per_container_canvas_isolation()
     assert!(sys_placed.config.border.enabled);
     assert_eq!(sys_placed.config.border.style, Some(BorderStyle::Double));
     assert!(sys_placed.inner_rect.x > sys_placed.outer_rect.x);
-    let greet_placed = layout.find_container("greeting").unwrap();
+    let greet_placed = layout.find_container("distro").unwrap();
     assert!(!greet_placed.config.border.enabled);
 
     let mut anim_store = ComponentAnimationStore::new();
@@ -3892,7 +3875,7 @@ fn unified_background_canvas_layers_borders_and_per_container_canvas_isolation()
     assert_eq!(buf[(0, 0)].symbol(), "[");
     // System container Canvas drew Double border ('╔') while other bordered panels kept Rounded ('╭')
     assert_eq!(buf[(sys_placed.outer_rect.x, sys_placed.outer_rect.y)].symbol(), "╔");
-    let hw_placed = layout.find_container("hardware").unwrap();
+    let hw_placed = layout.find_container("delorian.gif").unwrap();
     assert_eq!(buf[(hw_placed.outer_rect.x, hw_placed.outer_rect.y)].symbol(), "╭");
 
     // 3. Parse and complete `:border` & `:container set <id> animation <name>`

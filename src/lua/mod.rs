@@ -394,10 +394,9 @@ mod tests {
         assert_eq!(bundle.config.footer.text, "Monitoring system telemetry");
         assert!(!bundle.config.init.wait_for_input);
         assert!(bundle.effect_specs.is_empty(), "global backgrounds are opt-in");
-        assert!(crate::ui::container::has_container(&bundle.config.ui.containers, "logo"));
+        assert!(crate::ui::container::has_container(&bundle.config.ui.containers, "distro"));
         assert!(crate::ui::container::has_container(&bundle.config.ui.containers, "system"));
-        assert!(crate::ui::container::has_container(&bundle.config.ui.containers, "hardware"));
-        assert!(crate::ui::container::has_container(&bundle.config.ui.containers, "session"));
+        assert!(crate::ui::container::has_container(&bundle.config.ui.containers, "delorian.gif"));
 
         // 2. All builtin Lua themes resolve cleanly (including bamboo and mixed transparency themes)
         let themes = load_all_lua_themes();

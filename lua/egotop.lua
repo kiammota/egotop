@@ -1,14 +1,10 @@
--- ~/.config/egotop/egotop.lua — Primary EgoTop configuration & composition script.
--- Themes, independent animation slots, fonts, and flat containers are
--- configured here using the public `egotop` Lua API.
-
+-- Default three-panel egotop dashboard.
 local matrix_theme = require("themes.matrix")
 
--- 1. General Settings
 egotop.config({
     name = "egotop",
-    greeting = "HELLO, {user}!",
-    message = "Welcome back to your Linux environment.",
+    greeting = "Welcome to egotop",
+    message = "System monitor",
     refresh_rate_ms = 1000,
     animation_fps = 30,
     time_format = "%H:%M:%S",
@@ -20,24 +16,8 @@ egotop.config({
     use_nerd_fonts = true,
 })
 
--- 2. Optional Wait-for-Input Gate
--- egotop.wait({
---     trigger = "any",          -- "key", "mouse", or "any"
---     message = "Press any key to start",
---     cursor = { character = "▌", color = "#39FF88", blink = true, blink_interval_ms = 500 },
---     animation = "cursor_expand",
--- })
-
--- 3. Theme (importable module with optional local overrides)
-egotop.theme({
-    theme = matrix_theme.setup,
-})
-
--- 4. Background (independent background canvas layer — does not participate in container layout)
--- Background animation is opt-in through the background slot / :background command.
+egotop.theme({ theme = matrix_theme.setup })
 egotop.background({ base = { type = "theme", opacity = 1.0 } })
-
--- 5. Footer & Status Indicator
 egotop.footer({
     enabled = true,
     text = "Monitoring system telemetry",
@@ -48,7 +28,6 @@ egotop.footer({
     fps = 12,
 })
 
--- 6. Flat Independent Containers (egotop calculates positions & sizes automatically)
 egotop.layout({
     padding = 0,
     gap = 1,
@@ -56,7 +35,7 @@ egotop.layout({
     containers = {
         egotop.container({
             name = "header",
-            description = "Top status bar with brand, active mode, background, and clock",
+            description = "Top status bar with mode, background, and clock",
             region = "top",
             row = 0,
             kind = "header",
@@ -66,136 +45,47 @@ egotop.layout({
             transparent = true,
         }),
         egotop.container({
-            name = "logo",
-            description = "Distribution ASCII logo; replaceable with a canvas script",
-            region = "top",
-            row = 1,
-            kind = "ascii_logo",
+            name = "distro",
+            description = "Arch Linux mark and command shortcuts",
+            region = "left",
+            row = 0,
+            kind = "text",
             category = "static",
-            width = "28%",
-            height = 8,
-            align = "center",
+            width = "fill",
+            height = 6,
+            min_width = 32,
+            max_width = 40,
             padding = 0,
-        }),
-        egotop.container({
-            name = "greeting",
-            description = "Welcome banner and subtitle",
-            region = "top",
-            row = 1,
-            kind = "greeting",
-            category = "static",
-            width = "72%",
-            height = 8,
-            min_height = 6,
-            padding = 0,
-            font = "ANSI Shadow",
-            border = { enabled = true, title = "Welcome" },
+            text = "    /\\\n   /__\\\n:canvas :background\n:intro :write :quit",
+            border = { enabled = true, title = "Arch Linux" },
         }),
         egotop.container({
             name = "system",
-            description = "Operating system, host, kernel, shell, and terminal metadata",
-            region = "main",
+            description = "System, hardware, environment, storage, and network summary",
+            region = "left",
             row = 0,
             kind = "system",
             category = "dynamic",
-            width = "50%",
+            width = "fill",
             height = "fill",
-            min_height = 6,
+            min_height = 10,
             padding = 1,
             border = { enabled = true, title = "System" },
         }),
         egotop.container({
-            name = "hardware",
-            description = "CPU, RAM, disk, and GPU usage telemetry bars",
+            name = "delorian.gif",
+            description = "Responsive ASCII DeLorean canvas",
             region = "main",
             row = 0,
-            kind = "hardware",
-            category = "dynamic",
-            width = "50%",
-            height = "fill",
-            min_height = 6,
-            padding = 1,
-            graph_style = "bar",
-            border = { enabled = true, title = "Hardware" },
-        }),
-        egotop.container({
-            name = "environment",
-            description = "Window manager, session protocol, display, and desktop theme",
-            region = "main",
-            row = 1,
-            kind = "environment",
-            category = "dynamic",
-            width = "40%",
-            height = "fill",
-            min_height = 5,
-            padding = 1,
-            border = { enabled = true, title = "Environment" },
-        }),
-        egotop.container({
-            name = "terminal",
-            description = "Terminal emulator, shell, font, and viewport dimensions",
-            region = "main",
-            row = 1,
-            kind = "terminal",
-            category = "dynamic",
-            width = "30%",
-            height = "fill",
-            min_height = 5,
-            padding = 1,
-            border = { enabled = true, title = "Terminal" },
-        }),
-        egotop.container({
-            name = "storage",
-            description = "Mounted filesystems and storage capacity bars",
-            region = "main",
-            row = 1,
-            kind = "storage",
-            category = "dynamic",
+            kind = "canvas",
+            category = "animated",
+            script = "delorean",
             width = "fill",
             height = "fill",
-            min_height = 5,
-            padding = 1,
-            border = { enabled = true, title = "Storage" },
-        }),
-        egotop.container({
-            name = "activity",
-            description = "Load averages, process counts, and CPU/RAM history sparklines",
-            region = "main",
-            row = 2,
-            kind = "activity",
-            category = "dynamic",
-            width = "40%",
-            height = "fill",
-            min_height = 8,
+            min_width = 24,
+            min_height = 10,
             padding = 0,
-            graph_style = "sparkline",
-            border = { enabled = true, title = "Activity" },
-        }),
-        egotop.container({
-            name = "network",
-            description = "Network interfaces and RX/TX transfer telemetry",
-            region = "main",
-            row = 2,
-            kind = "network",
-            category = "dynamic",
-            width = "30%",
-            height = "fill",
-            min_height = 6,
-            padding = 1,
-            border = { enabled = true, title = "Network" },
-        }),
-        egotop.container({
-            name = "session",
-            description = "System uptime, boot timestamp, and active session status",
-            region = "main",
-            row = 2,
-            kind = "session",
-            category = "dynamic",
-            width = "fill",
-            height = "fill",
-            min_height = 6,
-            padding = 1,
-            border = { enabled = true, title = "Session & Uptime" },
+            border = { enabled = true, title = "DeLorean DMC-12" },
         }),
         egotop.container({
             name = "status_spinner",

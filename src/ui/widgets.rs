@@ -756,67 +756,181 @@ fn render_system_to_canvas(
     let os = &ctx.snapshot.os;
     let sess = &ctx.snapshot.session;
     let hide = ctx.config.general.hide_unavailable;
-
-    let pkgs_str = if os.packages.is_empty() {
-        None
-    } else {
-        Some(
-            os.packages
-                .iter()
-                .map(|(mgr, cnt)| format!("{cnt} ({mgr})"))
-                .collect::<Vec<_>>()
-                .join(", "),
-        )
-    };
-    let os_arch = match (&os.distro_name, &os.arch) {
-        (Some(d), Some(a)) => Some(format!("{d} {a}")),
-        (Some(d), None) => Some(d.clone()),
-        _ => None,
-    };
-
-    let candidates = [
-        ("distro", format!("{} OS", icons.os()), os_arch),
-        ("host_model", format!("{} Host", icons.host()), os.host_model.clone()),
-        ("hostname", "  Hostname".to_string(), os.hostname.clone()),
-        ("kernel", format!("{} Kernel", icons.kernel()), os.kernel.clone()),
-        ("packages", "  Packages".to_string(), pkgs_str),
-        ("locale", "  Locale".to_string(), os.locale.clone()),
-        ("shell", format!("{} Shell", icons.shell()), os.shell.clone()),
-        ("terminal", format!("{} Terminal", icons.terminal()), os.terminal.clone()),
-        (
-            "wm",
-            format!("{} DE/WM", icons.wm()),
-            sess.window_manager
-                .clone()
-                .or_else(|| sess.desktop_env.clone()),
-        ),
-        (
-            "resolution",
-            format!("{} Term Size", icons.terminal()),
-            Some(format!("{}x{}", sess.terminal_cols, sess.terminal_rows)),
-        ),
-    ];
-
-    let mut rows: Vec<(String, String)> = Vec::new();
-    for (key, label, value) in candidates {
-        if let Some(allowed) = &cont.content.fields
-            && !allowed.iter().any(|f| f.eq_ignore_ascii_case(key))
-        {
-            continue;
-        }
-        match value {
-            Some(val) => rows.push((label, val)),
-            None if !hide => rows.push((label, "N/A".to_string())),
-            None => {}
-        }
+    let hw = &ctx.snapshot.hardware;
+    let mut rows: Vec<HardwareRow> = Vec::new();
+    let os_name = os.distro_name.as_deref().unwrap_or("N/A").to_string();
+    rows.push(HardwareRow::Kv(format!("{} OS", icons.os()), os_name));
+    if let Some(host) = os.hostname.as_ref().or(os.host_model.as_ref()) {
+        rows.push(HardwareRow::Kv(
+            format!("{} Host", icons.host()),
+            host.clone(),
+        ));
+    } else if !hide {
+        rows.push(HardwareRow::Kv(
+            format!("{} Host", icons.host()),
+            "N/A".into(),
+        ));
+    }
+    if let Some(kernel) = &os.kernel {
+        rows.push(HardwareRow::Kv(
+            format!("{} Kernel", icons.kernel()),
+            kernel.clone(),
+        ));
+    } else if !hide {
+        rows.push(HardwareRow::Kv("Kernel".into(), "N/A".into()));
+    }
+    if let Some(uptime) = ctx.snapshot.activity.uptime_secs {
+        rows.push(HardwareRow::Kv("Uptime".into(), format_uptime(uptime)));
+    } else if !hide {
+        rows.push(HardwareRow::Kv("Uptime".into(), "N/A".into()));
     }
 
-    let label_w = compute_label_width(rows.iter().map(|(l, _)| l.as_str()));
-    let lines: Vec<Line<'static>> = rows
-        .into_iter()
-        .map(|(l, v)| kv_line_aligned(&l, &v, label_w, area.width, ctx.theme))
-        .collect();
+    if let Some(pct) = hw.cpu.usage_percent {
+        let suffix = match hw.cpu.temp_celsius {
+            Some(temp) => format!("{pct:.0}% {temp:.0}c"),
+            None => format!("{pct:.0}%"),
+        };
+        rows.push(HardwareRow::Bar(
+            format!("CPU {}c", hw.cpu.cores),
+            pct,
+            suffix,
+        ));
+    } else if !hide {
+        rows.push(HardwareRow::Kv(
+            format!("CPU {}c", hw.cpu.cores),
+            "N/A".into(),
+        ));
+    }
+    if let (Some(_used), Some(_total), Some(pct)) = (
+        hw.memory.used_bytes,
+        hw.memory.total_bytes,
+        hw.memory.usage_percent(),
+    ) {
+        rows.push(HardwareRow::Bar(
+            format!("{} RAM", icons.memory()),
+            pct,
+            format!("{pct:.0}%"),
+        ));
+    } else if !hide {
+        rows.push(HardwareRow::Kv(format!("{} RAM", icons.memory()), "N/A".into()));
+    }
 
+    let wm = sess
+        .window_manager
+        .as_deref()
+        .or(sess.desktop_env.as_deref())
+        .unwrap_or("N/A");
+    let protocol = sess.session_type.as_deref().unwrap_or("N/A");
+    rows.push(HardwareRow::Kv("WM".into(), format!("{wm} · {protocol}")));
+    let display = os
+        .displays
+        .iter()
+        .find(|display| display.is_internal)
+        .or_else(|| os.displays.first())
+        .map(|display| match &display.resolution {
+            Some(resolution) => format!("{} {resolution}", display.name),
+            None => display.name.clone(),
+        })
+        .or_else(|| sess.display.clone());
+    if let Some(display) = display {
+        rows.push(HardwareRow::Kv("Display".into(), display));
+    } else if !hide {
+        rows.push(HardwareRow::Kv("Display".into(), "N/A".into()));
+    }
+    let terminal = os
+        .terminal
+        .as_deref()
+        .and_then(|name| name.split_whitespace().next())
+        .unwrap_or("N/A");
+    let shell = os
+        .shell
+        .as_deref()
+        .and_then(|name| name.split_whitespace().next())
+        .unwrap_or("N/A");
+    rows.push(HardwareRow::Kv(
+        "Terminal".into(),
+        format!("{terminal} · {shell}"),
+    ));
+    if let Some(disk) = hw
+        .disks
+        .iter()
+        .find(|disk| disk.mount_point == "/")
+        .or(hw.disks.first())
+    {
+        let pct = disk.usage_percent();
+        rows.push(HardwareRow::Bar(
+            format!("{} {}", icons.disk(), disk.mount_point),
+            pct,
+            format!("{pct:.0}%"),
+        ));
+    } else if !hide {
+        rows.push(HardwareRow::Kv(format!("{} /", icons.disk()), "N/A".into()));
+    }
+    let iface = ctx
+        .snapshot
+        .network
+        .interfaces
+        .iter()
+        .find(|iface| iface.name == "wlan0")
+        .or_else(|| ctx.snapshot.network.interfaces.first());
+    let compact_rate = |bps: u64| {
+        if bps >= 1_000_000 {
+            format!("{:.1}M", bps as f64 / 1_000_000.0)
+        } else if bps >= 1_000 {
+            format!("{:.0}K", bps as f64 / 1_000.0)
+        } else {
+            format!("{bps}B")
+        }
+    };
+    if let Some(iface) = iface {
+        rows.push(HardwareRow::Kv(
+            iface.name.clone(),
+            format!(
+                "{} ↓{} ↑{}",
+                iface.ipv4.as_deref().unwrap_or("no IP"),
+                compact_rate(iface.rx_bytes_per_sec),
+                compact_rate(iface.tx_bytes_per_sec)
+            ),
+        ));
+    } else {
+        rows.push(HardwareRow::Kv(
+            "NET".into(),
+            format!(
+                "no link · ↓{} ↑{}",
+                compact_rate(ctx.snapshot.network.total_rx_bps),
+                compact_rate(ctx.snapshot.network.total_tx_bps)
+            ),
+        ));
+    }
+
+    // Respect explicit field filtering while the default view remains a compact full summary.
+    if let Some(fields) = &cont.content.fields {
+        rows.retain(|row| {
+            let label = match row {
+                HardwareRow::Kv(label, _) | HardwareRow::Bar(label, _, _) => label,
+            };
+            fields.iter().any(|field| {
+                label
+                    .to_ascii_lowercase()
+                    .contains(&field.to_ascii_lowercase())
+            })
+        });
+    }
+    let label_w = compute_label_width(rows.iter().map(|row| match row {
+        HardwareRow::Kv(label, _) | HardwareRow::Bar(label, _, _) => label.as_str(),
+    }));
+    let bar_width = compute_bar_width(area.width, label_w);
+    let lines = rows
+        .into_iter()
+        .map(|row| match row {
+            HardwareRow::Kv(label, value) => {
+                kv_line_aligned(&label, &value, label_w, area.width, ctx.theme)
+            }
+            HardwareRow::Bar(label, pct, value) => bar_line_aligned(
+                &label, pct, &value, label_w, bar_width, area.width, ctx.theme,
+            ),
+        })
+        .collect::<Vec<_>>();
     Paragraph::new(lines).render(area, buf);
 }
 
