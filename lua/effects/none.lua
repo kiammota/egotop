@@ -1,6 +1,8 @@
 -- Static no-op background effect layer (implemented in Lua).
 local none = {}
 
+none.type = "background"
+
 function none.setup(opts)
     return {
         name = "none",

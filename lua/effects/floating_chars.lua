@@ -1,6 +1,8 @@
 -- Drifting floating characters effect (Lua Canvas / Cell-Buffer API).
 local floating_chars = {}
 
+floating_chars.type = "background"
+
 local function split_utf8(str)
     local out = {}
     for _, code in utf8.codes(str) do

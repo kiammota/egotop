@@ -1,6 +1,8 @@
 -- CRT horizontal scanlines effect (Lua Canvas / Cell-Buffer API).
 local scanlines = {}
 
+scanlines.type = "background"
+
 function scanlines.setup(opts)
     opts = opts or {}
     local speed = opts.speed or 1.0

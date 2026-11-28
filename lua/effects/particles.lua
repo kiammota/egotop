@@ -1,6 +1,8 @@
 -- Floating glowing particles effect (Lua Canvas / Cell-Buffer API).
 local particles = {}
 
+particles.type = "background"
+
 local GLYPHS = { "·", "•", "◦", "✦", "✧", "*" }
 
 local function seed_particles(state, w, h, density)

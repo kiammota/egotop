@@ -2,6 +2,8 @@
 -- Runs cleanly isolated inside its own bordered window (`layer = "boxed"`) without leaking
 -- onto neighboring panels, borders, or the status bar.
 local tree_effect = require("effects.christmas_tree")
+
+animation.type = "intro"
 local animation = {}
 
 function animation.setup(api)

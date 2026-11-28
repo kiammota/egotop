@@ -1,6 +1,8 @@
 -- Matrix boot startup animation (isolated canvas API, adapts cleanly to resize).
 local animation = {}
 
+animation.type = "intro"
+
 local GLYPHS = { "0", "1", "ﾊ", "ﾐ", "ｼ", "ｱ", "ﾎ", "ﾈ", "ｽ" }
 
 local function seed_streams(state, w, h)

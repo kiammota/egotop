@@ -1,6 +1,8 @@
 -- Cyber boot sequence: scans a neon laser bar vertically inside an isolated canvas.
 local animation = {}
 
+animation.type = "intro"
+
 function animation.setup(api)
     local total = 1.25
     api.ui.reveal(0.0)

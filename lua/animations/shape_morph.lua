@@ -1,6 +1,8 @@
 -- Morphing geometric ASCII emblem animation (isolated canvas API).
 local animation = {}
 
+animation.type = "intro"
+
 local FRAMES = {
     { "  /\\  ", " /  \\ ", "/____\\" },
     { " +--+ ", " |  | ", " +--+ " },

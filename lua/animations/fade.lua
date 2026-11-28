@@ -1,6 +1,8 @@
 -- Smooth reveal fade animation (implemented in Lua).
 local animation = {}
 
+animation.type = "intro"
+
 function animation.setup(api)
     api.ui.reveal(0.0)
     api.tween({

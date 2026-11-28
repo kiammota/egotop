@@ -1,6 +1,8 @@
 -- Animated sine wave water surface effect (Lua Canvas / Cell-Buffer API).
 local water = {}
 
+water.type = "background"
+
 local WAVE_CHARS = { " ", "~", "≈", "∿", "〜" }
 
 function water.setup(opts)

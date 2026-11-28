@@ -1,6 +1,8 @@
 -- Procedural ambient noise field effect (Lua Canvas / Cell-Buffer API).
 local noise = {}
 
+noise.type = "background"
+
 local SHADES = { "·", ":", "+", "*" }
 
 function noise.setup(opts)

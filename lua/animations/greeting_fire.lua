@@ -2,6 +2,8 @@
 -- Can also be mounted directly inside any container via `script = "animations.greeting_fire"`.
 local animation = {}
 
+animation.type = "intro"
+
 local FLAME_CHARS = { " ", ".", ":", "*", "+", "#", "%", "@" }
 local PALETTE = { "#551100", "#AA2200", "#FF4422", "#FF8800", "#FFDD00", "#FFF3B0" }
 

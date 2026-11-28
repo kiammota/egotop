@@ -290,6 +290,19 @@ fn parse_border_command(args: &[&str]) -> Result<ParsedCommand, String> {
         }));
     }
 
+    // `:border <style> <target>` keeps the first completion position reserved
+    // for styles and the second reserved for container IDs.
+    if args.len() == 2
+        && crate::ui::borders::BorderChars::STYLE_NAMES
+            .iter()
+            .any(|(style, _)| style.eq_ignore_ascii_case(first))
+    {
+        return Ok(ParsedCommand::Border(BorderCommand::TargetStyle {
+            id: args[1].to_string(),
+            style: parse_border_style(first)?,
+        }));
+    }
+
     // `:border <target> color <color|inherit|none>`
     if args.get(1).is_some_and(|s| s.eq_ignore_ascii_case("color")) {
         let color_arg = args

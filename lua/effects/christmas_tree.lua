@@ -3,6 +3,8 @@
 -- wrapped gifts at the base, and parallax falling snow strictly clipped to the canvas.
 local tree = {}
 
+tree.type = "canvas"
+
 local FOLIAGE_RAMP = { ".", ":", "+", "*", "%", "#", "@" }
 
 local ORNAMENT_COLORS = {

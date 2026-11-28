@@ -1,6 +1,8 @@
 -- Matrix falling glyph stream background effect (Lua Canvas / Cell-Buffer API).
 local matrix = {}
 
+matrix.type = "background"
+
 local DEFAULT_CHARSET = "01ﾊﾐﾋｰｳｼﾅﾓﾆｻﾜﾂｵﾘｱﾎﾃﾏｹﾒｴｶｷﾑﾕﾗｾﾈｽﾀﾇﾍ"
 
 local function split_utf8(str)

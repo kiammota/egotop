@@ -2,6 +2,8 @@
 -- Uses the isolated Canvas API (`canvas.width`, `canvas.height`, `ctx`).
 local animation = {}
 
+animation.type = "intro"
+
 function animation.setup(api)
     local duration = 0.9
     api.ui.reveal(0.0)

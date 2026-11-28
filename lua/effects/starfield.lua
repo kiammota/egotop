@@ -1,6 +1,8 @@
 -- Multi-depth parallax starfield effect (Lua Canvas / Cell-Buffer API).
 local starfield = {}
 
+starfield.type = "background"
+
 local STARS = { ".", "·", "*", "✦" }
 
 local function seed(state, w, h, density)

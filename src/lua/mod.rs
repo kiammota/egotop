@@ -270,79 +270,37 @@ pub fn list_lua_effects() -> Vec<String> {
     names
 }
 
-/// Lists scripts whose `type` matches the given slot kind.
-/// Scripts from `animations/` default to `Intro`, scripts from `effects/` default to `Background`.
+/// Lists scripts with an explicit Lua module `type` matching the requested slot.
 pub fn list_scripts_for_slot(slot: AnimSlotKind) -> Vec<String> {
-    match slot {
-        AnimSlotKind::Intro => list_lua_animations(),
-        AnimSlotKind::Background => {
-            let mut names = list_lua_effects();
-            names.retain(|n| !n.eq_ignore_ascii_case("none"));
-            names
-        }
-        AnimSlotKind::Canvas => {
-            // Canvas scripts can come from either effects/ or animations/ with type = "canvas",
-            // but by default we list effects (minus none) as canvas-compatible since they
-            // implement the same init/update/render contract.
-            let mut names = list_lua_effects();
-            names.retain(|n| !n.eq_ignore_ascii_case("none"));
-            names
+    let expected = match slot { AnimSlotKind::Intro => "intro", AnimSlotKind::Background => "background", AnimSlotKind::Canvas => "canvas" };
+    let roots = [paths::animations_path(), paths::effects_path(), Path::new(env!("CARGO_MANIFEST_DIR")).join("lua/animations"), Path::new(env!("CARGO_MANIFEST_DIR")).join("lua/effects")];
+    let mut out = Vec::new();
+    for dir in roots {
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().and_then(|e| e.to_str()) != Some("lua") { continue; }
+                let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else { continue; };
+                if stem.starts_with('_') || stem.eq_ignore_ascii_case("none") { continue; }
+                let Ok(source) = std::fs::read_to_string(&path) else { continue; };
+                if (source.contains(&format!("type = \"{expected}\"")) || source.contains(&format!("type = '{expected}'"))) && !out.iter().any(|n: &String| n == stem) { out.push(stem.to_string()); }
+            }
         }
     }
+    out.sort();
+    out
 }
 
 /// Validates that a script name is compatible with the target slot.
-/// Returns `Ok(())` if compatible, or `Err(message)` explaining the mismatch.
 pub fn validate_script_for_slot(script_name: &str, target_slot: AnimSlotKind) -> Result<(), String> {
     let normalized = normalize_animation_alias(script_name);
-    let is_intro_script = list_lua_animations()
-        .iter()
-        .any(|n| n.eq_ignore_ascii_case(&normalized));
-    let is_effect_script = list_lua_effects()
-        .iter()
-        .any(|n| n.eq_ignore_ascii_case(&normalized));
-
-    match target_slot {
-        AnimSlotKind::Intro => {
-            // Intros come from animations/ directory
-            if is_intro_script || normalized == "none" {
-                Ok(())
-            } else if is_effect_script {
-                Err(format!(
-                    "'{script_name}' is a background effect (type = \"background\"), not an intro animation. \
-                     Use ':background {script_name}' instead."
-                ))
-            } else {
-                Err(format!("Intro script '{script_name}' not found"))
-            }
-        }
-        AnimSlotKind::Background => {
-            // Backgrounds come from effects/ directory
-            if is_effect_script || normalized == "none" {
-                Ok(())
-            } else if is_intro_script {
-                Err(format!(
-                    "'{script_name}' is an intro animation (type = \"intro\"), not a background effect. \
-                     Use ':intro {script_name}' instead."
-                ))
-            } else {
-                Err(format!("Background script '{script_name}' not found"))
-            }
-        }
-        AnimSlotKind::Canvas => {
-            // Canvas scripts can be effects or dedicated canvas scripts
-            if is_effect_script || normalized == "none" {
-                Ok(())
-            } else if is_intro_script {
-                Err(format!(
-                    "'{script_name}' is an intro animation (type = \"intro\"), not a canvas script. \
-                     Intro animations cannot run inside containers."
-                ))
-            } else {
-                Err(format!("Canvas script '{script_name}' not found"))
-            }
+    if normalized == "none" || list_scripts_for_slot(target_slot).iter().any(|n| n.eq_ignore_ascii_case(&normalized)) { return Ok(()); }
+    for other in [AnimSlotKind::Intro, AnimSlotKind::Background, AnimSlotKind::Canvas] {
+        if other != target_slot && list_scripts_for_slot(other).iter().any(|n| n.eq_ignore_ascii_case(&normalized)) {
+            return Err(format!("'{script_name}' has type {other:?}; it cannot be used in the {target_slot:?} slot"));
         }
     }
+    Err(format!("{} script '{script_name}' not found", match target_slot { AnimSlotKind::Intro => "Intro", AnimSlotKind::Background => "Background", AnimSlotKind::Canvas => "Canvas" }))
 }
 
 /// Maps well-known effect/preset aliases to their canonical script stem without special-casing runtime playback.

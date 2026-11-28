@@ -1705,10 +1705,11 @@ count = 9999
         containers: &containers,
     };
     let res = CompletionEngine::complete("background ", 11, &registry, &cctx);
+    assert!(res.items.iter().any(|i| i.insert_text == "set"));
+    assert!(!res.items.iter().any(|i| i.insert_text == "starfield"));
+    let res = CompletionEngine::complete("background set ", 15, &registry, &cctx);
     assert!(res.items.iter().any(|i| i.insert_text == "starfield"));
-    assert!(res.items.iter().any(|i| i.insert_text == "add"));
-    let exact_bg = CompletionEngine::complete("background starfield", 20, &registry, &cctx);
-    assert!(!exact_bg.items.iter().any(|i| i.insert_text == "starfield"));
+    assert!(!res.items.iter().any(|i| i.insert_text == "crt_power_on"));
 }
 
 #[test]
@@ -3901,6 +3902,10 @@ fn unified_background_canvas_layers_borders_and_per_container_canvas_isolation()
     ));
     assert!(matches!(
         parse_command(":border system thick"),
+        Ok(egotop::command::ParsedCommand::Border(_))
+    ));
+    assert!(matches!(
+        parse_command(":border double system"),
         Ok(egotop::command::ParsedCommand::Border(_))
     ));
     assert!(matches!(

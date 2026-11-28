@@ -25,6 +25,152 @@ pub struct CompletionContext<'a> {
     pub containers: &'a [String],
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompletionQuery {
+    pub arg_lead: String,
+    /// Positional arguments before the token currently being completed.
+    pub tokens: Vec<String>,
+    /// Command name is position 0; its first positional argument is position 1.
+    pub arg_index: usize,
+    pub cmdline: String,
+    pub cursor_pos: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TokenizedCommandLine {
+    pub command: Option<String>,
+    pub args_before: Vec<String>,
+    pub query: CompletionQuery,
+    pub replace_start: usize,
+    pub replace_end: usize,
+}
+
+/// Tokenizes a command line up to a cursor while honoring single/double quotes
+/// and backslash escapes. Replacement offsets cover only the active token.
+pub fn tokenize_command_line(input: &str, cursor: usize) -> TokenizedCommandLine {
+    let cursor = clamp_char_boundary(input, cursor);
+    let lexed = lex_command_line(input);
+    let active = lexed
+        .iter()
+        .position(|t| cursor >= t.start && cursor <= t.end);
+    let (replace_start, replace_end, arg_lead, before_count) = if let Some(idx) = active {
+        let tok = &lexed[idx];
+        let lead_end = cursor.min(tok.end).max(tok.start);
+        let mut lead = unquote_token(&input[tok.start..lead_end]);
+        let mut start = tok.start;
+        if idx == 0 && lead.starts_with(':') {
+            lead.remove(0);
+            start = start.saturating_add(1);
+        }
+        (start, tok.end, lead, idx)
+    } else {
+        let before_count = lexed.iter().take_while(|t| t.end <= cursor).count();
+        (cursor, cursor, String::new(), before_count)
+    };
+
+    let command = lexed.first().map(|t| unquote_token(&input[t.start..t.end]));
+    let args_before: Vec<String> = lexed
+        .iter()
+        .take(before_count)
+        .skip(1)
+        .map(|t| unquote_token(&input[t.start..t.end]))
+        .collect();
+    let arg_index = if active == Some(0) || command.is_none() && before_count == 0 {
+        0
+    } else {
+        before_count.max(1)
+    };
+    TokenizedCommandLine {
+        command,
+        args_before: args_before.clone(),
+        query: CompletionQuery {
+            arg_lead,
+            tokens: args_before,
+            arg_index,
+            cmdline: input.to_string(),
+            cursor_pos: cursor,
+        },
+        replace_start,
+        replace_end,
+    }
+}
+
+#[derive(Debug)]
+struct LexToken {
+    start: usize,
+    end: usize,
+}
+
+fn lex_command_line(input: &str) -> Vec<LexToken> {
+    let mut out = Vec::new();
+    let mut start = None;
+    let mut quote = None;
+    let mut escape = false;
+    for (idx, ch) in input.char_indices() {
+        if start.is_none() && !ch.is_whitespace() {
+            start = Some(idx);
+        }
+        if escape {
+            escape = false;
+            continue;
+        }
+        if ch == '\\' {
+            escape = true;
+            continue;
+        }
+        if let Some(q) = quote {
+            if ch == q {
+                quote = None;
+            }
+        } else if ch == '\'' || ch == '"' {
+            quote = Some(ch);
+        } else if ch.is_whitespace() {
+            if let Some(s) = start.take() {
+                out.push(LexToken { start: s, end: idx });
+            }
+        }
+    }
+    if let Some(s) = start {
+        out.push(LexToken {
+            start: s,
+            end: input.len(),
+        });
+    }
+    out
+}
+
+fn unquote_token(raw: &str) -> String {
+    let mut out = String::new();
+    let mut quote = None;
+    let mut escape = false;
+    for ch in raw.chars() {
+        if escape {
+            out.push(ch);
+            escape = false;
+            continue;
+        }
+        if ch == '\\' {
+            escape = true;
+            continue;
+        }
+        if let Some(q) = quote {
+            if ch == q {
+                quote = None;
+            } else {
+                out.push(ch);
+            }
+        } else if ch == '\'' || ch == '"' {
+            quote = Some(ch);
+        } else {
+            out.push(ch);
+        }
+    }
+    if escape {
+        out.push('\\');
+    }
+    out
+}
+
 pub struct CompletionEngine;
 
 impl CompletionEngine {
@@ -34,39 +180,33 @@ impl CompletionEngine {
         registry: &CommandRegistry,
         ctx: &CompletionContext<'_>,
     ) -> CompletionResult {
-        let clamped_cursor = clamp_char_boundary(input, cursor);
-        let before = &input[..clamped_cursor];
-        let trimmed_start = before.trim_start();
-        let leading_ws = before.len() - trimmed_start.len();
-
-        // Extend token end slightly if cursor is mid-word
-        let token_end = find_token_end(input, clamped_cursor);
-
-        // Determine if cursor is still in the command name token (no space after trimmed_start)
-        let first_ws = trimmed_start.find(char::is_whitespace);
-        if first_ws.is_none() {
-            let prefix = trimmed_start.to_ascii_lowercase();
-            let items = finalize_suggestions(complete_commands(&prefix, registry), &prefix);
+        let parsed = tokenize_command_line(input, cursor);
+        if parsed.query.arg_index == 0 {
+            let items = finalize_suggestions(
+                complete_commands(&parsed.query.arg_lead, registry),
+                &parsed.query.arg_lead,
+            );
             return CompletionResult {
                 items,
-                replace_start: leading_ws,
-                replace_end: token_end,
+                replace_start: parsed.replace_start,
+                replace_end: parsed.replace_end,
             };
         }
-
-        // Parse completed tokens before the token currently being edited
-        let (cmd_token, rest_before) = trimmed_start.split_at(first_ws.unwrap());
-        let cmd_lower = cmd_token.to_ascii_lowercase();
+        let cmd_lower = parsed
+            .command
+            .as_deref()
+            .unwrap_or("")
+            .trim_start_matches(':')
+            .to_ascii_lowercase();
         let Some(desc) = registry.find(&cmd_lower) else {
             return CompletionResult {
                 items: Vec::new(),
-                replace_start: clamped_cursor,
-                replace_end: clamped_cursor,
+                replace_start: parsed.replace_start,
+                replace_end: parsed.replace_end,
             };
         };
-
-        let (prev_args, current_token, replace_start) =
-            split_args_and_current(rest_before, leading_ws + cmd_token.len(), clamped_cursor);
+        let prev_args = &parsed.args_before;
+        let current_token = &parsed.query.arg_lead;
 
         let items = finalize_suggestions(
             match desc.provider {
@@ -82,30 +222,57 @@ impl CompletionEngine {
                     complete_animation(&prev_args, &current_token, ctx.animations)
                 }
                 CompletionProviderKind::Background => {
-                    complete_background(&prev_args, &current_token, ctx.animations)
+                    complete_background(&prev_args, &current_token)
                 }
                 CompletionProviderKind::Intro => {
-                    let mut items = complete_from_pairs(&current_token.to_ascii_lowercase(), &[("replay", "Replay the configured intro"), ("off", "Disable the intro")], None);
                     if prev_args.is_empty() {
-                        for name in crate::lua::list_scripts_for_slot(crate::animation::AnimSlotKind::Intro) {
-                            if name.to_ascii_lowercase().starts_with(&current_token.to_ascii_lowercase()) {
-                                items.push(CompletionItem { insert_text: name.clone(), label: name, description: "Intro animation".into(), expected_arg: None });
-                            }
-                        }
+                        complete_from_pairs(
+                            &current_token,
+                            &[
+                                ("set", "Choose an intro"),
+                                ("replay", "Replay the configured intro"),
+                                ("off", "Disable the intro"),
+                            ],
+                            None,
+                        )
+                    } else if prev_args.len() == 1 && prev_args[0].eq_ignore_ascii_case("set") {
+                        script_completions(crate::animation::AnimSlotKind::Intro)
+                    } else {
+                        Vec::new()
                     }
-                    items
                 }
                 CompletionProviderKind::Canvas => {
                     let p = current_token.to_ascii_lowercase();
                     if prev_args.is_empty() {
-                        complete_from_pairs(&p, &ctx.containers.iter().map(|n| (n.as_str(), "Container id")).collect::<Vec<_>>(), None)
-                    } else if prev_args.len() == 1 {
-                        let mut items = complete_from_pairs(&p, &[("off", "Disable this canvas"), ("pause", "Pause this canvas"), ("resume", "Resume this canvas")], None);
-                        for name in crate::lua::list_scripts_for_slot(crate::animation::AnimSlotKind::Canvas) {
-                            if name.to_ascii_lowercase().starts_with(&p) { items.push(CompletionItem { insert_text: name.clone(), label: name, description: "Canvas animation".into(), expected_arg: None }); }
-                        }
+                        complete_from_pairs(
+                            &p,
+                            &ctx.containers
+                                .iter()
+                                .map(|n| (n.as_str(), "Canvas container"))
+                                .collect::<Vec<_>>(),
+                            None,
+                        )
+                    } else if prev_args.len() == 1
+                        && ctx
+                            .containers
+                            .iter()
+                            .any(|c| c.eq_ignore_ascii_case(&prev_args[0]))
+                    {
+                        let mut items = complete_from_pairs(
+                            &p,
+                            &[
+                                ("off", "Disable this canvas"),
+                                ("clear", "Clear this canvas"),
+                                ("pause", "Pause this canvas"),
+                                ("resume", "Resume this canvas"),
+                            ],
+                            None,
+                        );
+                        items.extend(script_completions(crate::animation::AnimSlotKind::Canvas));
                         items
-                    } else { Vec::new() }
+                    } else {
+                        Vec::new()
+                    }
                 }
                 CompletionProviderKind::Border => {
                     complete_border(&prev_args, &current_token, ctx.containers)
@@ -116,7 +283,9 @@ impl CompletionEngine {
                 CompletionProviderKind::Container => {
                     complete_container(&prev_args, &current_token, ctx.containers)
                 }
-                CompletionProviderKind::SetOption => complete_set_option(&prev_args, &current_token),
+                CompletionProviderKind::SetOption => {
+                    complete_set_option(&prev_args, &current_token)
+                }
                 CompletionProviderKind::WriteTarget => {
                     if prev_args.is_empty() {
                         complete_from_pairs(
@@ -141,8 +310,8 @@ impl CompletionEngine {
 
         CompletionResult {
             items,
-            replace_start,
-            replace_end: token_end,
+            replace_start: parsed.replace_start,
+            replace_end: parsed.replace_end,
         }
     }
 }
@@ -155,80 +324,79 @@ fn clamp_char_boundary(s: &str, idx: usize) -> usize {
     i
 }
 
-fn find_token_end(input: &str, cursor: usize) -> usize {
-    let rest = &input[cursor..];
-    match rest.find(char::is_whitespace) {
-        Some(rel) => cursor + rel,
-        None => input.len(),
-    }
-}
-
-fn split_args_and_current(
-    rest_before: &str,
-    base_offset: usize,
-    cursor: usize,
-) -> (Vec<String>, String, usize) {
-    let ends_with_ws = rest_before
-        .chars()
-        .last()
-        .is_some_and(char::is_whitespace);
-
-    let tokens: Vec<&str> = rest_before.split_whitespace().collect();
-    if ends_with_ws {
-        let prev = tokens.into_iter().map(str::to_string).collect();
-        (prev, String::new(), cursor)
-    } else if let Some((last, head)) = tokens.split_last() {
-        let prev = head.iter().map(|s| (*s).to_string()).collect();
-        let last_start = base_offset + rest_before.rfind(last).unwrap_or(0);
-        (prev, (*last).to_string(), last_start)
-    } else {
-        (Vec::new(), String::new(), cursor)
-    }
-}
-
-/// Removes exact matches against the token being typed (so completed tokens do not
-/// suggest themselves) and deduplicates suggestions while preserving priority order.
+/// Deduplicates suggestions and ranks them by subsequence/prefix relevance.
 fn finalize_suggestions(items: Vec<CompletionItem>, current_token: &str) -> Vec<CompletionItem> {
-    let token_lower = current_token.trim().to_ascii_lowercase();
-    let mut seen = Vec::with_capacity(items.len());
-    let mut out = Vec::with_capacity(items.len());
-    for item in items {
-        let candidate_lower = item.insert_text.to_ascii_lowercase();
-        if !token_lower.is_empty() && candidate_lower == token_lower {
+    let mut ranked = Vec::<(i32, usize, CompletionItem)>::new();
+    let mut seen = std::collections::HashSet::new();
+    for (order, item) in items.into_iter().enumerate() {
+        let key = item.insert_text.to_ascii_lowercase();
+        if !seen.insert(key) {
             continue;
         }
-        if !seen.contains(&candidate_lower) {
-            seen.push(candidate_lower);
-            out.push(item);
+        if !current_token.is_empty() && item.insert_text.eq_ignore_ascii_case(current_token) {
+            continue;
+        }
+        if let Some(score) = fuzzy_score(current_token, &item.insert_text) {
+            ranked.push((score, order, item));
         }
     }
-    out
+    ranked.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+    ranked.into_iter().map(|(_, _, item)| item).collect()
 }
 
-fn complete_commands(prefix: &str, registry: &CommandRegistry) -> Vec<CompletionItem> {
-    let mut prefix_matches = Vec::new();
-    let mut sub_matches = Vec::new();
+pub fn fuzzy_score(pattern: &str, candidate: &str) -> Option<i32> {
+    let needle: Vec<char> = pattern.to_ascii_lowercase().chars().collect();
+    let hay: Vec<char> = candidate.to_ascii_lowercase().chars().collect();
+    if needle.is_empty() {
+        return Some(0);
+    }
+    if needle.len() > hay.len() {
+        return None;
+    }
+    if hay.starts_with(&needle) {
+        return Some(10_000 - hay.len() as i32);
+    }
 
-    for cmd in registry.commands() {
-        if !prefix.is_empty() && cmd.name.eq_ignore_ascii_case(prefix) {
-            continue;
+    let mut score = 0i32;
+    let mut next = 0usize;
+    let mut previous = None;
+    for ch in needle {
+        let rel = hay[next..].iter().position(|c| *c == ch)?;
+        let idx = next + rel;
+        let boundary = idx == 0 || matches!(hay[idx - 1], '_' | '-' | '.' | ' ');
+        score += if boundary { 120 } else { 20 };
+        if previous.is_some_and(|p| idx == p + 1) {
+            score += 90;
         }
+        if let Some(prev) = previous {
+            score -= (idx.saturating_sub(prev + 1) as i32) * 3;
+        }
+        previous = Some(idx);
+        next = idx + 1;
+    }
+    Some(score)
+}
+
+fn complete_commands(_prefix: &str, registry: &CommandRegistry) -> Vec<CompletionItem> {
+    let mut items = Vec::new();
+    for cmd in registry.commands() {
         let expected_arg = cmd.args.first().map(|a| a.name.to_string());
-        let item = CompletionItem {
+        items.push(CompletionItem {
             insert_text: cmd.name.to_string(),
             label: format!(":{}", cmd.name),
             description: cmd.description.to_string(),
             expected_arg,
-        };
-        if cmd.name.starts_with(prefix) || cmd.aliases.iter().any(|a| a.starts_with(prefix)) {
-            prefix_matches.push(item);
-        } else if !prefix.is_empty() && cmd.name.contains(prefix) {
-            sub_matches.push(item);
+        });
+        for alias in cmd.aliases {
+            items.push(CompletionItem {
+                insert_text: (*alias).to_string(),
+                label: format!(":{alias} → :{}", cmd.name),
+                description: format!("Alias for :{} — {}", cmd.name, cmd.description),
+                expected_arg: cmd.args.first().map(|a| a.name.to_string()),
+            });
         }
     }
-
-    prefix_matches.extend(sub_matches);
-    prefix_matches
+    items
 }
 
 fn complete_themes(prefix: &str, themes: &[ThemeEntry]) -> Vec<CompletionItem> {
@@ -329,129 +497,36 @@ fn complete_animation(
     Vec::new()
 }
 
-fn complete_background(
-    prev_args: &[String],
-    current: &str,
-    catalog: &AnimationCatalog,
-) -> Vec<CompletionItem> {
-    let p = current.to_ascii_lowercase();
-    let presets = [
-        ("matrix_rain", "Matrix falling glyphs rain"),
-        ("starfield", "Parallax starfield drifting across space"),
-        ("particles", "Floating glowing character particles"),
-        ("waves", "Multi-wave harmonic interference surface"),
-        ("noise", "Animated procedural noise field"),
-        ("gradient", "Smooth animated aurora gradient bands"),
-        ("floating_chars", "Gently swaying floating glyphs"),
-        ("custom_ascii", "Animated ASCII art layer"),
-        ("scanlines", "CRT horizontal sweep scanlines"),
-        ("none", "Disable background layers"),
-    ];
+fn script_completions(slot: crate::animation::AnimSlotKind) -> Vec<CompletionItem> {
+    crate::lua::list_scripts_for_slot(slot)
+        .into_iter()
+        .map(|name| CompletionItem {
+            insert_text: name.clone(),
+            label: name,
+            description: format!("{slot:?} Lua script"),
+            expected_arg: None,
+        })
+        .collect()
+}
 
+fn complete_background(prev_args: &[String], current: &str) -> Vec<CompletionItem> {
     if prev_args.is_empty() {
-        let mut items = complete_from_pairs(
-            &p,
+        complete_from_pairs(
+            current,
             &[
-                ("set", "Replace background with an effect or scene preset"),
-                ("add", "Stack an extra background effect layer"),
-                ("remove", "Remove a background effect layer by index or name"),
-                ("toggle", "Toggle background rendering on/off"),
-                ("stop", "Stop and clear all background effect layers"),
-                ("pause", "Pause background animation updates"),
-                ("resume", "Resume background animation updates"),
-                ("speed", "Adjust background speed multiplier"),
-                ("list", "Show active and available background effects"),
+                ("set", "Set background animation"),
+                ("off", "Disable background"),
+                ("pause", "Pause background"),
+                ("resume", "Resume background"),
+                ("list", "List background scripts"),
             ],
-            Some("<arg>"),
-        );
-        items.extend(complete_from_pairs(&p, &presets, None));
-        let all_anims = crate::lua::list_all_canvas_animations();
-        for name in all_anims {
-            if name.to_ascii_lowercase().starts_with(&p)
-                && !items.iter().any(|i| i.insert_text.eq_ignore_ascii_case(&name))
-            {
-                items.push(CompletionItem {
-                    insert_text: name.clone(),
-                    label: name.clone(),
-                    description: format!("Canvas background animation '{name}'"),
-                    expected_arg: None,
-                });
-            }
-        }
-        return items;
+            None,
+        )
+    } else if prev_args.len() == 1 && prev_args[0].eq_ignore_ascii_case("set") {
+        script_completions(crate::animation::AnimSlotKind::Background)
+    } else {
+        Vec::new()
     }
-
-    if prev_args.len() == 1 {
-        let sub = prev_args[0].to_ascii_lowercase();
-        if matches!(sub.as_str(), "set" | "add" | "layer") {
-            let mut items = complete_from_pairs(&p, &presets, None);
-            let all_anims = crate::lua::list_all_canvas_animations();
-            for name in all_anims {
-                if name.to_ascii_lowercase().starts_with(&p)
-                    && !items.iter().any(|i| i.insert_text.eq_ignore_ascii_case(&name))
-                {
-                    items.push(CompletionItem {
-                        insert_text: name.clone(),
-                        label: name.clone(),
-                        description: format!("Canvas background animation '{name}'"),
-                        expected_arg: None,
-                    });
-                }
-            }
-            for entry in &catalog.entries {
-                if !entry.package.definition.backgrounds.is_empty()
-                    && (entry.id.to_ascii_lowercase().starts_with(&p)
-                        || (!p.is_empty() && entry.id.to_ascii_lowercase().contains(&p)))
-                {
-                    items.push(CompletionItem {
-                        insert_text: entry.id.clone(),
-                        label: entry.id.clone(),
-                        description: format!("Scene background layers ({})", entry.display_name),
-                        expected_arg: None,
-                    });
-                }
-            }
-            return items;
-        }
-        if sub == "toggle" {
-            return complete_from_pairs(
-                &p,
-                &[
-                    ("on", "Enable background rendering"),
-                    ("off", "Disable background rendering"),
-                ],
-                None,
-            );
-        }
-        if sub == "remove" || sub == "rm" || sub == "del" {
-            return complete_from_pairs(
-                &p,
-                &[
-                    ("1", "First background layer"),
-                    ("matrix_rain", "Remove matrix layer"),
-                    ("starfield", "Remove starfield layer"),
-                    ("particles", "Remove particles layer"),
-                    ("waves", "Remove waves layer"),
-                    ("scanlines", "Remove scanlines layer"),
-                ],
-                None,
-            );
-        }
-        if sub == "speed" {
-            return complete_from_pairs(
-                &p,
-                &[
-                    ("0.5", "Slow ambient motion"),
-                    ("1.0", "Default background speed"),
-                    ("1.5", "Energetic ambient motion"),
-                    ("2.0", "Fast ambient motion"),
-                ],
-                None,
-            );
-        }
-    }
-
-    Vec::new()
 }
 
 fn complete_layout(prev_args: &[String], current: &str, layouts: &[String]) -> Vec<CompletionItem> {
@@ -487,11 +562,7 @@ fn complete_layout(prev_args: &[String], current: &str, layouts: &[String]) -> V
         return items;
     }
 
-    if prev_args.len() == 1
-        && matches!(
-            prev_args[0].to_ascii_lowercase().as_str(),
-            "load" | "mode"
-        )
+    if prev_args.len() == 1 && matches!(prev_args[0].to_ascii_lowercase().as_str(), "load" | "mode")
     {
         let mut items = complete_from_pairs(&p, &mode_pairs, None);
         for l in layouts {
@@ -585,59 +656,35 @@ fn complete_border(
 ) -> Vec<CompletionItem> {
     let p = current.to_ascii_lowercase();
     if prev_args.is_empty() {
-        let mut items = complete_from_pairs(&p, BorderChars::STYLE_NAMES, None);
-        if "background".starts_with(&p) {
-            items.push(CompletionItem {
-                insert_text: "background".to_string(),
-                label: "background".to_string(),
-                description: "Global background canvas border".to_string(),
-                expected_arg: Some("<style>".to_string()),
-            });
-        }
-        if "all".starts_with(&p) {
-            items.push(CompletionItem {
-                insert_text: "all".to_string(),
-                label: "all".to_string(),
-                description: "Apply border style to all bordered canvases".to_string(),
-                expected_arg: Some("<style>".to_string()),
-            });
-        }
-        for id in containers {
-            let l = id.to_ascii_lowercase();
-            if l.starts_with(&p) || (!p.is_empty() && l.contains(&p)) {
-                items.push(CompletionItem {
-                    insert_text: id.clone(),
-                    label: id.clone(),
-                    description: format!("Set border for '{id}' container canvas"),
-                    expected_arg: Some("<style>".to_string()),
-                });
-            }
-        }
-        for &(prop, desc) in BorderChars::PROPERTY_SPECS {
-            if prop != "style" && prop.starts_with(&p) {
-                items.push(CompletionItem {
-                    insert_text: prop.to_string(),
-                    label: prop.to_string(),
-                    description: desc.to_string(),
-                    expected_arg: Some("<char>".to_string()),
-                });
-            }
-        }
-        return items;
+        return complete_from_pairs(&p, BorderChars::STYLE_NAMES, None);
     }
 
     if prev_args.len() == 1 {
         let first = prev_args[0].to_ascii_lowercase();
-        if matches!(first.as_str(), "all" | "set" | "style" | "background")
-            || containers.iter().any(|c| c.eq_ignore_ascii_case(&first))
+        if BorderChars::STYLE_NAMES
+            .iter()
+            .any(|(style, _)| style.eq_ignore_ascii_case(&first))
         {
-            return complete_from_pairs(&p, BorderChars::STYLE_NAMES, None);
+            return containers
+                .iter()
+                .map(|id| CompletionItem {
+                    insert_text: id.clone(),
+                    label: id.clone(),
+                    description: "Container target".into(),
+                    expected_arg: None,
+                })
+                .collect();
         }
         if BorderChars::PROPERTY_SPECS
             .iter()
             .any(|&(k, _)| k != "style" && k == first)
         {
             return complete_from_pairs(&p, suggested_chars_for_property(&first), None);
+        }
+        if matches!(first.as_str(), "all" | "set" | "style" | "background")
+            || containers.iter().any(|c| c.eq_ignore_ascii_case(&first))
+        {
+            return complete_from_pairs(&p, BorderChars::STYLE_NAMES, None);
         }
     }
 
@@ -675,7 +722,9 @@ fn complete_container(
     {
         return containers
             .iter()
-            .filter(|id| id.to_ascii_lowercase().starts_with(&p) || id.to_ascii_lowercase().contains(&p))
+            .filter(|id| {
+                id.to_ascii_lowercase().starts_with(&p) || id.to_ascii_lowercase().contains(&p)
+            })
             .map(|id| CompletionItem {
                 insert_text: id.clone(),
                 label: id.clone(),
@@ -692,9 +741,15 @@ fn complete_container(
                 ("background", "inherit | transparent | <color>"),
                 ("foreground", "Default content foreground color"),
                 ("border.color", "Border color override"),
-                ("border.style", "rounded | plain | double | thick | ascii | none"),
+                (
+                    "border.style",
+                    "rounded | plain | double | thick | ascii | none",
+                ),
                 ("effects", "exclude | allow | isolated"),
-                ("animation", "Assign an animation/effect to this container canvas"),
+                (
+                    "animation",
+                    "Assign an animation/effect to this container canvas",
+                ),
             ],
             None,
         );
@@ -717,7 +772,10 @@ fn complete_container(
                 &[
                     ("exclude", "Block global effects inside container"),
                     ("allow", "Allow global effects inside container"),
-                    ("isolated", "Block global effects, allow local container effects"),
+                    (
+                        "isolated",
+                        "Block global effects, allow local container effects",
+                    ),
                 ],
                 None,
             ),
@@ -730,7 +788,9 @@ fn complete_container(
                 for name in crate::lua::list_all_canvas_animations() {
                     let l = name.to_ascii_lowercase();
                     if (l.starts_with(&p) || (!p.is_empty() && l.contains(&p)))
-                        && !items.iter().any(|i| i.insert_text.eq_ignore_ascii_case(&name))
+                        && !items
+                            .iter()
+                            .any(|i| i.insert_text.eq_ignore_ascii_case(&name))
                     {
                         items.push(CompletionItem {
                             insert_text: name.clone(),
@@ -765,13 +825,9 @@ fn complete_from_pairs(
     pairs: &[(&str, &str)],
     expected_arg: Option<&str>,
 ) -> Vec<CompletionItem> {
-    let p = prefix.to_ascii_lowercase();
+    let _p = prefix.to_ascii_lowercase();
     pairs
         .iter()
-        .filter(|&&(name, _)| {
-            let l = name.to_ascii_lowercase();
-            l.starts_with(&p) || (!p.is_empty() && l.contains(&p))
-        })
         .map(|&(name, desc)| CompletionItem {
             insert_text: name.to_string(),
             label: name.to_string(),
@@ -779,4 +835,68 @@ fn complete_from_pairs(
             expected_arg: expected_arg.map(str::to_string),
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tokenizes_trailing_space_and_quoted_arguments() {
+        let q = tokenize_command_line(":background set ", 16);
+        assert_eq!(q.query.arg_index, 2);
+        assert_eq!(q.query.tokens, ["set"]);
+        let q = tokenize_command_line(":canvas \"hello panel\" de", 24);
+        assert_eq!(q.command.as_deref(), Some(":canvas"));
+        assert_eq!(q.query.arg_index, 2);
+        assert_eq!(q.query.tokens, ["hello panel"]);
+    }
+
+    #[test]
+    fn fuzzy_score_prefers_prefix_and_matches_word_initials() {
+        assert!(
+            fuzzy_score("mat", "matrix_rain").unwrap() > fuzzy_score("mt", "matrix_rain").unwrap()
+        );
+        assert!(fuzzy_score("mt", "matrix_rain").is_some());
+        assert!(fuzzy_score("mr", "matrix_rain").is_some());
+        assert!(fuzzy_score("zz", "matrix_rain").is_none());
+    }
+
+    #[test]
+    fn completion_positions_are_contextual() {
+        let registry = CommandRegistry::new();
+        let catalog = AnimationCatalog {
+            entries: Vec::new(),
+        };
+        let ctx = CompletionContext {
+            themes: &[],
+            animations: &catalog,
+            layouts: &[],
+            containers: &["system".into()],
+        };
+        let border = CompletionEngine::complete(":border ", 8, &registry, &ctx);
+        assert!(border.items.iter().any(|i| i.insert_text == "double"));
+        assert!(!border.items.iter().any(|i| i.insert_text == "system"));
+        let bg = CompletionEngine::complete(":background set ", 17, &registry, &ctx);
+        assert!(!bg.items.iter().any(|i| {
+            ["crt_power_on", "cursor_expand", "christmas_tree"].contains(&i.insert_text.as_str())
+        }));
+        let intro = CompletionEngine::complete(":intro set ", 11, &registry, &ctx);
+        assert!(intro.items.iter().any(|i| i.insert_text == "crt_power_on"));
+        assert!(
+            !intro
+                .items
+                .iter()
+                .any(|i| i.insert_text == "christmas_tree")
+        );
+        let canvas = CompletionEngine::complete(":canvas ", 8, &registry, &ctx);
+        assert_eq!(
+            canvas
+                .items
+                .iter()
+                .map(|i| i.insert_text.as_str())
+                .collect::<Vec<_>>(),
+            ["system"]
+        );
+    }
 }
