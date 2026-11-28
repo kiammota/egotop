@@ -74,7 +74,39 @@ pub fn draw_frame(
     animations: &AnimationCatalog,
     ctx: &RenderContext,
 ) {
+    draw_frame_with_lua(
+        frame,
+        config,
+        effect,
+        transition,
+        None,
+        anim_store,
+        customizer,
+        command_line,
+        startup,
+        themes,
+        animations,
+        ctx,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn draw_frame_with_lua(
+    frame: &mut Frame,
+    config: &Config,
+    effect: &dyn BackgroundEffect,
+    transition: &TransitionPlayer,
+    lua_anim: Option<&LuaAnimationRuntime>,
+    anim_store: &ComponentAnimationStore,
+    customizer: &mut CustomizerState,
+    command_line: &CommandLineState,
+    startup: &CursorStartupState,
+    themes: &[ThemeEntry],
+    animations: &AnimationCatalog,
+    ctx: &RenderContext,
+) {
     let area = frame.area();
+    frame.buffer_mut().reset();
 
     render_background_base(frame, area, config, ctx);
 
@@ -92,6 +124,12 @@ pub fn draw_frame(
         effect.render(buf, a, &config.background, ctx.theme);
     });
 
+    if let Some(la) = lua_anim
+        && la.layer() == AnimationLayer::Background
+    {
+        render_lua_animation_background(frame, bg_area, config, ctx, la);
+    }
+
     if !transition.finished && transition.has_scene_tracks() {
         render_background_canvas_with_mask(frame, bg_area, &mask, |buf, a| {
             transition.render_scene(buf, a, ctx.theme);
@@ -101,7 +139,13 @@ pub fn draw_frame(
     render_containers(frame, &layout, anim_store, ctx);
 
     if !transition.finished {
-        transition.apply_to_buffer(frame.buffer_mut(), area, ctx.theme);
+        transition.apply_to_buffer(frame.buffer_mut(), layout.area, ctx.theme);
+    }
+
+    if let Some(la) = lua_anim
+        && la.layer() != AnimationLayer::Background
+    {
+        render_lua_animation_overlay(frame, layout.area, la, ctx.theme);
     }
 
     if customizer.open {

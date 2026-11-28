@@ -16,7 +16,7 @@ egotop.config({
     date_format = "%m/%d/%Y",
     view_mode = "dashboard",
     default_page = 1,
-    startup_animation = "matrix_boot",
+    startup_animation = "none",
     font = "ANSI Shadow",
     use_nerd_fonts = true,
 })

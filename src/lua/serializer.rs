@@ -269,6 +269,8 @@ pub fn serialize_config_to_lua(cfg: &Config) -> String {
     let fx_mod = cfg.background.effect.label().to_ascii_lowercase();
     let _ = writeln!(out, "egotop.background({{");
     let _ = writeln!(out, "    enabled = {},", cfg.background.enabled);
+    let _ = writeln!(out, "    speed = {:.2},", cfg.background.speed);
+    let _ = writeln!(out, "    density = {:.2},", cfg.background.density);
     if let Some(preset) = &cfg.background.preset {
         let _ = writeln!(out, "    preset = {},", lua_str(preset));
     }

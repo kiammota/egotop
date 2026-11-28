@@ -364,6 +364,12 @@ pub fn apply_theme_table(tbl: &Table, cfg: &mut ThemeConfig) {
 
 fn apply_background_config(tbl: &Table, bundle: &mut LuaConfigBundle) {
     let bg = &mut bundle.config.background;
+    if let Ok(spd) = tbl.get::<f32>("speed") {
+        bg.speed = spd.clamp(0.1, 10.0);
+    }
+    if let Ok(den) = tbl.get::<f32>("density") {
+        bg.density = den.clamp(0.05, 1.0);
+    }
     if let Ok(base) = tbl.get::<Table>("base") {
         if let Ok(kind_str) = base.get::<String>("type") {
             match kind_str.trim().to_ascii_lowercase().as_str() {

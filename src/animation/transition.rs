@@ -132,7 +132,7 @@ impl AnimationCatalog {
         if let Some(fallback) = self
             .entries
             .iter()
-            .find(|e| e.id.eq_ignore_ascii_case("matrix_boot"))
+            .find(|e| e.id.eq_ignore_ascii_case("none"))
         {
             return fallback.package.clone();
         }

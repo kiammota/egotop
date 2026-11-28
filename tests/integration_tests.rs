@@ -3755,3 +3755,86 @@ fn unified_background_canvas_layers_borders_and_per_container_canvas_isolation()
     assert!(anim_comp.items.iter().any(|i| i.insert_text == "water"));
     assert!(anim_comp.items.iter().any(|i| i.insert_text == "christmas_tree"));
 }
+
+#[test]
+fn no_automatic_matrix_on_boot_or_christmas_and_clean_bottom_row() {
+    let mut cfg = Config::default();
+    assert_eq!(cfg.general.startup_animation, "none");
+    assert_eq!(cfg.background.effect, EffectKind::None);
+
+    let catalog = AnimationCatalog::load();
+    let fallback_pkg = catalog.resolve_package("nonexistent_animation_xyz");
+    assert_eq!(fallback_pkg.definition.name, "none");
+
+    cfg.background.enabled = true;
+    cfg.background.preset = Some("christmas".to_string());
+    cfg.background.layers = vec![egotop::animation::BackgroundLayerSpec {
+        effect: egotop::animation::BackgroundLayerKind::CustomAscii,
+        asset: Some("christmas".to_string()),
+        ..Default::default()
+    }];
+
+    let theme = Theme::from_config(&cfg.theme);
+    let mut pipeline = BackgroundPipeline::from_config_and_lua(&cfg.background, &[], 120, 36, Some(&theme));
+    pipeline.update(0.1, &cfg.background);
+    let transition = TransitionPlayer::new(&cfg.general.startup_animation, &catalog, 0);
+    assert!(transition.finished);
+
+    let mut collector = SystemCollector::new();
+    let snap = collector.collect(120, 36);
+    let reveal = RevealState::complete();
+    let anim_store = ComponentAnimationStore::new();
+    let mut customizer = CustomizerState::default();
+    let cmd_line = CommandLineState::default();
+    let startup = CursorStartupState::new(false);
+    let themes_list = vec![];
+    let ctx = RenderContext {
+        config: &cfg,
+        theme: &theme,
+        snapshot: &snap,
+        reveal: &reveal,
+        view_mode: ViewMode::Dashboard,
+        paused: false,
+        show_help: false,
+        fps: 30.0,
+        status_toast: None,
+        transparent_bg: false,
+        config_error_count: 0,
+    };
+
+    let backend = TestBackend::new(120, 36);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal
+        .draw(|frame| {
+            draw_frame(
+                frame,
+                &cfg,
+                &pipeline,
+                &transition,
+                &anim_store,
+                &mut customizer,
+                &cmd_line,
+                &startup,
+                &themes_list,
+                &catalog,
+                &ctx,
+            );
+        })
+        .unwrap();
+
+    let buf = terminal.backend().buffer();
+    let katakana_chars = ['ｱ', 'ｶ', 'ｻ', 'ﾀ', 'ﾅ', 'ﾊ', 'ﾐ', 'ｼ', 'ﾎ', 'ﾈ', 'ｽ'];
+    for y in 0..36 {
+        for x in 0..120 {
+            let sym = buf[(x, y)].symbol();
+            assert!(
+                !sym.chars().any(|c| katakana_chars.contains(&c)),
+                "Unexpected matrix katakana glyph {sym:?} at ({x}, {y})"
+            );
+        }
+    }
+    let header_line: String = (0..120).map(|x| buf[(x, 1)].symbol()).collect();
+    assert!(header_line.contains("[fx: christmas]"), "Header corrupted: {header_line:?}");
+    let bottom_row: String = (0..120).map(|x| buf[(x, 35)].symbol()).collect();
+    assert_eq!(bottom_row.trim(), "", "Bottom command row should be clean, got: {bottom_row:?}");
+}

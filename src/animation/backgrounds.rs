@@ -658,6 +658,7 @@ impl BackgroundPipeline {
         theme_opt: Option<&Theme>,
     ) {
         self.layers.clear();
+        self.canvas.begin_frame();
         let has_asset = spec
             .asset
             .as_deref()
@@ -730,6 +731,7 @@ impl BackgroundPipeline {
         assets: &BTreeMap<String, String>,
     ) {
         self.layers.clear();
+        self.canvas.begin_frame();
         for spec in specs {
             if spec.effect != BackgroundLayerKind::None {
                 let z = spec.z_index;

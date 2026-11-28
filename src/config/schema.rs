@@ -211,7 +211,7 @@ impl Default for GeneralConfig {
             hide_unavailable: false,
             view_mode: ViewMode::Dashboard,
             default_page: 1,
-            startup_animation: "matrix_boot".to_string(),
+            startup_animation: "none".to_string(),
             startup_duration_ms: 1100,
         }
     }
@@ -431,7 +431,7 @@ impl Default for BackgroundConfig {
         Self {
             transparent: false,
             base: BackgroundBaseConfig::default(),
-            effect: EffectKind::Matrix,
+            effect: EffectKind::None,
             enabled: true,
             speed: 1.0,
             density: 0.60,

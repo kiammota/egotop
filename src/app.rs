@@ -20,9 +20,7 @@ use crate::system::{SystemCollector, SystemSnapshot};
 use crate::terminal::TerminalGuard;
 use crate::terminal::diagnostics::TerminalDiagnostics;
 use crate::terminal::input::{InputEvent, poll_event};
-use crate::terminal::renderer::{
-    CursorStartupState, draw_frame, render_lua_animation_background, render_lua_animation_overlay,
-};
+use crate::terminal::renderer::{CursorStartupState, draw_frame_with_lua};
 use crate::ui::borders::parse_border_style;
 use crate::ui::customizer::{
     CustomizerState, CustomizerTab, DiagnosticsOverlayState, DiagnosticsViewMode,
@@ -312,11 +310,12 @@ impl App {
             let anim_ref = &self.animations;
 
             guard.terminal.draw(|frame| {
-                draw_frame(
+                draw_frame_with_lua(
                     frame,
                     config_ref,
                     effect_ref,
                     transition_ref,
+                    lua_anim_ref,
                     anim_store_ref,
                     customizer_ref,
                     cmd_ref,
@@ -325,13 +324,6 @@ impl App {
                     anim_ref,
                     &ctx,
                 );
-                if let Some(la) = lua_anim_ref {
-                    if la.layer() == crate::lua::AnimationLayer::Background {
-                        render_lua_animation_background(frame, frame.area(), config_ref, &ctx, la);
-                    } else {
-                        render_lua_animation_overlay(frame, frame.area(), la, ctx.theme);
-                    }
-                }
                 if diagnostics_ui_ref.open {
                     render_diagnostics_overlay(
                         frame,
