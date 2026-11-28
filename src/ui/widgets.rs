@@ -1003,7 +1003,7 @@ fn render_activity_to_canvas(
         .collect();
 
     let graph_style = cont.graph_style.unwrap_or(GraphStyle::Sparkline);
-    if area.height >= 7 && graph_style == GraphStyle::Sparkline {
+    if area.height >= 6 && graph_style == GraphStyle::Sparkline {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([

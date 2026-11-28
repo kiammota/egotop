@@ -103,6 +103,30 @@ pub fn compute_dashboard_layout(
         }
     };
 
+    // On short terminals, keep the activity graphs readable by reclaiming
+    // spare welcome/footer height and inter-row gaps before the grid is sized.
+    if screen.height < 38 {
+        ui.padding = 0;
+        ui.gap = 0;
+        for c in &mut ui.containers {
+            match c.region {
+                LayoutRegion::Top if c.row == Some(1) => {
+                    c.height = ContainerSize::Fixed(5);
+                    c.min_height = Some(5);
+                }
+                LayoutRegion::Bottom => {
+                    c.height = ContainerSize::Fixed(1);
+                    c.min_height = Some(1);
+                    c.border.enabled = false;
+                }
+                LayoutRegion::Main if c.row != Some(2) => {
+                    c.min_height = Some(c.min_height.unwrap_or(0).min(3));
+                }
+                _ => {}
+            }
+        }
+    }
+
     for c in &mut ui.containers {
         let ov_style = cfg
             .container_styles
@@ -118,6 +142,24 @@ pub fn compute_dashboard_layout(
             }
         } else if cfg.theme.border_type == BorderStyle::None {
             c.border.enabled = false;
+        }
+        // Activity uses three information rows, a graph heading, and two chart
+        // rows. Reserve enough outer height for that content plus its frame.
+        if c.kind == crate::ui::container::ComponentKind::Activity
+            && c.graph_style.unwrap_or(crate::config::GraphStyle::Sparkline)
+                == crate::config::GraphStyle::Sparkline
+        {
+            let bordered = c.border.enabled && c.border.style != Some(BorderStyle::None);
+            let titled = c.border.title.as_deref().or(c.content.title.as_deref()).is_some();
+            let decoration = if bordered {
+                2
+            } else if titled {
+                1
+            } else {
+                0
+            };
+            let padding = if bordered { c.padding.saturating_mul(2) } else { (c.padding.saturating_mul(2)).max(u16::from(titled)) };
+            c.min_height = Some(c.min_height.unwrap_or(0).max(6u16.saturating_add(decoration).saturating_add(padding)));
         }
     }
 
@@ -699,17 +741,45 @@ fn allocate_axis(total_avail: u16, gap: u16, specs: &[AxisSpec]) -> (u16, Vec<u1
         }
     }
 
-    // Pass 2: distribute remaining space proportionally among Fill/Auto items
+    // Pass 2: reserve each fill band's minimum before sharing leftover space.
+    // This keeps content minimums (such as Activity's charts) intact when the
+    // terminal is just tall enough for the dashboard.
     if !fill_indices.is_empty() && remaining > 0 && total_fill_weight > 0 {
+        let min_total: u32 = fill_indices
+            .iter()
+            .map(|(idx, _)| {
+                let spec = specs[*idx];
+                spec.min.unwrap_or(0).min(spec.max.unwrap_or(u16::MAX)) as u32
+            })
+            .sum();
+        let enough_for_minimums = min_total <= remaining as u32;
+        let extra_total = if enough_for_minimums {
+            remaining.saturating_sub(min_total as u16)
+        } else {
+            0
+        };
+        let mut extra_remaining = extra_total;
         let mut fill_remaining = remaining;
         for (pos, &(idx, weight)) in fill_indices.iter().enumerate() {
             let is_last = pos + 1 == fill_indices.len();
-            let raw = if is_last {
+            let spec = specs[idx];
+            let minimum = spec.min.unwrap_or(0).min(spec.max.unwrap_or(u16::MAX));
+            let raw = if enough_for_minimums {
+                let extra = if is_last {
+                    extra_remaining
+                } else {
+                    ((extra_total as u32 * weight) / total_fill_weight) as u16
+                };
+                extra_remaining = extra_remaining.saturating_sub(extra);
+                minimum.saturating_add(extra)
+            } else if min_total > 0 {
+                ((fill_remaining as u32 * minimum as u32) / min_total) as u16
+            } else if is_last {
                 fill_remaining
             } else {
                 ((remaining as u32 * weight) / total_fill_weight) as u16
             };
-            let clamped = clamp_bounds(raw, specs[idx].min, specs[idx].max).min(fill_remaining);
+            let clamped = clamp_bounds(raw, spec.min, spec.max).min(fill_remaining);
             sizes[idx] = clamped;
             fill_remaining = fill_remaining.saturating_sub(clamped);
         }

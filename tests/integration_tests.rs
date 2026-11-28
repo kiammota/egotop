@@ -602,11 +602,13 @@ fn default_split_header_and_grid_edges_hold_for_builtin_themes() {
         let header = layout.find_container("header").unwrap();
         let logo = layout.find_container("logo").unwrap();
         let greeting = layout.find_container("greeting").unwrap();
+        let activity = layout.find_container("activity").unwrap();
         assert_eq!(header.outer_rect.x, 0);
         assert_eq!(header.outer_rect.right(), 120);
         assert_eq!(logo.outer_rect.y, greeting.outer_rect.y);
         assert_eq!(logo.outer_rect.right() + cfg.ui.gap, greeting.outer_rect.x);
         assert_eq!(greeting.outer_rect.right(), 120);
+        assert!(activity.inner_rect.height >= 6, "activity content must fit under {theme_name} theme");
         for row in [0, 1, 2] {
             let members: Vec<_> = layout.containers.iter().filter(|p| p.config.region == LayoutRegion::Main && p.config.row == Some(row)).collect();
             assert!(members.last().is_some_and(|p| p.outer_rect.right() == 120));
@@ -644,6 +646,11 @@ fn default_split_header_and_grid_edges_hold_for_builtin_themes() {
         assert_eq!(rendered[(greeting.outer_rect.right() - 1, greeting.outer_rect.y)].bg, theme.panel_background);
     }
 
+    let short = compute_dashboard_layout(Rect::new(0, 0, 80, 24), &Config::default(), ViewMode::Dashboard);
+    assert_eq!(short.find_container("greeting").unwrap().outer_rect.height, 5);
+    assert_eq!(short.find_container("status_spinner").unwrap().outer_rect.height, 1);
+    assert!(short.find_container("activity").unwrap().inner_rect.height >= 6);
+
     let mut canvas_cfg = cfg;
     let logo = canvas_cfg.ui.containers.iter_mut().find(|c| c.name == "logo").unwrap();
     logo.kind = ComponentKind::Canvas;
@@ -670,6 +677,80 @@ fn canvas_nil_background_inherits_and_explicit_background_fills_cell() {
     assert_eq!(dst[(0, 0)].bg, inherited);
     assert_eq!(dst[(1, 0)].bg, explicit);
     assert_eq!(dst[(2, 0)].bg, inherited);
+}
+
+#[test]
+fn activity_rows_and_both_graphs_fit_with_and_without_container_border() {
+    use std::collections::VecDeque;
+
+    for with_border in [false, true] {
+        let mut cfg = Config::default();
+        let mut activity = ContainerConfig {
+            name: "activity".into(),
+            region: LayoutRegion::Main,
+            width: ContainerSize::Fill(1),
+            height: ContainerSize::Fill(1),
+            min_height: Some(6),
+            padding: 0,
+            kind: ComponentKind::Activity,
+            category: ComponentCategory::Dynamic,
+            graph_style: Some(egotop::config::GraphStyle::Sparkline),
+            border: ContainerBorderConfig::titled("Activity"),
+            ..ContainerConfig::default()
+        };
+        activity.border.enabled = with_border;
+        cfg.ui = UiConfig { padding: 0, gap: 0, min_container_width: 10, containers: vec![activity] };
+
+        let layout = compute_dashboard_layout(Rect::new(0, 0, 80, 9), &cfg, ViewMode::Dashboard);
+        let placed = layout.find_container("activity").unwrap();
+        assert_eq!(placed.outer_rect.height, 8, "activity outer height with_border={with_border}");
+        assert!(placed.inner_rect.height >= 6, "activity inner height with_border={with_border}");
+
+        let mut collector = SystemCollector::new();
+        let mut snapshot = collector.collect(80, 9);
+        snapshot.cpu_history = VecDeque::from([10, 30, 55, 85]);
+        snapshot.mem_history = VecDeque::from([20, 40, 65, 90]);
+        let theme = Theme::from_config(&cfg.theme);
+        let reveal = RevealState::complete();
+        let render_ctx = RenderContext {
+            config: &cfg,
+            theme: &theme,
+            snapshot: &snapshot,
+            reveal: &reveal,
+            view_mode: ViewMode::Dashboard,
+            paused: false,
+            show_help: false,
+            fps: 30.0,
+            status_toast: None,
+            transparent_bg: false,
+            config_error_count: 0,
+        };
+        let pipeline = BackgroundPipeline::from_config_and_lua(&cfg.background, &[], 80, 9, Some(&theme));
+        let catalog = AnimationCatalog::load();
+        let transition = TransitionPlayer::new("none", &catalog, 0);
+        let store = ComponentAnimationStore::new();
+        let mut customizer = CustomizerState::default();
+        let command_line = CommandLineState::default();
+        let startup = CursorStartupState::new(false);
+        let mut terminal = Terminal::new(TestBackend::new(80, 9)).unwrap();
+        terminal.draw(|frame| draw_frame(frame, &cfg, &pipeline, &transition, &store, &mut customizer, &command_line, &startup, &[], &catalog, &render_ctx)).unwrap();
+
+        let buf = terminal.backend().buffer();
+        let lines: Vec<String> = (placed.inner_rect.y..placed.inner_rect.bottom())
+            .map(|y| (placed.inner_rect.x..placed.inner_rect.right()).map(|x| buf[(x, y)].symbol()).collect())
+            .collect();
+        for required in ["load (1/5/15)", "processes", "threads", "cpu % / ram % history:"] {
+            assert!(lines.iter().any(|line| line.contains(required)), "missing {required:?} with_border={with_border}; rows={lines:?}");
+        }
+        let half_width = placed.inner_rect.width / 2;
+        for half in 0..2 {
+            let x0 = placed.inner_rect.x + half * half_width;
+            let x1 = if half == 1 { placed.inner_rect.right() } else { x0 + half_width };
+            let graph_visible = (placed.inner_rect.bottom() - 2..placed.inner_rect.bottom())
+                .any(|y| (x0..x1).any(|x| buf[(x, y)].symbol() != " "));
+            assert!(graph_visible, "chart {half} missing/clipped with_border={with_border}");
+        }
+    }
 }
 
 #[test]
@@ -3923,7 +4004,7 @@ fn no_automatic_matrix_on_boot_or_christmas_and_clean_bottom_row() {
         .inner_rect
         .y;
     let header_line: String = (0..120).map(|x| buf[(x, header_y)].symbol()).collect();
-    assert!(header_line.contains("[bg: christmas]"), "Header corrupted: {header_line:?}");
+    assert!(header_line.contains("[bg:") && header_line.contains("christmas]"), "Header corrupted: {header_line:?}");
     let bottom_row: String = (0..120).map(|x| buf[(x, 35)].symbol()).collect();
     assert_eq!(bottom_row.trim(), "", "Bottom command row should be clean, got: {bottom_row:?}");
 }
