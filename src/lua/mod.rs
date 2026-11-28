@@ -287,6 +287,11 @@ pub fn list_scripts_for_slot(slot: AnimSlotKind) -> Vec<String> {
             }
         }
     }
+    for (module, _, source) in BUILTIN_LUA_MODULES {
+        let name = module.strip_prefix("animations.").or_else(|| module.strip_prefix("effects."));
+        let Some(name) = name.filter(|n| !n.starts_with('_') && *n != "none") else { continue; };
+        if (source.contains(&format!("type = \"{expected}\"")) || source.contains(&format!("type = '{expected}'"))) && !out.iter().any(|n: &String| n == name) { out.push(name.to_string()); }
+    }
     out.sort();
     out
 }

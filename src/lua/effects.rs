@@ -237,11 +237,11 @@ impl LuaCanvasInstance {
                     let _ = init_fn.call::<()>(ctx.clone());
                 }
             }
-            if let Ok(Value::Function(resize_fn)) = fx.get::<Value>("resize")
-                && let Err(e) = resize_fn.call::<()>(ctx.clone())
-            {
-                inner.last_error = Some(e.to_string());
-            }
+            let resize_result = match fx.get::<Value>("on_resize") {
+                Ok(Value::Function(f)) => f.call::<()>((width, height, ctx.clone())),
+                _ => match fx.get::<Value>("resize") { Ok(Value::Function(f)) => f.call::<()>(ctx.clone()), _ => Ok(()) },
+            };
+            if let Err(e) = resize_result { inner.last_error = Some(e.to_string()); }
             self.canvas_buf.lock().unwrap().begin_frame();
             let canvas_handle =
                 LuaCanvasHandle::new(Arc::clone(&self.canvas_buf), self.theme_snapshot.clone());
@@ -518,6 +518,10 @@ fn build_script_ctx(
     ctx.set("description", owner_description)?;
     ctx.set("width", w)?;
     ctx.set("height", h)?;
+    let cell_aspect = 0.5_f64;
+    ctx.set("cell_aspect", cell_aspect)?;
+    ctx.set("aspect", if h == 0 { 1.0 } else { w as f64 * cell_aspect / h as f64 })?;
+    ctx.set("lod", ((w as f64 * h as f64 / 2400.0).sqrt()).clamp(0.0, 1.0))?;
     ctx.set("dt", dt)?;
     ctx.set("t", elapsed)?;
     ctx.set("time", elapsed)?;

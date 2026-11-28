@@ -16,14 +16,15 @@ local ORNAMENT_COLORS = {
     "#FF9F1C", -- tangerine
 }
 
-local function seed_snow(state, w, h, count)
-    state.snow = {}
-    local n = math.max(12, count or math.floor((w * h) / 26))
-    for i = 1, n do
+local function resize_snow(state, w, h, count, lod)
+    state.snow = state.snow or {}
+    local n = count or math.max(8, math.floor((w * h) / 26 * math.max(0.25, lod or 0.25)))
+    while #state.snow > n do table.remove(state.snow) end
+    for i = #state.snow + 1, n do
         local depth = (i % 3) + 1
         state.snow[i] = {
-            x = math.random() * math.max(1, w),
-            y = math.random() * math.max(1, h),
+            x = math.random(),
+            y = math.random(),
             vy = (1.6 + depth * 1.1) * (0.85 + math.random() * 0.35),
             sway = math.random() * math.pi * 2.0,
             depth = depth,
@@ -69,22 +70,22 @@ function tree.setup(opts)
         fps = opts.fps or 30,
         options = opts,
         init = function(ctx)
-            seed_snow(ctx.state, ctx.width, ctx.height, snow_count)
+            resize_snow(ctx.state, ctx.width, ctx.height, snow_count, ctx.lod)
         end,
-        resize = function(ctx)
-            seed_snow(ctx.state, ctx.width, ctx.height, snow_count)
+        on_resize = function(_width, _height, ctx)
+            resize_snow(ctx.state, ctx.width, ctx.height, snow_count, ctx.lod)
         end,
         update = function(dt, _t, ctx)
             local state = ctx.state
             if not state.snow then
-                seed_snow(state, ctx.width, ctx.height, snow_count)
+                resize_snow(state, ctx.width, ctx.height, snow_count, ctx.lod)
             end
             for _, f in ipairs(state.snow) do
-                f.y = f.y + f.vy * speed * dt
-                f.x = (f.x + ctx.sin(ctx.t * 1.4 + f.sway) * 1.6 * dt) % math.max(1, ctx.width)
-                if f.y >= ctx.height then
+                f.y = f.y + f.vy * speed * dt / math.max(1, ctx.height)
+                f.x = (f.x + ctx.sin(ctx.t * 1.4 + f.sway) * 1.6 * dt / math.max(1, ctx.width)) % 1.0
+                if f.y >= 1 then
                     f.y = 0
-                    f.x = math.random() * math.max(1, ctx.width)
+                    f.x = math.random()
                 end
             end
         end,
@@ -92,6 +93,13 @@ function tree.setup(opts)
             local w = canvas.width
             local h = canvas.height
             if w < 10 or h < 8 then
+                -- Keep the same scene recognizable in tiny panels; normalized geometry
+                -- scales to the exact inner rectangle without resetting animation time.
+                canvas:line_uv(0.50, 0.12, 0.12, 0.78, "#42D982")
+                canvas:line_uv(0.50, 0.12, 0.88, 0.78, "#42D982")
+                canvas:line_uv(0.12, 0.78, 0.88, 0.78, "#42D982")
+                canvas:line_uv(0.50, 0.60, 0.50, 0.96, "#9B5E2E")
+                canvas:dot_uv(0.50, 0.08 + 0.015 * ctx.sin(ctx.t * 4), "#FFF6B3")
                 return
             end
 
@@ -103,7 +111,9 @@ function tree.setup(opts)
                 for _, f in ipairs(ctx.state.snow) do
                     local shimmer = 0.45 + 0.55 * (0.5 + 0.5 * ctx.sin(t * 2.2 + f.sway))
                     local depth_k = 0.35 + (f.depth / 3.0) * 0.55
-                    canvas:put(f.x, f.y, f.ch, "#DCEEFF", nil, depth_k * shimmer)
+                    if depth_k * shimmer > 0.35 then
+                        canvas:dot_uv(f.x, f.y, "#DCEEFF")
+                    end
                 end
             end
 
@@ -114,7 +124,8 @@ function tree.setup(opts)
             local canopy_h = math.max(5, ground_y - trunk_h - tree_top)
             local cx = (w - 1) * 0.5
             local max_r = math.min((w - 4) * 0.24, canopy_h * 0.58)
-            local aspect_x = 2.05
+            local aspect_x = 1 / math.max(0.1, ctx.cell_aspect)
+            local detail_scale = 0.35 + 0.65 * (ctx.lod or 0.5)
 
             -- Ground snowdrift carpet
             for gx = 0, w - 1 do
@@ -147,14 +158,14 @@ function tree.setup(opts)
             end
 
             -- 4. High-density 3D Foliage Cone (multi-tiered scalloped pine boughs with z-buffer shading)
-            local v_samples = math.max(canopy_h * 2, 24)
+            local v_samples = math.max(8, math.floor(math.max(canopy_h * 2, 24) * detail_scale))
             for vi = 0, v_samples do
                 local yn = vi / v_samples -- 0 = tip, 1 = base
                 local py = tree_top + yn * canopy_h
                 -- Pine bough tiers create realistic conical skirt waves
                 local tier = (yn * 4.5) % 1.0
                 local r_base = max_r * (0.12 + 0.88 * yn) * (0.72 + 0.32 * tier)
-                local theta_steps = math.max(18, math.floor(r_base * 10.0))
+                local theta_steps = math.max(10, math.floor(r_base * 10.0 * detail_scale))
 
                 for ti = 0, theta_steps - 1 do
                     local th = (ti / theta_steps) * math.pi * 2.0 + yn * 1.7

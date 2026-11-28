@@ -22,6 +22,7 @@ pub struct CanvasBuffer {
     pub owner_description: String,
     pub width: u16,
     pub height: u16,
+    pub cell_aspect: f64,
     cells: Vec<Option<CanvasCell>>,
     zbuf: Vec<f32>,
 }
@@ -43,6 +44,7 @@ impl CanvasBuffer {
             owner_description: owner_description.into(),
             width,
             height,
+            cell_aspect: 0.5,
             cells: vec![None; len],
             zbuf: vec![f32::NEG_INFINITY; len],
         }
@@ -246,12 +248,196 @@ fn normalize_cell_glyph(ch: &str) -> String {
     }
 }
 
+fn detail_for(width: u16, height: u16) -> f64 {
+    ((width as f64 * height as f64 / 2400.0).sqrt()).clamp(0.0, 1.0)
+}
+
+fn raster_line(
+    buffer: &mut CanvasBuffer,
+    mut x0: i32,
+    mut y0: i32,
+    x1: i32,
+    y1: i32,
+    ch: &str,
+    fg: Option<Color>,
+    bg: Option<Color>,
+) {
+    let dx = (x1 - x0).abs();
+    let sx = if x0 < x1 { 1 } else { -1 };
+    let dy = -(y1 - y0).abs();
+    let sy = if y0 < y1 { 1 } else { -1 };
+    let mut err = dx + dy;
+    loop {
+        buffer.put(x0, y0, ch, fg, bg, 1.0);
+        if x0 == x1 && y0 == y1 {
+            break;
+        }
+        let e2 = 2 * err;
+        if e2 >= dy {
+            err += dy;
+            x0 += sx;
+        }
+        if e2 <= dx {
+            err += dx;
+            y0 += sy;
+        }
+    }
+}
+
+fn raster_polygon(
+    buffer: &mut CanvasBuffer,
+    points: &[(f64, f64)],
+    fg: Option<Color>,
+    bg: Option<Color>,
+) {
+    if points.len() < 3 || buffer.width == 0 || buffer.height == 0 {
+        return;
+    }
+    let pts: Vec<(f64, f64)> = points
+        .iter()
+        .map(|(u, v)| {
+            (
+                u.clamp(0.0, 1.0) * (buffer.width - 1) as f64,
+                v.clamp(0.0, 1.0) * (buffer.height - 1) as f64,
+            )
+        })
+        .collect();
+    let min_y = pts
+        .iter()
+        .map(|p| p.1.floor() as i32)
+        .min()
+        .unwrap_or(0)
+        .max(0);
+    let max_y = pts
+        .iter()
+        .map(|p| p.1.ceil() as i32)
+        .max()
+        .unwrap_or(0)
+        .min(buffer.height as i32 - 1);
+    for y in min_y..=max_y {
+        let mut xs = Vec::new();
+        for i in 0..pts.len() {
+            let (x1, y1) = pts[i];
+            let (x2, y2) = pts[(i + 1) % pts.len()];
+            if (y1 <= y as f64 && y2 > y as f64) || (y2 <= y as f64 && y1 > y as f64) {
+                xs.push(x1 + (y as f64 - y1) * (x2 - x1) / (y2 - y1));
+            }
+        }
+        xs.sort_by(|a, b| a.total_cmp(b));
+        for pair in xs.chunks_exact(2) {
+            for x in pair[0].ceil() as i32..=pair[1].floor() as i32 {
+                buffer.put(x, y, "█", fg, bg, 1.0);
+            }
+        }
+    }
+}
+
 /// Isolated Lua UserData handle bound explicitly to ONE unit's `CanvasBuffer`.
 /// Exposes only local dimensions, unit identity (`name`, `description`), and local clipped drawing.
 #[derive(Clone)]
 pub struct LuaCanvasHandle {
     buffer: Arc<Mutex<CanvasBuffer>>,
     theme: Theme,
+}
+
+#[cfg(test)]
+mod responsive_canvas_tests {
+    use super::*;
+
+    #[test]
+    fn normalized_geometry_subpixels_shading_and_sampling_rasterize_in_bounds() {
+        let lua = Lua::new();
+        let buffer = Arc::new(Mutex::new(CanvasBuffer::new(20, 10)));
+        let theme = Theme::from_config(&crate::config::ThemeConfig::default());
+        lua.globals()
+            .set("canvas", LuaCanvasHandle::new(buffer.clone(), theme))
+            .unwrap();
+        lua.load(r##"
+            assert(canvas.width == 20 and canvas.height == 10)
+            assert(math.abs(canvas.aspect - 1.0) < 0.001)
+            assert(canvas.detail > 0 and canvas.detail < 1)
+            canvas:set_cell_aspect(0.4)
+            assert(math.abs(canvas.aspect - 0.8) < 0.001)
+            canvas:line_uv(0, 0, 1, 1, "#FFFFFF")
+            canvas:dot_uv(0.5, 0.5, "#FF0000")
+            canvas:shade(2, 2, 0.8, "#00FF00")
+            canvas:sample(function(u, v, t) return (u > 0.45 and u < 0.55 and v > 0.45 and v < 0.55) and "X" or " " end, 1.25)
+        "##).exec().unwrap();
+        let guard = buffer.lock().unwrap();
+        assert!(guard.get_cell(0, 0).is_some());
+        assert!(guard.get_cell(10, 5).is_some());
+        assert!(guard.cells.iter().flatten().count() <= 200);
+    }
+
+    #[test]
+    fn explicit_canvas_script_types_resolve_without_cross_slot_leaks() {
+        assert!(crate::lua::list_scripts_for_slot(crate::animation::AnimSlotKind::Canvas)
+            .iter().any(|name| name == "delorean"));
+        assert!(!crate::lua::list_scripts_for_slot(crate::animation::AnimSlotKind::Background)
+            .iter().any(|name| name == "delorean"));
+        assert!(crate::lua::validate_script_for_slot("delorean", crate::animation::AnimSlotKind::Canvas).is_ok());
+        assert!(crate::lua::validate_script_for_slot("delorean", crate::animation::AnimSlotKind::Background).is_err());
+    }
+
+    #[test]
+    fn delorean_canvas_resizes_from_small_to_large_without_runtime_errors() {
+        let theme = Theme::from_config(&crate::config::ThemeConfig::default());
+        let mut scene = crate::lua::LuaCanvasInstance::from_script_name_named(
+            "logo",
+            "Test canvas",
+            "delorean",
+            8,
+            5,
+            24,
+            1.0,
+            1.0,
+            theme.clone(),
+        );
+        scene.update(1.0 / 24.0, 1.0);
+        assert!(
+            scene.last_error().is_none(),
+            "small render: {:?}",
+            scene.last_error()
+        );
+        let mut small = Buffer::empty(Rect::new(0, 0, 8, 5));
+        scene.render(&mut small, Rect::new(0, 0, 8, 5), &theme);
+        assert!(small.content.iter().any(|cell| cell.symbol() != " "));
+        scene.resize(100, 40);
+        scene.update(1.0 / 24.0, 1.0);
+        assert!(
+            scene.last_error().is_none(),
+            "large render: {:?}",
+            scene.last_error()
+        );
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 100, 40));
+        scene.render(&mut buffer, Rect::new(0, 0, 100, 40), &theme);
+        assert!(buffer.content.iter().any(|cell| cell.symbol() != " "));
+
+        let mut tree = crate::lua::LuaCanvasInstance::from_script_name_named(
+            "system",
+            "Tree canvas",
+            "christmas_tree",
+            8,
+            5,
+            24,
+            1.0,
+            1.0,
+            theme.clone(),
+        );
+        tree.update(1.0 / 24.0, 1.0);
+        assert!(
+            tree.last_error().is_none(),
+            "small tree: {:?}",
+            tree.last_error()
+        );
+        tree.resize(100, 40);
+        tree.update(1.0 / 24.0, 1.0);
+        assert!(
+            tree.last_error().is_none(),
+            "resized tree: {:?}",
+            tree.last_error()
+        );
+    }
 }
 
 impl LuaCanvasHandle {
@@ -268,15 +454,284 @@ impl UserData for LuaCanvasHandle {
         fields.add_field_method_get("description", |_, this| {
             Ok(this.buffer.lock().unwrap().owner_description.clone())
         });
-        fields.add_field_method_get("width", |_, this| {
-            Ok(this.buffer.lock().unwrap().width)
+        fields.add_field_method_get("width", |_, this| Ok(this.buffer.lock().unwrap().width));
+        fields.add_field_method_get("height", |_, this| Ok(this.buffer.lock().unwrap().height));
+        fields.add_field_method_get("aspect", |_, this| {
+            let b = this.buffer.lock().unwrap();
+            Ok(if b.height == 0 {
+                1.0
+            } else {
+                b.width as f64 * b.cell_aspect / b.height as f64
+            })
         });
-        fields.add_field_method_get("height", |_, this| {
-            Ok(this.buffer.lock().unwrap().height)
+        fields.add_field_method_get("cell_aspect", |_, this| {
+            Ok(this.buffer.lock().unwrap().cell_aspect)
+        });
+        fields.add_field_method_get("detail", |_, this| {
+            let b = this.buffer.lock().unwrap();
+            Ok(detail_for(b.width, b.height))
         });
     }
 
     fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
+        methods.add_method("set_cell_aspect", |_, this, aspect: f64| {
+            if aspect.is_finite() && (0.2..=1.0).contains(&aspect) {
+                this.buffer.lock().unwrap().cell_aspect = aspect;
+            }
+            Ok(())
+        });
+        methods.add_method("uv", |_, this, (u, v): (f64, f64)| {
+            let b = this.buffer.lock().unwrap();
+            Ok((
+                u.clamp(0.0, 1.0) * b.width.saturating_sub(1) as f64,
+                v.clamp(0.0, 1.0) * b.height.saturating_sub(1) as f64,
+            ))
+        });
+        methods.add_method("line_uv", |_, this, (u1, v1, u2, v2, fg, bg): (f64, f64, f64, f64, Option<Value>, Option<Value>)| {
+            let fg = fg.as_ref().and_then(|v| parse_lua_color(v, true)).or(Some(this.theme.text));
+            let bg = bg.as_ref().and_then(|v| parse_lua_color(v, false));
+            let mut b = this.buffer.lock().unwrap();
+            let x1 = (u1.clamp(0.0,1.0) * b.width.saturating_sub(1) as f64).round() as i32;
+            let y1 = (v1.clamp(0.0,1.0) * b.height.saturating_sub(1) as f64).round() as i32;
+            let x2 = (u2.clamp(0.0,1.0) * b.width.saturating_sub(1) as f64).round() as i32;
+            let y2 = (v2.clamp(0.0,1.0) * b.height.saturating_sub(1) as f64).round() as i32;
+            raster_line(&mut b, x1, y1, x2, y2, "•", fg, bg);
+            Ok(())
+        });
+        methods.add_method(
+            "rect_uv",
+            |_,
+             this,
+             (u, v, w, h, fg, bg, fill): (
+                f64,
+                f64,
+                f64,
+                f64,
+                Option<Value>,
+                Option<Value>,
+                Option<bool>,
+            )| {
+                let fg = fg
+                    .as_ref()
+                    .and_then(|v| parse_lua_color(v, true))
+                    .or(Some(this.theme.text));
+                let bg = bg.as_ref().and_then(|v| parse_lua_color(v, false));
+                let mut b = this.buffer.lock().unwrap();
+                let x0 = (u.clamp(0.0, 1.0) * b.width as f64).floor() as i32;
+                let y0 = (v.clamp(0.0, 1.0) * b.height as f64).floor() as i32;
+                let x1 = ((u + w).clamp(0.0, 1.0) * b.width as f64).ceil() as i32 - 1;
+                let y1 = ((v + h).clamp(0.0, 1.0) * b.height as f64).ceil() as i32 - 1;
+                for y in y0..=y1 {
+                    for x in x0..=x1 {
+                        if fill.unwrap_or(false) || x == x0 || x == x1 || y == y0 || y == y1 {
+                            b.put(
+                                x,
+                                y,
+                                if fill.unwrap_or(false) { "█" } else { "#" },
+                                fg,
+                                bg,
+                                1.0,
+                            );
+                        }
+                    }
+                }
+                Ok(())
+            },
+        );
+        methods.add_method(
+            "circle_uv",
+            |_, this, (u, v, r, fg, bg): (f64, f64, f64, Option<Value>, Option<Value>)| {
+                let fg = fg
+                    .as_ref()
+                    .and_then(|v| parse_lua_color(v, true))
+                    .or(Some(this.theme.text));
+                let bg = bg.as_ref().and_then(|v| parse_lua_color(v, false));
+                let mut b = this.buffer.lock().unwrap();
+                if b.width == 0 || b.height == 0 {
+                    return Ok(());
+                }
+                let aspect = b.width as f64 * b.cell_aspect / b.height as f64;
+                let ru = if aspect > 0.0 { r / aspect } else { r };
+                let steps = ((r.max(0.0) * b.height as f64 * std::f64::consts::TAU).ceil()
+                    as usize)
+                    .clamp(12, 2048);
+                for i in 0..steps {
+                    let a = i as f64 / steps as f64 * std::f64::consts::TAU;
+                    let x = ((u + ru * a.cos()) * b.width as f64).round() as i32;
+                    let y = ((v + r * a.sin()) * b.height as f64).round() as i32;
+                    b.put(x, y, "●", fg, bg, 1.0);
+                }
+                Ok(())
+            },
+        );
+        methods.add_method("poly_uv", |_, this, (points, fg, bg, fill): (Table, Option<Value>, Option<Value>, Option<bool>)| {
+            let pts: Vec<(f64,f64)> = points.sequence_values::<Table>().filter_map(Result::ok).filter_map(|p| Some((p.get(1).ok()?,p.get(2).ok()?))).collect();
+            let fg=fg.as_ref().and_then(|v|parse_lua_color(v,true)).or(Some(this.theme.text)); let bg=bg.as_ref().and_then(|v|parse_lua_color(v,false)); let mut b=this.buffer.lock().unwrap();
+            let (bw,bh)=(b.width,b.height);
+            if fill.unwrap_or(false) { raster_polygon(&mut b,&pts,fg,bg); }
+            if pts.len()>=2 { for i in 0..pts.len() {let (u1,v1)=pts[i]; let (u2,v2)=pts[(i+1)%pts.len()]; raster_line(&mut b,(u1.clamp(0.0,1.0)*bw.saturating_sub(1) as f64).round() as i32,(v1.clamp(0.0,1.0)*bh.saturating_sub(1) as f64).round() as i32,(u2.clamp(0.0,1.0)*bw.saturating_sub(1) as f64).round() as i32,(v2.clamp(0.0,1.0)*bh.saturating_sub(1) as f64).round() as i32,"#",fg,bg);} }
+            Ok(())
+        });
+        methods.add_method(
+            "tri_uv",
+            |_, this, (points, fg, bg, fill): (Table, Option<Value>, Option<Value>, Option<bool>)| {
+                let pts: Vec<(f64, f64)> = points
+                    .sequence_values::<Table>()
+                    .filter_map(Result::ok)
+                    .filter_map(|p| Some((p.get(1).ok()?, p.get(2).ok()?)))
+                    .collect();
+                if pts.len() == 3 {
+                    let fg = fg
+                        .as_ref()
+                        .and_then(|v| parse_lua_color(v, true))
+                        .or(Some(this.theme.text));
+                    let bg = bg.as_ref().and_then(|v| parse_lua_color(v, false));
+                    let mut b = this.buffer.lock().unwrap();
+                    let (bw, bh) = (b.width, b.height);
+                    if fill.unwrap_or(false) { raster_polygon(&mut b,&pts,fg,bg); }
+                    for i in 0..3 {
+                        let (u1, v1) = pts[i];
+                        let (u2, v2) = pts[(i + 1) % 3];
+                        raster_line(
+                            &mut b,
+                            (u1.clamp(0.0,1.0) * bw.saturating_sub(1) as f64).round() as i32,
+                            (v1.clamp(0.0,1.0) * bh.saturating_sub(1) as f64).round() as i32,
+                            (u2.clamp(0.0,1.0) * bw.saturating_sub(1) as f64).round() as i32,
+                            (v2.clamp(0.0,1.0) * bh.saturating_sub(1) as f64).round() as i32,
+                            "#",
+                            fg,
+                            bg,
+                        );
+                    }
+                }
+                Ok(())
+            },
+        );
+        methods.add_method(
+            "dot_uv",
+            |_, this, (u, v, fg): (f64, f64, Option<Value>)| {
+                let mut b = this.buffer.lock().unwrap();
+                if b.width == 0 || b.height == 0 {
+                    return Ok(());
+                }
+                let sx = (u.clamp(0.0, 1.0) * b.width as f64 * 2.0).floor() as i32;
+                let sy = (v.clamp(0.0, 1.0) * b.height as f64 * 4.0).floor() as i32;
+                let x = (sx / 2).min(b.width as i32 - 1);
+                let y = (sy / 4).min(b.height as i32 - 1);
+                let bit = match (sx % 2, sy % 4) {
+                    (0, 0) => 0,
+                    (0, 1) => 1,
+                    (0, 2) => 2,
+                    (0, 3) => 6,
+                    (1, 0) => 3,
+                    (1, 1) => 4,
+                    (1, 2) => 5,
+                    _ => 7,
+                };
+                let idx = y as usize * b.width as usize + x as usize;
+                let old = b.cells[idx]
+                    .as_ref()
+                    .map(|c| c.ch.chars().next().unwrap_or('\u{2800}') as u32)
+                    .unwrap_or(0x2800);
+                let glyph = char::from_u32(0x2800 | ((old.saturating_sub(0x2800)) | (1 << bit)))
+                    .unwrap_or('⣿')
+                    .to_string();
+                let col = fg
+                    .as_ref()
+                    .and_then(|v| parse_lua_color(v, true))
+                    .or(Some(this.theme.text));
+                b.put(x, y, &glyph, col, None, 1.0);
+                Ok(())
+            },
+        );
+        methods.add_method(
+            "shade",
+            |_, this, (x, y, luminance, fg, bg): (i32, i32, f64, Option<Value>, Option<Value>)| {
+                const RAMP: &str =
+                    " .'`^\",:;Il!i><~+_-?][}{1)(|\\/tfjrxnuvczXYUJCLQ0OZmwqpdbkhao*#MW&8%B@$";
+                const SMALL: &str = " .:-=+*#%@";
+                let b = this.buffer.lock().unwrap();
+                let ramp = if detail_for(b.width, b.height) < 0.35 {
+                    SMALL
+                } else {
+                    RAMP
+                };
+                drop(b);
+                let idx = (luminance.clamp(0.0, 1.0) * (ramp.chars().count() - 1) as f64).round()
+                    as usize;
+                let ch = ramp.chars().nth(idx).unwrap_or(' ');
+                let col = fg
+                    .as_ref()
+                    .and_then(|v| parse_lua_color(v, true))
+                    .or(Some(this.theme.text));
+                this.buffer.lock().unwrap().put(
+                    x,
+                    y,
+                    &ch.to_string(),
+                    col,
+                    bg.as_ref().and_then(|v| parse_lua_color(v, false)),
+                    1.0,
+                );
+                Ok(())
+            },
+        );
+        methods.add_method(
+            "sample",
+            |_, this, (func, time): (Function, Option<f64>)| {
+                let (w, h) = {
+                    let b = this.buffer.lock().unwrap();
+                    (b.width, b.height)
+                };
+                let mut masks = vec![0u8; w as usize * h as usize];
+                let mut glyphs = vec![None::<String>; masks.len()];
+                let bits = [[0u8, 1, 2, 6], [3, 4, 5, 7]];
+                for y in 0..h {
+                    for x in 0..w {
+                        for sy in 0..4 {
+                            for sx in 0..2 {
+                                let u = (x as f64 + (sx as f64 + 0.5) / 2.0) / w.max(1) as f64;
+                                let v = (y as f64 + (sy as f64 + 0.5) / 4.0) / h.max(1) as f64;
+                                let value = func.call::<Value>((u, v, time.unwrap_or(0.0)));
+                                match value {
+                                    Ok(Value::Boolean(true)) => {
+                                        masks[y as usize * w as usize + x as usize] |=
+                                            1 << bits[sx][sy]
+                                    }
+                                    Ok(Value::Integer(n)) if n > 0 => {
+                                        masks[y as usize * w as usize + x as usize] |=
+                                            1 << bits[sx][sy]
+                                    }
+                                    Ok(Value::Number(n)) if n >= 0.5 => {
+                                        masks[y as usize * w as usize + x as usize] |=
+                                            1 << bits[sx][sy]
+                                    }
+                                    Ok(Value::String(s)) => {
+                                        glyphs[y as usize * w as usize + x as usize] =
+                                            Some(s.to_string_lossy().to_string())
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
+                    }
+                }
+                let mut b = this.buffer.lock().unwrap();
+                for y in 0..h {
+                    for x in 0..w {
+                        let i = y as usize * w as usize + x as usize;
+                        if let Some(glyph) = glyphs[i].as_deref() {
+                            b.put(x as i32, y as i32, glyph, Some(this.theme.text), None, 1.0);
+                        } else if masks[i] != 0 {
+                            let ch = char::from_u32(0x2800 + masks[i] as u32)
+                                .unwrap_or('⣿')
+                                .to_string();
+                            b.put(x as i32, y as i32, &ch, Some(this.theme.text), None, 1.0);
+                        }
+                    }
+                }
+                Ok(())
+            },
+        );
         methods.add_method(
             "clear",
             |_, this, (ch, fg, bg): (Option<String>, Option<Value>, Option<Value>)| {
@@ -613,18 +1068,9 @@ pub fn parse_lua_color(val: &Value, none_if_transparent: bool) -> Option<Color> 
             }
         }
         Value::Table(tbl) => {
-            let r = tbl
-                .get::<f64>("r")
-                .or_else(|_| tbl.get::<f64>(1))
-                .ok()?;
-            let g = tbl
-                .get::<f64>("g")
-                .or_else(|_| tbl.get::<f64>(2))
-                .ok()?;
-            let b = tbl
-                .get::<f64>("b")
-                .or_else(|_| tbl.get::<f64>(3))
-                .ok()?;
+            let r = tbl.get::<f64>("r").or_else(|_| tbl.get::<f64>(1)).ok()?;
+            let g = tbl.get::<f64>("g").or_else(|_| tbl.get::<f64>(2)).ok()?;
+            let b = tbl.get::<f64>("b").or_else(|_| tbl.get::<f64>(3)).ok()?;
             Some(Color::Rgb(
                 r.round().clamp(0.0, 255.0) as u8,
                 g.round().clamp(0.0, 255.0) as u8,

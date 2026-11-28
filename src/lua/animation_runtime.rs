@@ -192,11 +192,13 @@ impl LuaAnimationRuntime {
         if let Some(lua) = self.lua.as_ref()
             && let Some(mod_key) = self.shared.shader_module.lock().unwrap().as_ref()
             && let Ok(mod_tbl) = lua.registry_value::<Table>(mod_key)
-            && let Ok(Value::Function(resize_fn)) = mod_tbl.get::<Value>("resize")
             && let Some(ctx) = self.build_shader_ctx(lua, cw, ch, 0.0)
-            && let Err(e) = resize_fn.call::<()>(ctx)
         {
-            self.last_error = Some(e.to_string());
+            let result = match mod_tbl.get::<Value>("on_resize") {
+                Ok(Value::Function(f)) => f.call::<()>((cw, ch, ctx.clone())),
+                _ => match mod_tbl.get::<Value>("resize") { Ok(Value::Function(f)) => f.call::<()>(ctx), _ => Ok(()) },
+            };
+            if let Err(e) = result { self.last_error = Some(e.to_string()); }
         }
     }
 
@@ -521,6 +523,10 @@ impl LuaAnimationRuntime {
         let _ = ctx.set("description", self.description.as_str());
         let _ = ctx.set("width", cw);
         let _ = ctx.set("height", ch);
+        let cell_aspect = 0.5_f64;
+        let _ = ctx.set("cell_aspect", cell_aspect);
+        let _ = ctx.set("aspect", if ch == 0 { 1.0 } else { cw as f64 * cell_aspect / ch as f64 });
+        let _ = ctx.set("lod", ((cw as f64 * ch as f64 / 2400.0).sqrt()).clamp(0.0, 1.0));
         let _ = ctx.set("dt", step_dt);
         let _ = ctx.set("t", t_secs);
         let _ = ctx.set("time", t_secs);
