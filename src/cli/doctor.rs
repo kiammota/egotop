@@ -37,10 +37,10 @@ pub fn handle(config_override: Option<&Path>) -> Result<i32> {
                 if err_count == 0 {
                     if let Ok(cfg) = load_from_path(&cfg_path) {
                         println!(
-                            "[OK]   Main config: {} (theme='{}', effect='{}')",
+                            "[OK]   Main config: {} (theme='{}', background='{}')",
                             cfg_path.display(),
                             cfg.theme.name,
-                            cfg.background.effect.label()
+                            cfg.background.active_effect_label()
                         );
                     }
                 } else {

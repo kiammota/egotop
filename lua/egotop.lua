@@ -1,14 +1,13 @@
 -- ~/.config/egotop/egotop.lua — Primary EgoTop configuration & composition script.
--- Every visual element (themes, backgrounds, effects, animations, fonts, and flat containers)
--- is configured here using the public `egotop` Lua API.
+-- Themes, independent animation slots, fonts, and flat containers are
+-- configured here using the public `egotop` Lua API.
 
 local matrix_theme = require("themes.matrix")
-local matrix_fx = require("effects.matrix")
 
 -- 1. General Settings
 egotop.config({
     name = "egotop",
-    greeting = "Hello, {user}!",
+    greeting = "HELLO, {user}!",
     message = "Welcome back to your Linux environment.",
     refresh_rate_ms = 1000,
     animation_fps = 30,
@@ -35,23 +34,8 @@ egotop.theme({
 })
 
 -- 4. Background (independent background canvas layer — does not participate in container layout)
-egotop.background({
-    base = {
-        type = "theme", -- "theme", "transparent", "solid", or "gradient"
-        opacity = 1.0,
-        gradient = {
-            from = "#050A07",
-            to = "#08110C",
-            direction = "vertical",
-        },
-    },
-    effects = {
-        matrix_fx.setup({
-            speed = 1.0,
-            density = 0.60,
-        }),
-    },
-})
+-- Background animation is opt-in through the background slot / :background command.
+egotop.background({ base = { type = "theme", opacity = 1.0 } })
 
 -- 5. Footer & Status Indicator
 egotop.footer({
@@ -66,13 +50,13 @@ egotop.footer({
 
 -- 6. Flat Independent Containers (egotop calculates positions & sizes automatically)
 egotop.layout({
-    padding = 1,
+    padding = 0,
     gap = 1,
     min_container_width = 22,
     containers = {
         egotop.container({
             name = "header",
-            description = "Top status bar with brand, active mode, effect, and clock",
+            description = "Top status bar with brand, active mode, background, and clock",
             region = "top",
             row = 0,
             kind = "header",
@@ -82,16 +66,28 @@ egotop.layout({
             transparent = true,
         }),
         egotop.container({
+            name = "logo",
+            description = "Distribution ASCII logo; replaceable with a canvas script",
+            region = "top",
+            row = 1,
+            kind = "ascii_logo",
+            category = "static",
+            width = "28%",
+            height = 9,
+            align = "center",
+            padding = 0,
+        }),
+        egotop.container({
             name = "greeting",
-            description = "Welcome banner with FIGlet greeting and system logo",
+            description = "Welcome banner and subtitle",
             region = "top",
             row = 1,
             kind = "greeting",
             category = "static",
-            width = "100%",
+            width = "72%",
             height = 9,
             min_height = 6,
-            align = "center",
+            padding = 0,
             font = "ANSI Shadow",
             border = { enabled = true, title = "Welcome" },
         }),

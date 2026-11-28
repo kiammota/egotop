@@ -147,7 +147,7 @@ All commands are registered in `CommandRegistry` (`src/command/registry.rs`), pa
 ### `:background`
 
 - **Aliases:** `:bg`
-- **Description:** Configure, layer, remove, toggle, pause, resume, or adjust animated background effects. All visual effects belong exclusively to the background system.
+- **Description:** Select, stop, pause, or resume the independent looping background animation. Background animation is opt-in and stays behind panels; use `:canvas` for panel-local scripts.
 - **Syntax:** `:background <set|add|remove|toggle|stop|pause|resume|speed|list> [arg]`
 - **Subcommands:**
   - `set <name>`: Replace background with an effect (e.g. `matrix_rain`, `waves`, `particles`, `starfield`, `noise`, `scanlines`, `gradient`, `floating_chars`) or custom Lua background effect.

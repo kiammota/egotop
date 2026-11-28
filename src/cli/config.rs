@@ -69,7 +69,7 @@ fn summary_command(config_override: Option<&Path>) -> Result<i32> {
     println!("  startup_animation: {}", cfg.general.startup_animation);
     println!(
         "  background:        {} (enabled={}, fps={})",
-        cfg.background.effect.label(),
+        cfg.background.active_effect_label(),
         cfg.background.enabled,
         cfg.general.animation_fps
     );
@@ -134,7 +134,7 @@ pub fn validate_command(config_override: Option<&Path>) -> Result<i32> {
             "Configuration OK: {} (theme='{}', effect='{}', components={})",
             path.display(),
             cfg.theme.name,
-            cfg.background.effect.label(),
+            cfg.background.active_effect_label(),
             comps.len()
         );
         return Ok(0);

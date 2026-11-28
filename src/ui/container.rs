@@ -466,7 +466,7 @@ pub fn default_containers() -> Vec<ContainerConfig> {
     vec![
         ContainerConfig {
             name: "header".to_string(),
-            description: "Top status bar with brand, active mode, effect, and clock".to_string(),
+            description: "Top status bar with brand, active mode, background, and clock".to_string(),
             visible: true,
             region: LayoutRegion::Top,
             row: Some(0),
@@ -478,15 +478,29 @@ pub fn default_containers() -> Vec<ContainerConfig> {
             ..ContainerConfig::default()
         },
         ContainerConfig {
-            name: "greeting".to_string(),
-            description: "Welcome banner with FIGlet greeting and system logo".to_string(),
+            name: "logo".to_string(),
+            description: "Distribution ASCII logo; replaceable with a canvas script".to_string(),
             visible: true,
             region: LayoutRegion::Top,
             row: Some(1),
-            width: ContainerSize::Percent(100),
+            width: ContainerSize::Percent(28),
+            height: ContainerSize::Fixed(9),
+            align: Align::Center,
+            padding: 0,
+            category: ComponentCategory::Static,
+            kind: ComponentKind::AsciiLogo,
+            ..ContainerConfig::default()
+        },
+        ContainerConfig {
+            name: "greeting".to_string(),
+            description: "Welcome banner and subtitle".to_string(),
+            visible: true,
+            region: LayoutRegion::Top,
+            row: Some(1),
+            width: ContainerSize::Percent(72),
             height: ContainerSize::Fixed(9),
             min_height: Some(6),
-            align: Align::Center,
+            padding: 0,
             border: ContainerBorderConfig::titled("Welcome"),
             font: Some("ANSI Shadow".to_string()),
             category: ComponentCategory::Static,

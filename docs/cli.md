@@ -16,7 +16,6 @@ egotop [OPTIONS] [COMMAND]
 |---|---|
 | `egotop` | Launches the interactive terminal dashboard (creates default config on first run) |
 | `-c, --config <PATH>` | Uses an alternate TOML configuration path (global; also supported with `config` and `doctor`) |
-| `-e, --effect <EFFECT>` | Session override for background effect (`matrix`, `water`, `particles`, `scanlines`, `none`) |
 | `-p, --page <1..=3>` | Initial dashboard page (`1`, `2`, or `3`) |
 | `--startup <MODE>` | Startup mode (`normal` or `cursor`) |
 | `--check-config` | Legacy alias equivalent to `egotop config validate` |

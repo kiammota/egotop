@@ -70,7 +70,7 @@ fn config_creates_default_and_loads_valid_lua_in_english() {
     assert!(first.created_default);
     assert!(path.exists());
     assert_eq!(first.config.general.name, "egotop");
-    assert_eq!(first.config.general.greeting, "Hello, {user}!");
+    assert_eq!(first.config.general.greeting, "HELLO, {user}!");
     assert_eq!(first.config.startup.mode, StartupMode::Normal);
     assert_eq!(first.config.footer.text, "Monitoring system telemetry");
 
@@ -588,6 +588,88 @@ ID=arch
     assert_eq!(id.as_deref(), Some("arch"));
     assert_eq!(format_uptime(3665), "1h 1m 5s");
     assert_eq!(format_uptime(90_060), "1d 1h 1m");
+}
+
+#[test]
+fn default_split_header_and_grid_edges_hold_for_builtin_themes() {
+    let cfg = Config::default();
+    assert_eq!(cfg.ui.padding, 0);
+    assert_eq!(cfg.general.greeting, "HELLO, {user}!");
+    let themes = egotop::lua::load_all_lua_themes();
+    for theme_name in ["matrix", "bamboo"] {
+        assert!(themes.contains_key(theme_name));
+        let layout = compute_dashboard_layout(Rect::new(0, 0, 120, 40), &cfg, ViewMode::Dashboard);
+        let header = layout.find_container("header").unwrap();
+        let logo = layout.find_container("logo").unwrap();
+        let greeting = layout.find_container("greeting").unwrap();
+        assert_eq!(header.outer_rect.x, 0);
+        assert_eq!(header.outer_rect.right(), 120);
+        assert_eq!(logo.outer_rect.y, greeting.outer_rect.y);
+        assert_eq!(logo.outer_rect.right() + cfg.ui.gap, greeting.outer_rect.x);
+        assert_eq!(greeting.outer_rect.right(), 120);
+        for row in [0, 1, 2] {
+            let members: Vec<_> = layout.containers.iter().filter(|p| p.config.region == LayoutRegion::Main && p.config.row == Some(row)).collect();
+            assert!(members.last().is_some_and(|p| p.outer_rect.right() == 120));
+        }
+
+        // Exercise the actual dashboard renderer with each requested theme.
+        let theme = &themes[theme_name].theme;
+        let snapshot = SystemCollector::new().collect(120, 40);
+        let reveal = RevealState::complete();
+        let render_ctx = RenderContext {
+            config: &cfg,
+            theme,
+            snapshot: &snapshot,
+            reveal: &reveal,
+            view_mode: ViewMode::Dashboard,
+            paused: false,
+            show_help: false,
+            fps: 30.0,
+            status_toast: None,
+            transparent_bg: theme.background == Color::Reset,
+            config_error_count: 0,
+        };
+        let pipeline = BackgroundPipeline::from_config_and_lua(&cfg.background, &[], 120, 40, Some(theme));
+        let catalog = AnimationCatalog::load();
+        let transition = TransitionPlayer::new("none", &catalog, 0);
+        let store = ComponentAnimationStore::new();
+        let mut customizer = CustomizerState::default();
+        let command_line = CommandLineState::default();
+        let startup = CursorStartupState::new(false);
+        let entries = themes.values().cloned().collect::<Vec<_>>();
+        let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        terminal.draw(|frame| draw_frame(frame, &cfg, &pipeline, &transition, &store, &mut customizer, &command_line, &startup, &entries, &catalog, &render_ctx)).unwrap();
+        let rendered = terminal.backend().buffer();
+        assert_eq!(rendered[(header.outer_rect.right() - 1, header.outer_rect.y)].bg, theme.background);
+        assert_eq!(rendered[(greeting.outer_rect.right() - 1, greeting.outer_rect.y)].bg, theme.panel_background);
+    }
+
+    let mut canvas_cfg = cfg;
+    let logo = canvas_cfg.ui.containers.iter_mut().find(|c| c.name == "logo").unwrap();
+    logo.kind = ComponentKind::Canvas;
+    logo.padding = 5;
+    let canvas_layout = compute_dashboard_layout(Rect::new(0, 0, 120, 40), &canvas_cfg, ViewMode::Dashboard);
+    let canvas = canvas_layout.find_container("logo").unwrap();
+    assert_eq!(canvas.inner_rect, canvas.outer_rect);
+}
+
+#[test]
+fn canvas_nil_background_inherits_and_explicit_background_fills_cell() {
+    use egotop::lua::CanvasBuffer;
+    let rect = Rect::new(0, 0, 3, 1);
+    let inherited = Color::Rgb(20, 40, 60);
+    let explicit = Color::Rgb(200, 10, 30);
+    let mut dst = Buffer::empty(rect);
+    for x in 0..3 {
+        dst[(x, 0)].set_bg(inherited);
+    }
+    let mut canvas = CanvasBuffer::new(3, 1);
+    canvas.put(0, 0, "X", Some(Color::White), None, 1.0);
+    canvas.put(1, 0, "▀", Some(Color::White), Some(explicit), 1.0);
+    canvas.blit_to_buffer(&mut dst, rect, Color::White);
+    assert_eq!(dst[(0, 0)].bg, inherited);
+    assert_eq!(dst[(1, 0)].bg, explicit);
+    assert_eq!(dst[(2, 0)].bg, inherited);
 }
 
 #[test]
@@ -2162,12 +2244,12 @@ text = "Hello EgoTop"
         for x in 0..120 {
             row.push_str(buf[(x, y)].symbol());
         }
-        if row.contains("egotop") && row.contains("[fx:") {
+        if row.contains("egotop") && row.contains("[bg:") {
             header_row = Some(row);
             break;
         }
     }
-    let row = header_row.expect("global header row with egotop and [fx: ...] must render");
+    let row = header_row.expect("global header row with egotop and [bg: ...] must render");
     let egotop_col = row.find("egotop").unwrap();
     assert!(
         (50..=64).contains(&egotop_col),
@@ -2328,7 +2410,7 @@ fn transparency_preserves_background_animation_and_colors() {
     }
     assert_eq!(full_buf[(0, 0)].bg, Color::Reset);
 
-    // Verify ExclusionMask blocks global effect inside a transparent container with an empty Text content
+    // Opaque containers block the global background behind an empty text canvas.
     let mut masked_cfg = Config::default();
     masked_cfg.background.enabled = true;
     masked_cfg.background.effect = EffectKind::Matrix;
@@ -2340,7 +2422,7 @@ fn transparency_preserves_background_animation_and_colors() {
             name: "empty_box".to_string(),
             description: "Empty transparent box".to_string(),
             visible: true,
-            transparent: true,
+            transparent: false,
             category: ComponentCategory::Static,
             kind: ComponentKind::Text,
             width: ContainerSize::Fill(1),
@@ -2393,7 +2475,10 @@ fn transparency_preserves_background_animation_and_colors() {
                 " ",
                 "global effect leaked into excluded container at ({x},{y})"
             );
-            assert_eq!(masked_buf[(x, y)].bg, Color::Black);
+            assert_eq!(
+                masked_buf[(x, y)].bg,
+                if theme.panel_background == Color::Reset { Color::Black } else { theme.panel_background }
+            );
         }
     }
 }
@@ -2488,7 +2573,7 @@ fn container_isolation_and_independent_transparency_flags() {
 
     // Opaque container paints its own #112233 background, transparent container inherits theme.background
     assert_eq!(buf[(opaque_rect.x, opaque_rect.y)].bg, Color::Rgb(0x11, 0x22, 0x33));
-    assert_eq!(buf[(trans_rect.x, trans_rect.y)].bg, theme.panel_background);
+    assert_eq!(buf[(trans_rect.x, trans_rect.y)].bg, theme.background);
 
     // Theme transparency must not let the Z=0 background leak through a panel.
     cfg.theme.background = "transparent".to_string();
@@ -2527,7 +2612,7 @@ fn container_isolation_and_independent_transparency_flags() {
         .unwrap();
     let buf2 = term2.backend().buffer();
     assert_eq!(buf2[(opaque_rect.x, opaque_rect.y)].bg, Color::Rgb(0x11, 0x22, 0x33));
-    assert_eq!(buf2[(trans_rect.x, trans_rect.y)].bg, Color::Black);
+    assert_eq!(buf2[(trans_rect.x, trans_rect.y)].bg, Color::Reset);
 }
 
 #[test]
@@ -3144,7 +3229,7 @@ fn column_alignment_and_normal_casing_across_sections() {
         .map(|x| buf.cell((x, header_rect.y)).unwrap().symbol())
         .collect();
     assert!(header_line.contains("egotop"), "Expected lowercase 'egotop' in header: {header_line:?}");
-    assert!(header_line.contains("[fx: particles]"), "Expected '[fx: particles]' in header: {header_line:?}");
+    assert!(header_line.contains("[bg: particles]"), "Expected '[bg: particles]' in header: {header_line:?}");
     assert!(header_line.contains("[dashboard]"), "Expected '[dashboard]' in header: {header_line:?}");
     assert!(!header_line.contains("EGOTOP") && !header_line.contains("[FX:") && !header_line.contains("EgoTop"));
 
@@ -3721,8 +3806,8 @@ fn unified_background_canvas_layers_borders_and_per_container_canvas_isolation()
     })
     .unwrap();
     let buf = term.backend().buffer();
-    // Global background Canvas drew its thick top-left border at (0, 0)
-    assert_eq!(buf[(0, 0)].symbol(), "┏");
+    // Transparent header content is composed above the global background canvas.
+    assert_eq!(buf[(0, 0)].symbol(), "[");
     // System container Canvas drew Double border ('╔') while other bordered panels kept Rounded ('╭')
     assert_eq!(buf[(sys_placed.outer_rect.x, sys_placed.outer_rect.y)].symbol(), "╔");
     let hw_placed = layout.find_container("hardware").unwrap();
@@ -3832,8 +3917,13 @@ fn no_automatic_matrix_on_boot_or_christmas_and_clean_bottom_row() {
             );
         }
     }
-    let header_line: String = (0..120).map(|x| buf[(x, 1)].symbol()).collect();
-    assert!(header_line.contains("[fx: christmas]"), "Header corrupted: {header_line:?}");
+    let header_y = compute_dashboard_layout(Rect::new(0, 0, 120, 36), &cfg, ViewMode::Dashboard)
+        .find_container("header")
+        .unwrap()
+        .inner_rect
+        .y;
+    let header_line: String = (0..120).map(|x| buf[(x, header_y)].symbol()).collect();
+    assert!(header_line.contains("[bg: christmas]"), "Header corrupted: {header_line:?}");
     let bottom_row: String = (0..120).map(|x| buf[(x, 35)].symbol()).collect();
     assert_eq!(bottom_row.trim(), "", "Bottom command row should be clean, got: {bottom_row:?}");
 }

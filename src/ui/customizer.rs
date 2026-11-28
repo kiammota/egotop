@@ -1,5 +1,5 @@
 use crate::animation::{AnimationCatalog, BackgroundEffect};
-use crate::config::{Config, EffectKind, ThemeEntry};
+use crate::config::{Config, ThemeEntry};
 use crate::runtime::{DiagnosticEngine, DiagnosticSeverity};
 use crate::ui::container::{
     ContainerConfig, collect_container_names, toggle_container_visible,
@@ -127,10 +127,6 @@ pub fn layout_items_summary(cfg: &Config) -> Vec<(String, String)> {
         (
             "View Mode".to_string(),
             cfg.general.view_mode.label().to_string(),
-        ),
-        (
-            "Background Effect".to_string(),
-            cfg.background.active_effect_label(),
         ),
     ];
     let mut names = Vec::new();
@@ -451,19 +447,6 @@ pub fn render_help_overlay(frame: &mut Frame, screen: Rect, theme: &Theme) {
         )),
     ];
     frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), inner);
-}
-
-pub fn effect_names() -> Vec<String> {
-    [
-        EffectKind::Matrix,
-        EffectKind::Water,
-        EffectKind::Particles,
-        EffectKind::Scanlines,
-        EffectKind::None,
-    ]
-    .iter()
-    .map(|e| e.label().to_ascii_lowercase())
-    .collect()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

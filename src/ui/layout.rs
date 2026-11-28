@@ -46,7 +46,13 @@ impl ExclusionMask {
                 .get(&c.name)
                 .map(|s| s.effects)
                 .unwrap_or(c.config.effects);
-            if policy != EffectPolicy::Allow {
+            let transparent = styles
+                .get(&c.name)
+                .map(|s| matches!(s.background, crate::ui::container::BackgroundFill::Transparent))
+                .unwrap_or(c.config.transparent);
+            // Transparent containers intentionally reveal the background canvas
+            // across their whole rectangle; opaque containers remain isolated.
+            if policy != EffectPolicy::Allow && !transparent {
                 rects.push(c.outer_rect);
             }
         }
@@ -567,7 +573,8 @@ fn push_placed_container(c: &ContainerConfig, outer: Rect, out: &mut ComputedLay
         .as_deref()
         .or(c.content.title.as_deref())
         .is_some_and(|t| !t.is_empty());
-    let inner = compute_inner_rect_with_title(outer, has_border, has_title, c.padding);
+    let padding = if c.kind == crate::ui::container::ComponentKind::Canvas { 0 } else { c.padding };
+    let inner = compute_inner_rect_with_title(outer, has_border, has_title, padding);
     out.containers.push(PlacedContainer {
         name: c.name.clone(),
         description: c.description.clone(),
@@ -642,6 +649,8 @@ fn allocate_axis(total_avail: u16, gap: u16, specs: &[AxisSpec]) -> (u16, Vec<u1
     // Pass 1: compute desired Fixed and Percent lengths
     let mut desired_fixed_sum: u32 = 0;
     let mut desired = vec![0u16; specs.len()];
+    let percent_total: u32 = specs.iter().map(|s| match s.size { ContainerSize::Percent(p) => p.min(100) as u32, _ => 0 }).sum();
+    let last_percent = specs.iter().rposition(|s| matches!(s.size, ContainerSize::Percent(_)));
     for (idx, spec) in specs.iter().enumerate() {
         match spec.size {
             ContainerSize::Fixed(n) => {
@@ -650,7 +659,11 @@ fn allocate_axis(total_avail: u16, gap: u16, specs: &[AxisSpec]) -> (u16, Vec<u1
                 desired_fixed_sum += d as u32;
             }
             ContainerSize::Percent(pct) => {
-                let raw = ((usable as u32 * pct.min(100) as u32) / 100) as u16;
+                let raw = if percent_total >= 100 && Some(idx) == last_percent {
+                    usable.saturating_sub(desired_fixed_sum.min(u16::MAX as u32) as u16)
+                } else {
+                    ((usable as u32 * pct.min(100) as u32) / 100) as u16
+                };
                 let d = clamp_bounds(raw, spec.min, spec.max);
                 desired[idx] = d;
                 desired_fixed_sum += d as u32;

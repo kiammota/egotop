@@ -430,8 +430,8 @@ mod tests {
         assert_eq!(bundle.config.general.name, "egotop");
         assert_eq!(bundle.config.footer.text, "Monitoring system telemetry");
         assert!(!bundle.config.init.wait_for_input);
-        assert_eq!(bundle.effect_specs.len(), 1);
-        assert_eq!(bundle.effect_specs[0].name, "matrix");
+        assert!(bundle.effect_specs.is_empty(), "global backgrounds are opt-in");
+        assert!(crate::ui::container::has_container(&bundle.config.ui.containers, "logo"));
         assert!(crate::ui::container::has_container(&bundle.config.ui.containers, "system"));
         assert!(crate::ui::container::has_container(&bundle.config.ui.containers, "hardware"));
         assert!(crate::ui::container::has_container(&bundle.config.ui.containers, "session"));

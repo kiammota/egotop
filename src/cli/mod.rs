@@ -9,7 +9,7 @@ use crossterm::terminal;
 use egotop_app_launch::launch_tui;
 use std::path::PathBuf;
 
-use crate::config::{EffectKind, StartupMode, load_or_create};
+use crate::config::{StartupMode, load_or_create};
 use crate::lua::builtins::DEFAULT_EGOTOP_LUA;
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -23,27 +23,6 @@ impl From<CliStartup> for StartupMode {
         match value {
             CliStartup::Normal => Self::Normal,
             CliStartup::Cursor => Self::Cursor,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, ValueEnum)]
-pub enum CliEffect {
-    Matrix,
-    Water,
-    Particles,
-    Scanlines,
-    None,
-}
-
-impl From<CliEffect> for EffectKind {
-    fn from(value: CliEffect) -> Self {
-        match value {
-            CliEffect::Matrix => Self::Matrix,
-            CliEffect::Water => Self::Water,
-            CliEffect::Particles => Self::Particles,
-            CliEffect::Scanlines => Self::Scanlines,
-            CliEffect::None => Self::None,
         }
     }
 }
@@ -73,10 +52,6 @@ pub struct Cli {
     /// Path to configuration file (defaults to ~/.config/egotop/egotop.lua)
     #[arg(short, long, global = true, value_name = "PATH")]
     pub config: Option<PathBuf>,
-
-    /// Override background animation effect for this session
-    #[arg(short, long, value_enum)]
-    pub effect: Option<CliEffect>,
 
     /// Initial page to display (1..=3)
     #[arg(short, long, value_parser = clap::value_parser!(u8).range(1..=3))]
@@ -132,11 +107,6 @@ mod egotop_app_launch {
         let loaded = load_or_create(cli.config.as_deref())?;
         let mut cfg = loaded.config;
 
-        if let Some(eff) = cli.effect {
-            let kind: EffectKind = eff.into();
-            cfg.background.effect = kind;
-            cfg.background.enabled = kind != EffectKind::None;
-        }
         if let Some(p) = cli.page {
             cfg.general.default_page = p;
         }

@@ -18,7 +18,6 @@ Egotop routes keyboard and mouse events by active application context so inputs 
 | `p` | Pause or resume background and startup animations |
 | `c` | Reload configuration, themes, animations, and window config from `~/.config/egotop/` |
 | `m` | Cycle view mode (`Dashboard` → `Compact` → `Minimal`) |
-| `e` | Cycle background ambient effect (`Matrix` → `Water` → `Particles` → `Scanlines` → `None`) |
 | `1`, `2`, `3` | Switch active dashboard page |
 | `ArrowUp` / `ArrowDown` / `ArrowLeft` / `ArrowRight` | Nudge main window position (when `draggable = true`) |
 | `Shift+Arrow` | Resize main window (when `resizable = true`) |

@@ -126,19 +126,18 @@ fn render_placed_container(
         .clamp(0.0, 1.0);
 
     let solid_panel_bg = match ctx.panel_bg() {
-        Color::Reset => Color::Black,
+        Color::Reset if ctx.theme.background == Color::Reset => Color::Black,
+        Color::Reset => ctx.theme.background,
         color => color,
     };
     let bg = match style_override.map(|s| &s.background) {
-        // Animated layers always need an opaque panel underlay so the Z=0
-        // background can never show through text, borders, or canvas cells.
-        Some(BackgroundFill::Transparent) => solid_panel_bg,
+        Some(BackgroundFill::Transparent) => Color::Reset,
         Some(BackgroundFill::Solid(c)) => {
             apply_color_opacity(parse_color(c, ctx.theme.panel_background), opacity)
         }
         Some(BackgroundFill::Inherit) | None => {
             if cont.transparent {
-                solid_panel_bg
+                Color::Reset
             } else {
                 let base = cont
                     .background
@@ -191,9 +190,9 @@ fn render_placed_container(
 
     // Render all container content strictly into its own isolated [0..inner.w, 0..inner.h) canvas.
     blit_isolated_canvas(dest, inner, |canvas_buf, local_inner| {
-        Block::default()
-            .style(Style::default().bg(bg))
-            .render(local_inner, canvas_buf);
+        if bg != Color::Reset {
+            Block::default().style(Style::default().bg(bg)).render(local_inner, canvas_buf);
+        }
         if let Some(overlay) = anim_store.canvas_overlay(&cont.name) {
             overlay.instance.render(canvas_buf, local_inner, ctx.theme);
         }
@@ -570,44 +569,12 @@ fn render_greeting_to_canvas(
         .as_deref()
         .unwrap_or(&ctx.config.general.greeting);
     let greeting_text = raw_template
-        .replace("{user}", &user)
+        .replace("{user}", &user.to_uppercase())
         .replace("{host}", host)
         .replace("{distro}", distro)
         .replace("{wm}", wm);
 
-    let logo_lines = if ctx.view_mode == ViewMode::Dashboard {
-        resolve_logo_lines(&ctx.config.typography, ctx.snapshot)
-    } else {
-        Vec::new()
-    };
-    let logo_width = logo_lines.iter().map(|l| l.width()).max().unwrap_or(0) as u16;
-
-    let show_side_logo =
-        !logo_lines.is_empty() && area.width > logo_width + 28 && area.height >= 5;
-    let text_area = if show_side_logo {
-        let cols = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Length(logo_width + 4), Constraint::Min(10)])
-            .split(area);
-
-        let logo_styled: Vec<Line<'static>> = logo_lines
-            .iter()
-            .map(|l| {
-                Line::from(Span::styled(
-                    l.clone(),
-                    Style::default()
-                        .fg(ctx.theme.secondary)
-                        .add_modifier(Modifier::BOLD),
-                ))
-            })
-            .collect();
-        Paragraph::new(center_vertically(logo_styled, cols[0].height))
-            .alignment(Alignment::Center)
-            .render(cols[0], buf);
-        cols[1]
-    } else {
-        area
-    };
+    let text_area = area;
 
     let font_name = cont
         .font
@@ -707,7 +674,7 @@ fn render_header_to_canvas(buf: &mut Buffer, area: Rect, ctx: &RenderContext) {
             ctx.theme.secondary
         };
         left_spans.push(Span::styled(
-            format!("[fx: {anim_label}] "),
+            format!("[bg: {anim_label}] "),
             Style::default().fg(anim_color),
         ));
         left_spans.push(Span::styled(
@@ -757,13 +724,13 @@ fn render_header_to_canvas(buf: &mut Buffer, area: Rect, ctx: &RenderContext) {
 
     if left_rect.width > 0 {
         Paragraph::new(Line::from(left_spans))
-            .style(ctx.panel_style())
+            .style(Style::default())
             .render(left_rect, buf);
     }
     if center_rect.width > 0 {
         Paragraph::new(Line::from(brand_span))
             .alignment(Alignment::Center)
-            .style(ctx.panel_style())
+            .style(Style::default())
             .render(center_rect, buf);
     }
     if right_rect.width > 0 {
@@ -774,7 +741,7 @@ fn render_header_to_canvas(buf: &mut Buffer, area: Rect, ctx: &RenderContext) {
                 .add_modifier(Modifier::BOLD),
         )))
         .alignment(Alignment::Right)
-        .style(ctx.panel_style())
+        .style(Style::default())
         .render(right_rect, buf);
     }
 }

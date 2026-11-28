@@ -843,10 +843,6 @@ impl App {
             }
             CustomizerTab::Layout => match idx {
                 0 => self.view_mode = self.view_mode.next(),
-                1 => {
-                    let next = self.config.background.effect.next();
-                    self.set_effect(next, guard)?;
-                }
                 last if last == layout_items_summary(&self.config).len() - 1 => {
                     self.config.general.view_mode = self.view_mode;
                     match save_config_to_path(&self.config_path, &self.config) {
@@ -857,7 +853,7 @@ impl App {
                 comp_idx => {
                     let mut comps = Vec::new();
                     collect_component_ids(&self.config.ui.containers, &mut comps);
-                    if let Some((name, _)) = comps.get(comp_idx.saturating_sub(2)) {
+                    if let Some((name, _)) = comps.get(comp_idx.saturating_sub(1)) {
                         let name = name.clone();
                         if let Some(now_on) =
                             toggle_component_visible(&mut self.config.ui.containers, &name)
@@ -951,11 +947,6 @@ impl App {
             KeyCode::Char('m') | KeyCode::Char('M') => {
                 self.view_mode = self.view_mode.next();
                 self.set_toast(format!("View mode: {}", self.view_mode.label()));
-            }
-            KeyCode::Char('e') | KeyCode::Char('E') => {
-                let next = self.config.background.effect.next();
-                self.set_effect(next, guard)?;
-                self.set_toast(format!("Background effect: {}", next.label()));
             }
             _ => {}
         }
@@ -1647,37 +1638,6 @@ impl App {
             self.config.theme.danger.clear();
             self.config.theme.borders = Default::default();
         }
-    }
-
-    fn set_effect(&mut self, kind: EffectKind, guard: &TerminalGuard) -> Result<()> {
-        let sz = guard.terminal.size()?;
-        self.set_effect_with_size(kind, sz.width, sz.height);
-        Ok(())
-    }
-
-    fn set_effect_with_size(&mut self, kind: EffectKind, width: u16, height: u16) {
-        self.config.background.effect = kind;
-        self.config.background.enabled = kind != EffectKind::None;
-        self.config.background.layers.clear();
-        self.config.background.preset = if kind == EffectKind::None {
-            None
-        } else {
-            Some(kind.label().to_ascii_lowercase())
-        };
-        match kind {
-            EffectKind::Matrix => self.config.background.matrix.enabled = true,
-            EffectKind::Water => self.config.background.water.enabled = true,
-            EffectKind::Particles => self.config.background.particles.enabled = true,
-            EffectKind::Scanlines => self.config.background.scanlines.enabled = true,
-            EffectKind::None => {}
-        }
-        self.effect = BackgroundPipeline::from_config_and_lua(
-            &self.config.background,
-            &[],
-            width,
-            height,
-            Some(&self.theme),
-        );
     }
 
     fn execute_background_command(

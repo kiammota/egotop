@@ -34,7 +34,7 @@ pub struct UiConfig {
 impl Default for UiConfig {
     fn default() -> Self {
         Self {
-            padding: 1,
+            padding: 0,
             gap: 1,
             min_container_width: 22,
             containers: default_containers(),
@@ -201,7 +201,7 @@ impl Default for GeneralConfig {
     fn default() -> Self {
         Self {
             name: "egotop".to_string(),
-            greeting: "Hello, {user}!".to_string(),
+            greeting: "HELLO, {user}!".to_string(),
             user_override: None,
             message: "Welcome back to your Linux environment.".to_string(),
             refresh_rate_ms: 1000,
