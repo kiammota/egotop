@@ -67,6 +67,3 @@ egotop --print-default-config
 
 ---
 
-## License
-
-MIT — see [`Cargo.toml`](Cargo.toml).
