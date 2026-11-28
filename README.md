@@ -1,6 +1,8 @@
 # egotop
 
-An interactive, Lua-scriptable animated terminal dashboard for Linux & Hyprland written in Rust.
+An interactive, Lua-scriptable animated terminal dashboard for Linux and macOS, written in Rust.
+
+**Supported platforms:** Linux and macOS. Windows is not currently supported.
 
 **egotop** pairs a low-level Rust terminal/layout/scheduling engine with a full **Lua 5.4 scripting architecture**: configuration, explicit component layout, importable themes, independent intro/background/canvas animation slots, ASCII fonts, and programmable multi-scene animations live in clean Lua modules under `~/.config/egotop/`.
 
