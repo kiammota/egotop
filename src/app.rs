@@ -118,7 +118,7 @@ impl App {
 
         let is_cursor_startup = config.startup.mode == StartupMode::Cursor;
         let wait_init = is_cursor_startup || config.init.wait_for_input;
-        let transition = if wait_init {
+        let mut transition = if wait_init {
             TransitionPlayer::new("none", &animations, 0)
         } else {
             TransitionPlayer::new(
@@ -155,6 +155,9 @@ impl App {
         } else {
             None
         };
+        if lua_anim.as_ref().is_some_and(LuaAnimationRuntime::is_intro) {
+            transition.stop();
+        }
 
         let mut collector = SystemCollector::new();
         let snapshot = collector.collect(width, height);
@@ -271,6 +274,7 @@ impl App {
                     la.update(dt);
                     self.reveal.progress = la.reveal_progress();
                     if la.is_finished() {
+                        self.transition.stop();
                         self.reveal = RevealState::complete();
                         self.lua_anim = None;
                     }
@@ -332,6 +336,12 @@ impl App {
                         diagnostics_ref,
                         ctx.theme,
                     );
+                }
+                if let Some(intro) =
+                    lua_anim_ref.filter(|anim| anim.is_intro() && !anim.is_finished())
+                {
+                    let area = frame.area();
+                    intro.compose_intro(frame.buffer_mut(), area, ctx.theme);
                 }
             })?;
 
@@ -435,7 +445,7 @@ impl App {
                 self.handle_mouse(mouse, viewport, guard)?;
             }
             InputEvent::Key(key) => {
-                if self.lua_anim.is_some()
+                if self.lua_anim.as_ref().is_some_and(LuaAnimationRuntime::is_intro)
                     && matches!(key.code, KeyCode::Esc | KeyCode::Enter | KeyCode::Char(' '))
                     && !self.command_line.active
                 {
@@ -1122,6 +1132,7 @@ impl App {
                     } else {
                         let sz = guard.terminal.size()?;
                         self.lua_anim = Some(LuaAnimationRuntime::start(&name, sz.width, sz.height, self.config.general.animation_fps));
+                        self.transition.stop();
                         self.reveal = RevealState::new(0.65);
                         self.set_toast(format!("Replaying intro '{name}'"));
                     }
@@ -1132,6 +1143,7 @@ impl App {
                             self.config.general.startup_animation = name.clone();
                             let sz = guard.terminal.size()?;
                             self.lua_anim = Some(LuaAnimationRuntime::start(&name, sz.width, sz.height, self.config.general.animation_fps));
+                            self.transition.stop();
                             self.reveal = RevealState::new(0.65);
                             self.set_toast(format!("Playing intro '{name}'"));
                         }

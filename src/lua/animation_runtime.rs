@@ -89,6 +89,7 @@ struct RuntimeShared {
 pub struct LuaAnimationRuntime {
     pub active_id: String,
     pub description: String,
+    is_intro: bool,
     lua: Option<Lua>,
     shared: RuntimeShared,
     target_fps: u32,
@@ -98,10 +99,17 @@ pub struct LuaAnimationRuntime {
 
 impl LuaAnimationRuntime {
     pub fn start(name: &str, screen_w: u16, screen_h: u16, target_fps: u32) -> Self {
+        let is_intro = crate::lua::validate_script_for_slot(
+            name,
+            crate::animation::AnimSlotKind::Intro,
+        )
+        .is_ok()
+            && !name.eq_ignore_ascii_case("none");
         let desc = format!("Independent Lua animation '{name}'");
         let mut rt = Self {
             active_id: name.to_string(),
             description: desc.clone(),
+            is_intro,
             lua: None,
             shared: RuntimeShared {
                 name: name.to_string(),
@@ -139,6 +147,10 @@ impl LuaAnimationRuntime {
         *self.shared.layer.lock().unwrap()
     }
 
+    pub fn is_intro(&self) -> bool {
+        self.is_intro
+    }
+
     pub fn canvas_dims(&self) -> (u16, u16) {
         let guard = self.shared.canvas_buf.lock().unwrap();
         (guard.width, guard.height)
@@ -153,7 +165,7 @@ impl LuaAnimationRuntime {
     }
 
     fn effective_canvas_dims(&self) -> (u16, u16) {
-        if self.layer() == AnimationLayer::Boxed {
+        if self.layer() == AnimationLayer::Boxed && !self.is_intro {
             let rect = self.boxed_rect(Rect::new(0, 0, self.shared.screen_w, self.shared.screen_h));
             (rect.width.saturating_sub(2), rect.height.saturating_sub(2))
         } else {
@@ -560,7 +572,9 @@ impl LuaAnimationRuntime {
         if *self.shared.finished.lock().unwrap() || self.shared.paused {
             return;
         }
-        self.accum_dt += dt_secs;
+        // Intro clocks begin advancing only after App::new has collected the first
+        // snapshot and the render loop starts. Clamp slow first frames to avoid skips.
+        self.accum_dt += dt_secs.clamp(0.0, 0.05);
         let min_step = 1.0 / (self.target_fps.max(1) as f32);
         if self.accum_dt < min_step {
             return;
@@ -747,6 +761,79 @@ impl LuaAnimationRuntime {
         guard.blit_to_buffer(buf, area, Color::White);
     }
 
+    /// Final post-UI compositor for intro animations. This is deliberately the
+    /// last screen operation so dashboard widgets cannot paint over the intro.
+    pub fn compose_intro(&self, buf: &mut Buffer, area: Rect, theme: &Theme) {
+        if !self.is_intro || self.is_finished() || area.width == 0 || area.height == 0 {
+            return;
+        }
+        let p = self.reveal_progress().clamp(0.0, 1.0);
+        let name = self.active_id.to_ascii_lowercase().replace('-', "_");
+        if p < 1.0 {
+            if name == "fade" {
+                for y in area.top()..area.bottom() {
+                    for x in area.left()..area.right() {
+                        if let Some(cell) = buf.cell_mut((x, y)) {
+                            let fg = if cell.fg == Color::Reset {
+                                theme.text
+                            } else {
+                                cell.fg
+                            };
+                            let bg = if cell.bg == Color::Reset {
+                                theme.background
+                            } else {
+                                cell.bg
+                            };
+                            cell.set_fg(blend_color(fg, Color::Black, p))
+                                .set_bg(blend_color(bg, Color::Black, p));
+                        }
+                    }
+                }
+            } else {
+                let cx = area.x + area.width / 2;
+                let cy = area.y + area.height / 2;
+                let crt = name == "crt_power_on" || name == "crt";
+                let eased = if crt {
+                    crate::config::EasingKind::EaseInOut.apply(p)
+                } else {
+                    crate::config::EasingKind::EaseOut.apply(p)
+                };
+                let max_x = area.width as f32 * 0.5;
+                let max_y = area.height as f32 * 0.5;
+                let radius = (max_x * max_x + (max_y * 2.0) * (max_y * 2.0)).sqrt() * eased;
+                let half_band = (area.height as f32 * 0.5 * eased).ceil() as u16;
+                for y in area.top()..area.bottom() {
+                    for x in area.left()..area.right() {
+                        let dx = x.abs_diff(cx) as f32;
+                        let dy = y.abs_diff(cy) as f32 * 2.0;
+                        let distance = (dx * dx + dy * dy).sqrt();
+                        let visible = if crt {
+                            y.abs_diff(cy) <= half_band
+                        } else {
+                            distance <= radius
+                        };
+                        if let Some(cell) = buf.cell_mut((x, y)) {
+                            if !visible {
+                                cell.set_char(' ').set_fg(Color::Black).set_bg(Color::Black);
+                            } else {
+                                let edge = if crt {
+                                    y.abs_diff(cy) == half_band
+                                } else {
+                                    (distance - radius).abs() <= 1.5
+                                };
+                                if edge {
+                                    cell.set_fg(theme.primary);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // Keep Lua-authored boot text/beams visible above the transformed dashboard.
+        self.render(buf, area);
+    }
+
     /// Renders a `Boxed` animation cleanly inside an isolated, bordered modal panel
     /// so zero characters can ever bleed over other dashboard containers or borders.
     pub fn render_boxed(&self, frame: &mut Frame, screen: Rect, theme: &Theme) {
@@ -786,5 +873,70 @@ fn parse_animation_layer(s: &str) -> AnimationLayer {
         "background" | "bg" => AnimationLayer::Background,
         "boxed" | "box" | "window" | "panel" => AnimationLayer::Boxed,
         _ => AnimationLayer::Overlay,
+    }
+}
+
+#[cfg(test)]
+mod intro_compositor_tests {
+    use super::*;
+
+    #[test]
+    fn fade_takes_over_the_whole_ui_buffer_and_brightens_smoothly() {
+        let theme = Theme::from_config(&crate::config::ThemeConfig::default());
+        let area = Rect::new(0, 0, 20, 8);
+        let mut intro = LuaAnimationRuntime::start("fade", area.width, area.height, 60);
+        assert!(intro.is_intro());
+        assert_eq!(intro.shared.elapsed_ms, 0.0);
+        let mut frame = Buffer::empty(area);
+        frame[(10, 4)]
+            .set_symbol("X")
+            .set_fg(Color::White)
+            .set_bg(Color::Blue);
+        intro.compose_intro(&mut frame, area, &theme);
+        assert_eq!(frame[(10, 4)].fg, Color::Rgb(0, 0, 0));
+        assert_eq!(frame[(10, 4)].bg, Color::Rgb(0, 0, 0));
+
+        intro.update(0.5);
+        assert!(
+            intro.shared.elapsed_ms <= 50.0,
+            "slow frames must clamp intro dt to 50 ms"
+        );
+        for _ in 1..4 {
+            intro.update(0.05);
+        }
+        let mut frame = Buffer::empty(area);
+        frame[(10, 4)]
+            .set_symbol("X")
+            .set_fg(Color::White)
+            .set_bg(Color::Blue);
+        intro.compose_intro(&mut frame, area, &theme);
+        assert!(matches!(frame[(10, 4)].fg, Color::Rgb(r, _, _) if r > 0 && r < 255));
+
+        for _ in 0..16 {
+            intro.update(0.25);
+        }
+        assert!(
+            intro.is_finished(),
+            "finite intro tween must finish after one pass"
+        );
+        assert_eq!(intro.reveal_progress(), 1.0);
+    }
+
+    #[test]
+    fn crt_intro_reveals_from_the_center_and_closes_unrevealed_rows() {
+        let theme = Theme::from_config(&crate::config::ThemeConfig::default());
+        let area = Rect::new(0, 0, 20, 10);
+        let intro = LuaAnimationRuntime::start("crt_power_on", area.width, area.height, 30);
+        assert!(intro.is_intro());
+        let mut frame = Buffer::empty(area);
+        for cell in frame.content.iter_mut() {
+            cell.set_symbol("X")
+                .set_fg(Color::White)
+                .set_bg(Color::Blue);
+        }
+        intro.compose_intro(&mut frame, area, &theme);
+        assert_eq!(frame[(0, 0)].symbol(), " ");
+        assert_eq!(frame[(0, 0)].bg, Color::Black);
+        assert_ne!(frame[(0, 5)].symbol(), " ");
     }
 }

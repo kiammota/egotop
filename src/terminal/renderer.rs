@@ -119,6 +119,7 @@ pub fn draw_frame_with_lua(
 
     let layout = compute_dashboard_layout(area, config, ctx.view_mode);
     let mask = ExclusionMask::from_layout_with_styles(&layout, &config.container_styles);
+    let intro_active = lua_anim.is_some_and(|anim| anim.is_intro() && !anim.is_finished());
 
     render_background_canvas_with_mask(frame, bg_area, &mask, |buf, a| {
         effect.render(buf, a, &config.background, ctx.theme);
@@ -130,7 +131,7 @@ pub fn draw_frame_with_lua(
         render_lua_animation_background(frame, bg_area, config, ctx, la);
     }
 
-    if !transition.finished && transition.has_scene_tracks() {
+    if !intro_active && !transition.finished && transition.has_scene_tracks() {
         render_background_canvas_with_mask(frame, bg_area, &mask, |buf, a| {
             transition.render_scene(buf, a, ctx.theme);
         });
@@ -138,7 +139,7 @@ pub fn draw_frame_with_lua(
 
     render_containers(frame, &layout, anim_store, ctx);
 
-    if !transition.finished {
+    if !intro_active && !transition.finished {
         transition.apply_to_buffer(frame.buffer_mut(), layout.area, ctx.theme);
     }
 
@@ -172,7 +173,7 @@ pub fn render_lua_animation_overlay(
     lua_anim: &LuaAnimationRuntime,
     theme: &crate::ui::theme::Theme,
 ) {
-    if lua_anim.is_finished() {
+    if lua_anim.is_finished() || lua_anim.is_intro() {
         return;
     }
     match lua_anim.layer() {
@@ -189,7 +190,10 @@ pub fn render_lua_animation_background(
     ctx: &RenderContext,
     lua_anim: &LuaAnimationRuntime,
 ) {
-    if lua_anim.is_finished() || lua_anim.layer() != AnimationLayer::Background {
+    if lua_anim.is_finished()
+        || lua_anim.is_intro()
+        || lua_anim.layer() != AnimationLayer::Background
+    {
         return;
     }
     let layout = compute_dashboard_layout(area, config, ctx.view_mode);
