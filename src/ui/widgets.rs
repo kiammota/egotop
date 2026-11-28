@@ -125,20 +125,26 @@ fn render_placed_container(
         .unwrap_or(1.0)
         .clamp(0.0, 1.0);
 
+    let solid_panel_bg = match ctx.panel_bg() {
+        Color::Reset => Color::Black,
+        color => color,
+    };
     let bg = match style_override.map(|s| &s.background) {
-        Some(BackgroundFill::Transparent) => Color::Reset,
+        // Animated layers always need an opaque panel underlay so the Z=0
+        // background can never show through text, borders, or canvas cells.
+        Some(BackgroundFill::Transparent) => solid_panel_bg,
         Some(BackgroundFill::Solid(c)) => {
             apply_color_opacity(parse_color(c, ctx.theme.panel_background), opacity)
         }
         Some(BackgroundFill::Inherit) | None => {
             if cont.transparent {
-                Color::Reset
+                solid_panel_bg
             } else {
                 let base = cont
                     .background
                     .as_deref()
-                    .map(|c| parse_color(c, ctx.panel_bg()))
-                    .unwrap_or_else(|| ctx.panel_bg());
+                    .map(|c| parse_color(c, solid_panel_bg))
+                    .unwrap_or(solid_panel_bg);
                 apply_color_opacity(base, opacity)
             }
         }
@@ -185,6 +191,9 @@ fn render_placed_container(
 
     // Render all container content strictly into its own isolated [0..inner.w, 0..inner.h) canvas.
     blit_isolated_canvas(dest, inner, |canvas_buf, local_inner| {
+        Block::default()
+            .style(Style::default().bg(bg))
+            .render(local_inner, canvas_buf);
         if let Some(overlay) = anim_store.canvas_overlay(&cont.name) {
             overlay.instance.render(canvas_buf, local_inner, ctx.theme);
         }

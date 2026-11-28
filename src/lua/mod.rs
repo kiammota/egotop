@@ -14,6 +14,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 pub use animation_runtime::{AnimationLayer, LuaAnimationRuntime};
+pub use crate::animation::AnimSlotKind;
 pub use builtins::{BUILTIN_LUA_MODULES, ensure_lua_config_tree, ensure_lua_tree_at};
 pub use canvas::{CanvasBuffer, LuaCanvasHandle};
 pub use effects::{LuaCanvasInstance, LuaEffectAdapter, LuaEffectSpec};
@@ -267,6 +268,81 @@ pub fn list_lua_effects() -> Vec<String> {
     }
     names.sort();
     names
+}
+
+/// Lists scripts whose `type` matches the given slot kind.
+/// Scripts from `animations/` default to `Intro`, scripts from `effects/` default to `Background`.
+pub fn list_scripts_for_slot(slot: AnimSlotKind) -> Vec<String> {
+    match slot {
+        AnimSlotKind::Intro => list_lua_animations(),
+        AnimSlotKind::Background => {
+            let mut names = list_lua_effects();
+            names.retain(|n| !n.eq_ignore_ascii_case("none"));
+            names
+        }
+        AnimSlotKind::Canvas => {
+            // Canvas scripts can come from either effects/ or animations/ with type = "canvas",
+            // but by default we list effects (minus none) as canvas-compatible since they
+            // implement the same init/update/render contract.
+            let mut names = list_lua_effects();
+            names.retain(|n| !n.eq_ignore_ascii_case("none"));
+            names
+        }
+    }
+}
+
+/// Validates that a script name is compatible with the target slot.
+/// Returns `Ok(())` if compatible, or `Err(message)` explaining the mismatch.
+pub fn validate_script_for_slot(script_name: &str, target_slot: AnimSlotKind) -> Result<(), String> {
+    let normalized = normalize_animation_alias(script_name);
+    let is_intro_script = list_lua_animations()
+        .iter()
+        .any(|n| n.eq_ignore_ascii_case(&normalized));
+    let is_effect_script = list_lua_effects()
+        .iter()
+        .any(|n| n.eq_ignore_ascii_case(&normalized));
+
+    match target_slot {
+        AnimSlotKind::Intro => {
+            // Intros come from animations/ directory
+            if is_intro_script || normalized == "none" {
+                Ok(())
+            } else if is_effect_script {
+                Err(format!(
+                    "'{script_name}' is a background effect (type = \"background\"), not an intro animation. \
+                     Use ':background {script_name}' instead."
+                ))
+            } else {
+                Err(format!("Intro script '{script_name}' not found"))
+            }
+        }
+        AnimSlotKind::Background => {
+            // Backgrounds come from effects/ directory
+            if is_effect_script || normalized == "none" {
+                Ok(())
+            } else if is_intro_script {
+                Err(format!(
+                    "'{script_name}' is an intro animation (type = \"intro\"), not a background effect. \
+                     Use ':intro {script_name}' instead."
+                ))
+            } else {
+                Err(format!("Background script '{script_name}' not found"))
+            }
+        }
+        AnimSlotKind::Canvas => {
+            // Canvas scripts can be effects or dedicated canvas scripts
+            if is_effect_script || normalized == "none" {
+                Ok(())
+            } else if is_intro_script {
+                Err(format!(
+                    "'{script_name}' is an intro animation (type = \"intro\"), not a canvas script. \
+                     Intro animations cannot run inside containers."
+                ))
+            } else {
+                Err(format!("Canvas script '{script_name}' not found"))
+            }
+        }
+    }
 }
 
 /// Maps well-known effect/preset aliases to their canonical script stem without special-casing runtime playback.

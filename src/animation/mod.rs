@@ -34,6 +34,55 @@ pub use transition::{
 };
 pub use water::WaterEffect;
 
+/// The three strictly independent animation slot categories.
+///
+/// Each Lua animation script must declare exactly one of these via `type = "intro" | "background" | "canvas"`.
+/// The engine validates the declared type against the target slot and refuses mismatches.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum AnimSlotKind {
+    /// Entry/startup animation: runs once with full-screen access, finite lifetime.
+    Intro,
+    /// Continuous background loop at Z=0, always behind all UI containers.
+    Background,
+    /// Per-container animation with rigid clipping to the container's inner bounds.
+    Canvas,
+}
+
+impl AnimSlotKind {
+    /// Parses a slot kind from a Lua `type` string.
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "intro" | "entry" | "startup" => Some(Self::Intro),
+            "background" | "bg" => Some(Self::Background),
+            "canvas" | "container" | "panel" => Some(Self::Canvas),
+            _ => None,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Intro => "intro",
+            Self::Background => "background",
+            Self::Canvas => "canvas",
+        }
+    }
+
+    /// Returns the default slot for scripts loaded from a directory.
+    pub fn default_for_directory(dir_name: &str) -> Self {
+        match dir_name {
+            "animations" => Self::Intro,
+            "effects" => Self::Background,
+            _ => Self::Canvas,
+        }
+    }
+}
+
+impl std::fmt::Display for AnimSlotKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.label())
+    }
+}
+
 pub trait BackgroundEffect: Send {
     fn kind(&self) -> EffectKind;
     fn resize(&mut self, width: u16, height: u16, cfg: &BackgroundConfig);

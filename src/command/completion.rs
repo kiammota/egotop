@@ -84,6 +84,29 @@ impl CompletionEngine {
                 CompletionProviderKind::Background => {
                     complete_background(&prev_args, &current_token, ctx.animations)
                 }
+                CompletionProviderKind::Intro => {
+                    let mut items = complete_from_pairs(&current_token.to_ascii_lowercase(), &[("replay", "Replay the configured intro"), ("off", "Disable the intro")], None);
+                    if prev_args.is_empty() {
+                        for name in crate::lua::list_scripts_for_slot(crate::animation::AnimSlotKind::Intro) {
+                            if name.to_ascii_lowercase().starts_with(&current_token.to_ascii_lowercase()) {
+                                items.push(CompletionItem { insert_text: name.clone(), label: name, description: "Intro animation".into(), expected_arg: None });
+                            }
+                        }
+                    }
+                    items
+                }
+                CompletionProviderKind::Canvas => {
+                    let p = current_token.to_ascii_lowercase();
+                    if prev_args.is_empty() {
+                        complete_from_pairs(&p, &ctx.containers.iter().map(|n| (n.as_str(), "Container id")).collect::<Vec<_>>(), None)
+                    } else if prev_args.len() == 1 {
+                        let mut items = complete_from_pairs(&p, &[("off", "Disable this canvas"), ("pause", "Pause this canvas"), ("resume", "Resume this canvas")], None);
+                        for name in crate::lua::list_scripts_for_slot(crate::animation::AnimSlotKind::Canvas) {
+                            if name.to_ascii_lowercase().starts_with(&p) { items.push(CompletionItem { insert_text: name.clone(), label: name, description: "Canvas animation".into(), expected_arg: None }); }
+                        }
+                        items
+                    } else { Vec::new() }
+                }
                 CompletionProviderKind::Border => {
                     complete_border(&prev_args, &current_token, ctx.containers)
                 }

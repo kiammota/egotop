@@ -61,6 +61,32 @@ pub enum BackgroundCommand {
     List,
 }
 
+/// Commands for the `:intro` slot (entry/startup animations).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum IntroCommand {
+    /// Set and play the intro animation by name.
+    Play(String),
+    /// Re-play the current intro animation from the beginning.
+    Replay,
+    /// Disable/skip the intro animation.
+    Off,
+    /// Set the startup intro without playing it now.
+    Set(String),
+}
+
+/// Commands for the `:canvas` slot (per-container animations).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CanvasCommand {
+    /// Set a canvas animation on a specific container.
+    Set { container_id: String, script: String },
+    /// Disable the canvas animation on a container.
+    Off { container_id: String },
+    /// Pause the canvas animation on a container.
+    Pause { container_id: String },
+    /// Resume the canvas animation on a container.
+    Resume { container_id: String },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BorderCommand {
     GlobalStyle(BorderStyle),
@@ -94,6 +120,8 @@ pub enum ParsedCommand {
         name: Option<String>,
     },
     Background(BackgroundCommand),
+    Intro(IntroCommand),
+    Canvas(CanvasCommand),
     Border(BorderCommand),
     Layout(Option<LayoutSelection>),
     Container(ContainerCommand),
@@ -145,6 +173,8 @@ pub fn parse_command(raw: &str) -> Result<ParsedCommand, String> {
         )),
         "animation" | "anim" => parse_animation_command(&rest),
         "background" | "bg" => parse_background_command(&rest),
+        "intro" => parse_intro_command(&rest),
+        "canvas" => parse_canvas_command(&rest),
         "border" | "borders" => parse_border_command(&rest),
         "layout" => parse_layout_command(&rest),
         "container" => parse_container_command(&rest),
@@ -338,6 +368,51 @@ fn parse_background_command(args: &[&str]) -> Result<ParsedCommand, String> {
         other => BackgroundCommand::Set(other.to_string()),
     };
     Ok(ParsedCommand::Background(cmd))
+}
+
+fn parse_intro_command(args: &[&str]) -> Result<ParsedCommand, String> {
+    let Some(first) = args.first().map(|s| s.to_ascii_lowercase()) else {
+        return Err("Usage: :intro <name|replay|off>".to_string());
+    };
+
+    let cmd = match first.as_str() {
+        "replay" | "restart" => IntroCommand::Replay,
+        "off" | "none" | "disable" => IntroCommand::Off,
+        "set" => {
+            let Some(name) = args.get(1) else {
+                return Err("Usage: :intro set <name>".to_string());
+            };
+            IntroCommand::Set((*name).to_string())
+        }
+        other => IntroCommand::Play(other.to_string()),
+    };
+
+    Ok(ParsedCommand::Intro(cmd))
+}
+
+fn parse_canvas_command(args: &[&str]) -> Result<ParsedCommand, String> {
+    let Some(container_id) = args.first() else {
+        return Err("Usage: :canvas <container_id> <name|off|pause|resume>".to_string());
+    };
+    let container_id = container_id.to_string();
+
+    let Some(sub) = args.get(1).map(|s| s.to_ascii_lowercase()) else {
+        return Err(format!(
+            "Usage: :canvas {container_id} <name|off|pause|resume>"
+        ));
+    };
+
+    let cmd = match sub.as_str() {
+        "off" | "none" | "disable" => CanvasCommand::Off { container_id },
+        "pause" => CanvasCommand::Pause { container_id },
+        "resume" => CanvasCommand::Resume { container_id },
+        script => CanvasCommand::Set {
+            container_id,
+            script: script.to_string(),
+        },
+    };
+
+    Ok(ParsedCommand::Canvas(cmd))
 }
 
 fn parse_layout_command(args: &[&str]) -> Result<ParsedCommand, String> {

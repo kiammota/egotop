@@ -86,6 +86,10 @@ pub struct Cli {
     #[arg(long, value_enum)]
     pub startup: Option<CliStartup>,
 
+    /// Skip the configured startup intro for this session
+    #[arg(long)]
+    pub no_intro: bool,
+
     /// Validate configuration file and exit
     #[arg(long)]
     pub check_config: bool,
@@ -138,6 +142,9 @@ mod egotop_app_launch {
         }
         if let Some(st) = cli.startup {
             cfg.startup.mode = st.into();
+        }
+        if cli.no_intro {
+            cfg.general.startup_animation = "none".into();
         }
 
         let toast = loaded

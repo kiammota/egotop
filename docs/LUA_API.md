@@ -203,6 +203,12 @@ egotop.footer({
 
 ## 8. Isolated Animations API (`animations/*.lua`)
 
+EgoTop exposes three separate animation slots. Declare the slot explicitly on the Lua module as `type = "intro"`, `type = "background"`, or `type = "canvas"`; a module assigned to another slot must be rejected. Intro modules are finite and play at startup (or via `:intro replay`); background modules loop behind panels; canvas modules render into the named panel's inner clipped rectangle. `--no-intro` starts directly in the dashboard.
+
+The slot hooks are `init(ctx)`, `update(dt, t, ctx)`, and `render(...)`. Intro `render(screen, ui_buffer, ctx)` may compose a full-screen transition and should finish by returning `finished = true` from update or by reaching its duration. Background `render(canvas, ctx)` receives only the background canvas. Canvas `render(canvas, ctx)` receives a panel-sized canvas with `width`, `height`, `clear`, `put`, `put_z`, and `text`.
+
+Interactive controls are `:intro <name|replay|off>`, `:background <name|off|pause|resume>`, and `:canvas <container_id> <name|off|pause|resume>`. Canvas layouts can designate a panel with `type = "canvas"`, `title = "delorian.gif"`, and `script = "delorean"`.
+
 Animations receive `setup(api)` and return a module table with `init(ctx)`, `update(dt, t, ctx)`, `resize(ctx)`, and `render(canvas, ctx)` (plus optional `layer = "background" | "boxed" | "overlay"`, `title`, `fps`, `duration`):
 
 ```lua

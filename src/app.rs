@@ -3,7 +3,7 @@ use crate::animation::{
     BackgroundPipeline, TransitionPlayer,
 };
 use crate::command::{
-    AnimationAction, BackgroundCommand, BorderCommand, CommandLineState, CommandRegistry,
+    AnimationAction, BackgroundCommand, BorderCommand, CanvasCommand, IntroCommand, CommandLineState, CommandRegistry,
     CompletionContext, ContainerCommand, ContainerProperty, LayoutSelection, ParsedCommand,
     WriteTarget, parse_command,
 };
@@ -435,6 +435,16 @@ impl App {
                 self.handle_mouse(mouse, viewport, guard)?;
             }
             InputEvent::Key(key) => {
+                if self.lua_anim.is_some()
+                    && matches!(key.code, KeyCode::Esc | KeyCode::Enter | KeyCode::Char(' '))
+                    && !self.command_line.active
+                {
+                    if let Some(anim) = &mut self.lua_anim { anim.stop(); }
+                    self.lua_anim = None;
+                    self.reveal = RevealState::complete();
+                    self.set_toast("Intro skipped");
+                    return Ok(());
+                }
                 if self.command_line.active {
                     self.handle_command_key(key, guard, viewport)?;
                 } else if self.diagnostics_ui.open {
@@ -1105,6 +1115,65 @@ impl App {
             },
             ParsedCommand::Background(bcmd) => {
                 self.execute_background_command(bcmd, guard)?;
+            }
+            ParsedCommand::Intro(cmd) => match cmd {
+                IntroCommand::Off => {
+                    self.lua_anim = None;
+                    self.transition.stop();
+                    self.reveal = RevealState::complete();
+                    self.config.general.startup_animation = "none".into();
+                    self.set_toast("Intro disabled");
+                }
+                IntroCommand::Replay => {
+                    let name = self.config.general.startup_animation.clone();
+                    if name.eq_ignore_ascii_case("none") || name.is_empty() {
+                        self.set_toast("No intro configured");
+                    } else {
+                        let sz = guard.terminal.size()?;
+                        self.lua_anim = Some(LuaAnimationRuntime::start(&name, sz.width, sz.height, self.config.general.animation_fps));
+                        self.reveal = RevealState::new(0.65);
+                        self.set_toast(format!("Replaying intro '{name}'"));
+                    }
+                }
+                IntroCommand::Play(name) | IntroCommand::Set(name) => {
+                    match crate::lua::validate_script_for_slot(&name, crate::animation::AnimSlotKind::Intro) {
+                        Ok(()) => {
+                            self.config.general.startup_animation = name.clone();
+                            let sz = guard.terminal.size()?;
+                            self.lua_anim = Some(LuaAnimationRuntime::start(&name, sz.width, sz.height, self.config.general.animation_fps));
+                            self.reveal = RevealState::new(0.65);
+                            self.set_toast(format!("Playing intro '{name}'"));
+                        }
+                        Err(e) => self.set_toast(e),
+                    }
+                }
+            },
+            ParsedCommand::Canvas(cmd) => {
+                let (id, script) = match cmd {
+                    CanvasCommand::Set { container_id, script } => (container_id, Some(script)),
+                    CanvasCommand::Off { container_id } => (container_id, None),
+                    CanvasCommand::Pause { container_id } | CanvasCommand::Resume { container_id } => {
+                        self.set_toast("Canvas pause/resume is not available for component animations yet");
+                        (container_id, None)
+                    }
+                };
+                if !has_container(&self.config.ui.containers, &id) {
+                    self.set_toast(format!("Unknown container '{id}'"));
+                } else if let Some(script) = script {
+                    match crate::lua::validate_script_for_slot(&script, crate::animation::AnimSlotKind::Canvas) {
+                        Ok(()) => {
+                            if let Some(c) = self.config.ui.containers.iter_mut().find(|c| c.name == id) {
+                                c.kind = ComponentKind::Canvas;
+                                c.content.script = Some(script.clone());
+                            }
+                            self.set_toast(format!("Canvas '{script}' assigned to '{id}' (layout reload required)"));
+                        }
+                        Err(e) => self.set_toast(e),
+                    }
+                } else if let Some(c) = self.config.ui.containers.iter_mut().find(|c| c.name == id) {
+                    c.content.script = None;
+                    self.set_toast(format!("Canvas animation cleared from '{id}'"));
+                }
             }
             ParsedCommand::Layout(None) => {
                 self.customizer.open_tab(CustomizerTab::Layout);

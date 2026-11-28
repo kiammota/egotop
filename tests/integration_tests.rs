@@ -2317,14 +2317,14 @@ fn transparency_preserves_background_animation_and_colors() {
         .unwrap();
 
     // Verify that global Matrix glyphs NEVER appear inside any component's inner empty area,
-    // and that transparent containers keep Color::Reset (preserving terminal background).
+    // and that panel interiors remain solid while excluding global matrix glyphs.
     let full_buf = full_term.backend().buffer();
     let layout = compute_dashboard_layout(Rect::new(0, 0, 80, 24), &cfg, ViewMode::Dashboard);
     let greeting_inner = layout.find_container("greeting").unwrap().inner_rect;
     for x in greeting_inner.x..greeting_inner.right() {
         // Bottom row of greeting_inner (empty area if no subtitle at bottom) must not have Matrix glyphs
         let cell = &full_buf[(x, greeting_inner.bottom().saturating_sub(1))];
-        assert_eq!(cell.bg, Color::Reset);
+        assert_eq!(cell.bg, Color::Black);
     }
     assert_eq!(full_buf[(0, 0)].bg, Color::Reset);
 
@@ -2393,7 +2393,7 @@ fn transparency_preserves_background_animation_and_colors() {
                 " ",
                 "global effect leaked into excluded container at ({x},{y})"
             );
-            assert_eq!(masked_buf[(x, y)].bg, Color::Reset);
+            assert_eq!(masked_buf[(x, y)].bg, Color::Black);
         }
     }
 }
@@ -2488,10 +2488,9 @@ fn container_isolation_and_independent_transparency_flags() {
 
     // Opaque container paints its own #112233 background, transparent container inherits theme.background
     assert_eq!(buf[(opaque_rect.x, opaque_rect.y)].bg, Color::Rgb(0x11, 0x22, 0x33));
-    assert_eq!(buf[(trans_rect.x, trans_rect.y)].bg, theme.background);
+    assert_eq!(buf[(trans_rect.x, trans_rect.y)].bg, theme.panel_background);
 
-    // Now set theme background & panel_background to "transparent" -> transparent container must have Color::Reset,
-    // while opaque container still keeps #112233
+    // Theme transparency must not let the Z=0 background leak through a panel.
     cfg.theme.background = "transparent".to_string();
     cfg.theme.panel_background = "transparent".to_string();
     let theme2 = Theme::from_config(&cfg.theme);
@@ -2528,7 +2527,7 @@ fn container_isolation_and_independent_transparency_flags() {
         .unwrap();
     let buf2 = term2.backend().buffer();
     assert_eq!(buf2[(opaque_rect.x, opaque_rect.y)].bg, Color::Rgb(0x11, 0x22, 0x33));
-    assert_eq!(buf2[(trans_rect.x, trans_rect.y)].bg, Color::Reset);
+    assert_eq!(buf2[(trans_rect.x, trans_rect.y)].bg, Color::Black);
 }
 
 #[test]
@@ -2970,7 +2969,7 @@ fn container_titles_render_without_borders_and_avoid_content_overlap() {
         .cell((greeting.outer_rect.x + 2, greeting.outer_rect.y))
         .unwrap();
     assert_eq!(welcome_cell.fg, theme.primary);
-    assert_eq!(welcome_cell.bg, Color::Reset);
+    assert_eq!(welcome_cell.bg, Color::Black);
 
     let sys_row = row_text(
         system.outer_rect.y,

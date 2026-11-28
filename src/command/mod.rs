@@ -4,7 +4,7 @@ pub mod registry;
 
 pub use completion::{CompletionContext, CompletionEngine, CompletionItem, CompletionResult};
 pub use parser::{
-    AnimationAction, BackgroundCommand, BorderCommand, ContainerCommand, ContainerProperty,
+    AnimationAction, BackgroundCommand, CanvasCommand, IntroCommand, BorderCommand, ContainerCommand, ContainerProperty,
     LayoutSelection, ParsedCommand, WriteTarget, parse_command,
 };
 pub use registry::{CommandDescriptor, CommandRegistry, CompletionProviderKind};

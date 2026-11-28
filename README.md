@@ -21,6 +21,7 @@ An interactive, Lua-scriptable animated terminal dashboard for Linux & Hyprland 
 - **Independent Background & Container Transparency**: Decouple base layers (`transparent`, `solid`, `gradient`, `opacity`) from visual effects (`matrix`, `water`, `particles`, `scanlines`, `starfield`, `noise`, `floating_chars`, `christmas_tree`), and configure containers globally or individually.
 - **Native Linux Telemetry**: OS, motherboard host, kernel, uptime, packages (`pacman`, `flatpak`), CPU/RAM/Swap/Disks/GPU/VRAM, environment/display/WM, terminal info, and live sparklines.
 - **Neovim-style Command Mode (`:`)**: Live preview on `Tab` / `Shift+Tab`, `Esc` state restoration, `:colorscheme`, `:effect`, `:animation play`, `:layout`, `:container`, `:set`, `:check`, and `:write`.
+- **Separated animation slots**: `intro` plays once at startup and can be skipped with `Esc`, `Space`, or `Enter` (`--no-intro` disables it); `background` loops behind the dashboard; `canvas` runs clipped inside a named panel. Use `:intro <name|replay|off>`, `:background <name|off|pause|resume>`, and `:canvas <container_id> <name|off|pause|resume>`.
 
 ---
 
